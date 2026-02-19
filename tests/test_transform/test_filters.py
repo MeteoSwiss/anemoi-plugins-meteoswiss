@@ -5,9 +5,9 @@ from meteodatalab import data_source
 from meteodatalab import grib_decoder
 from numpy.testing import assert_array_equal
 
-from mch_anemoi_plugins.helpers import from_meteodatalab
-from mch_anemoi_plugins.transform.filters import ClipLateralBoundaries
-from mch_anemoi_plugins.transform.filters import Destagger
+from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
+from anemoi_plugins_meteoswiss.transform.filters import ClipLateralBoundaries
+from anemoi_plugins_meteoswiss.transform.filters import Destagger
 
 
 def test_clip_lateral_boundaries(data_dir):

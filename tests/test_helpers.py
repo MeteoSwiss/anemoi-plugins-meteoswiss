@@ -3,8 +3,8 @@ import numpy as np
 from meteodatalab import data_source
 from meteodatalab import grib_decoder
 
-from mch_anemoi_plugins.helpers import from_meteodatalab
-from mch_anemoi_plugins.helpers import to_meteodatalab
+from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
+from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
 
 
 def test_earthkit_meteodatalab_roundtrip(data_dir):

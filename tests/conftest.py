@@ -15,4 +15,6 @@ os.environ["ECCODES_DEFINITION_PATH"] = str(eccodes_definitions)
 @pytest.fixture
 def data_dir() -> Path:
     """Path to the test data directory."""
-    return Path(__file__).parent / "data"
+    out =  Path(__file__).parent / "data"
+    out.mkdir(exist_ok=True)
+    return out

@@ -9,21 +9,7 @@ dependencies = [
     "anemoi-datasets",
     "anemoi-plugins",
     "anemoi-transform",
-    "pyproj",
-    "pandas",
-    "xarray",
-    "zarr",
-    "geopandas",
-    "dask",
-    "rioxarray",
-    "pyyaml",
-    "omegaconf>=2.3.0,<3",
-    "cf-units>=3.2.0,<4",
-    "earthkit-data>=0.12.0,<0.14",
-    "eccodes==2.39.1",
-    "meteodata-lab>=0.5.0",
-    "numpy<3",
-    "data-provider"
+    "meteodata-lab",
 ]
 
 
@@ -31,8 +17,6 @@ dependencies = [
 anemoi-plugins-meteoswiss = "anemoi_plugins_meteoswiss:main"
 
 [project.entry-points."anemoi.transform.filters"]
-interp2res = "anemoi_plugins_meteoswiss.transform.filters:Interp2Res"
-interp2grid = "anemoi_plugins_meteoswiss.transform.filters:Interp2Grid"
 destagger = "anemoi_plugins_meteoswiss.transform.filters:Destagger"
 clip-lateral-boundaries = "anemoi_plugins_meteoswiss.transform.filters:ClipLateralBoundaries"
 interp-k2p = "anemoi_plugins_meteoswiss.transform.filters:InterpK2P"
@@ -42,19 +26,13 @@ geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:Geopoten
 
 [project.entry-points."anemoi.datasets.create.sources"]
 rea-l-ch1-precip = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1Precip"
-station = "anemoi_plugins_meteoswiss.transform.sources:SURFACE"
-satellite = "anemoi_plugins_meteoswiss.transform.sources:SATELLITE"
-dem = "anemoi_plugins_meteoswiss.transform.sources:NASADEM"
-opera = "anemoi_plugins_meteoswiss.transform.sources:OPERA"
-inca = "anemoi_plugins_meteoswiss.transform.sources:INCA"
-iconCH1 = "anemoi_plugins_meteoswiss.transform.sources:ICON_CH1"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.dependency-groups.dev]
-dependencies = [
+[dependency-groups]
+dev = [
     "pre-commit>=4.2.0",
     "pytest>=8.3.5",
     "mypy>=1.6.1,<2",
@@ -68,51 +46,4 @@ dependencies = [
 
 [tool.uv.sources]
 anemoi-plugins = { git = "https://github.com/ecmwf/anemoi-plugins.git" }
-meteodata-lab = { git = "https://github.com/MeteoSwiss/meteodata-lab.git"}
-data-provider = {git = "https://github.com/MeteoSwiss/data-provider"}
-
-
-[[tool.uv.index]]
-name = "pypi-mch"
-url = "https://service.meteoswiss.ch/nexus/repository/python-all/simple"
-
-[[tool.uv.index]]
-name = "pypi-mch-publish"
-url = "https://service.meteoswiss.ch/nexus/repository/python-mch/"
-
-[tool.yapf]
-based_on_style = "pep8"
-column_limit = "120"
-
-[tool.pylint.master]
-disable = [
-    'R0913', # too many arguments
-    'R0917', # too many positional arguments
-    'C0415', # import outside toplevel
-    'C0414', # explicit reexport
-    'C0114', # missing-module-docstring
-    'C0115', # missing-class-docstring
-    'C0116', # missing-function-docstring
-    'W0511', # fix me or to-do comments are already covered by SonarQube
-    'C0414', # useless-import-alias
-]
-
-[tool.pylint.format]
-# Maximum number of lines in a module.
-max-line-length = 120
-
-[tool.pylint.design]
-# Minimum number of public methods for a class (see R0903).
-min-public-methods = 0
-
-[tool.mypy]
-ignore_missing_imports = true
-disallow_untyped_defs = true
-
-[tool.coverage.run]
-omit = ["test/**", "doc/**"]
-
-[dependency-groups]
-dev = [
-    "ipdb>=0.13.13",
-]
+meteodata-lab = { git = "https://github.com/MeteoSwiss/meteodata-lab.git", rev = "main" }

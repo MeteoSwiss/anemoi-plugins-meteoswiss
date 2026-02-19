@@ -37,7 +37,9 @@ def test_clip_lateral_boundaries(data_dir, hostname):
     assert_array_equal(ds["T_2M"].values.ravel(), res[0].values)
 
 
-def test_destagger(data_dir):
+def test_destagger(data_dir, hostname):
+    if not hostname.startswith("balfrin"):
+        pytest.skip("Only runs on Balfrin.")
     from meteodatalab.operators.destagger import destagger
 
     # test vertical destaggering

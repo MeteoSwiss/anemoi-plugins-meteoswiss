@@ -1,60 +1,11 @@
 import io
-from copy import copy
 from typing import Callable
 from typing import Iterator
 
 import earthkit.data as ekd
-import numpy as np
 import xarray as xr
 from meteodatalab import data_source
 from meteodatalab import grib_decoder
-from pyproj import CRS
-from pyproj import Transformer
-
-
-def reproject(
-    x_coords: np.ndarray | list | tuple,
-    y_coords: np.ndarray | list | tuple,
-    src_crs: CRS | str,
-    dst_crs: CRS | str,
-):
-    # Local copy to avoid circular import with interp2grid/destaggering
-    transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
-    return transformer.transform(x_coords, y_coords)
-
-
-def replace(instance, **kwargs):
-    new_instance = copy(instance)
-    for k, v in kwargs.items():
-        if hasattr(new_instance, k):
-            setattr(new_instance, k, v)
-        else:
-            raise AttributeError(f"Attribute '{k}' does not exist in the instance.")
-    return new_instance
-
-
-def assign_lonlat(array: xr.DataArray, crs: str) -> xr.DataArray:
-    # Supports (x,y) or (y,x); falls back to reprojection if CRS not WGS84.
-    geodims = [d for d in array.dims if d in ("x", "y", "station", "cell")]
-    if len(geodims) < 2 and crs == "epsg:4326" and "x" in array.coords:
-        return array.assign_coords(longitude=array.x.values, latitude=array.y.values)
-    if geodims == ["y", "x"]:
-        xv, yv = np.meshgrid(array.x.values, array.y.values)
-        lon, lat = (
-            (xv, yv)
-            if crs == "epsg:4326"
-            else reproject(xv, yv, crs, CRS.from_user_input("epsg:4326"))
-        )
-        return array.assign_coords(
-            longitude=(("y", "x"), lon), latitude=(("y", "x"), lat)
-        )
-    xv, yv = np.meshgrid(array.x.values, array.y.values, indexing="ij")
-    lon, lat = (
-        reproject(xv, yv, crs, CRS.from_user_input("epsg:4326"))
-        if crs != "epsg:4326"
-        else (xv, yv)
-    )
-    return array.assign_coords(longitude=(("x", "y"), lon), latitude=(("x", "y"), lat))
 
 
 class FieldListDataSource(data_source.DataSource):

@@ -1,5 +1,6 @@
 import earthkit.data as ekd
 import numpy as np
+import pytest
 from anemoi.transform.filters import filter_registry
 from meteodatalab import data_source
 from meteodatalab import grib_decoder
@@ -10,7 +11,10 @@ from anemoi_plugins_meteoswiss.transform.filters import ClipLateralBoundaries
 from anemoi_plugins_meteoswiss.transform.filters import Destagger
 
 
-def test_clip_lateral_boundaries(data_dir):
+def test_clip_lateral_boundaries(data_dir, hostname):
+    if not hostname.startswith("balfrin"):
+        pytest.skip("Only runs on Balfrin.")
+
     from meteodatalab.operators.clip import clip_lateral_boundary_strip
 
     fn = str(data_dir / "iaf2025010100")

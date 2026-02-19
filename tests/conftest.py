@@ -13,6 +13,11 @@ os.environ["ECCODES_DEFINITION_PATH"] = str(eccodes_definitions)
 
 
 @pytest.fixture
+def hostname():
+    return os.uname().nodename
+
+
+@pytest.fixture
 def data_dir() -> Path:
     """Path to the test data directory."""
     # TODO: tests use a template file with an empty data section

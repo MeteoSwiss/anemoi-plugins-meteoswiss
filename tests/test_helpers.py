@@ -9,7 +9,7 @@ from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
 
 def test_earthkit_meteodatalab_roundtrip(data_dir):
     """Test conversion to and from meteodatalab."""
-    fl_original = ekd.from_source("file", data_dir / "kenda-ch1-w-ml.grib")
+    fl_original = ekd.from_source("file", data_dir / "iaf2025010100")
     ds = to_meteodatalab(fl_original)
     fl_rountrip = from_meteodatalab(ds)
     np.testing.assert_array_equal(fl_original.values, fl_rountrip.values)
@@ -17,23 +17,25 @@ def test_earthkit_meteodatalab_roundtrip(data_dir):
 
 def test_meteodatalab_earthkit_roundtrip(data_dir):
     """Test conversion to and from meteodatalab."""
-    fds = data_source.FileDataSource(datafiles=[str(data_dir / "kenda-ch1-w-ml.grib")])
-    ds_original = grib_decoder.load(fds, {"param": ["W"]})
+    fds = data_source.FileDataSource(datafiles=[str(data_dir / "iaf2025010100")])
+    ds_original = grib_decoder.load(fds, {"param": ["T"]})
     fl = from_meteodatalab(ds_original)
     ds_roundtrip = to_meteodatalab(fl)
-    np.testing.assert_array_equal(ds_original["W"].values, ds_roundtrip["W"].values)
+    np.testing.assert_array_equal(ds_original["T"].values, ds_roundtrip["T"].values)
 
 
 def test_earthkit_meteodatalab_oneway(data_dir):
     """Test conversion to and from meteodatalab."""
-    fl = ekd.from_source("file", data_dir / "kenda-ch1-w-ml.grib")
+    fl = ekd.from_source("file", data_dir / "iaf2025010100")
     ds = to_meteodatalab(fl)
-    np.testing.assert_array_equal(ds["W"].values.squeeze(), fl.values.squeeze())
+    np.testing.assert_array_equal(
+        ds["T"].values.squeeze(), fl.sel(param="T").values.squeeze()
+    )
 
 
 def test_meteodatalab_earthkit_oneway(data_dir):
     """Test conversion to and from meteodatalab."""
-    fds = data_source.FileDataSource(datafiles=[str(data_dir / "kenda-ch1-w-ml.grib")])
-    ds = grib_decoder.load(fds, {"param": ["W"]})
+    fds = data_source.FileDataSource(datafiles=[str(data_dir / "iaf2025010100")])
+    ds = grib_decoder.load(fds, {"param": ["T"]})
     fl = from_meteodatalab(ds)
-    np.testing.assert_array_equal(fl.values.squeeze(), ds["W"].values.squeeze())
+    np.testing.assert_array_equal(fl.values.squeeze(), ds["T"].values.squeeze())

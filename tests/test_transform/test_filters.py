@@ -13,7 +13,7 @@ from anemoi_plugins_meteoswiss.transform.filters import Destagger
 def test_clip_lateral_boundaries(data_dir):
     from meteodatalab.operators.clip import clip_lateral_boundary_strip
 
-    fn = str(data_dir / "kenda-ch1-sfc.grib")
+    fn = str(data_dir / "iaf2025010100")
     gridfile_fn = "/scratch/mch/jenkins/icon/pool/data/ICON/mch/grids/icon-1/icon_grid_0001_R19B08_mch.nc"
     strip_idx = 14
 
@@ -37,7 +37,7 @@ def test_destagger(data_dir):
     from meteodatalab.operators.destagger import destagger
 
     # test vertical destaggering
-    fn = str(data_dir / "kenda-ch1-w-ml.grib")
+    fn = str(data_dir / "iaf2025010100")
     param_dim = {"W": "z"}
 
     filter: Destagger = filter_registry.create("destagger", param_dim)
@@ -47,8 +47,8 @@ def test_destagger(data_dir):
     ds_desired = {k: destagger(v, param_dim[k]) for k, v in ds.items()}
     desired = from_meteodatalab(ds_desired)
 
-    fieldlist = ekd.from_source("file", fn)
+    fieldlist = ekd.from_source("file", fn).sel(param="W")
     actual = filter.forward(fieldlist)
-
+    print(actual.values)
     np.testing.assert_array_equal(actual.values, desired.values)
     np.testing.assert_array_equal(actual.values, ds_desired["W"].values.squeeze())

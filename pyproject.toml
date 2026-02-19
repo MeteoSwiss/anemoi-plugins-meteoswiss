@@ -1,8 +1,8 @@
 [project]
-name = "mch-anemoi-plugins"
+name = "anemoi-plugins-meteoswiss"
 version = "0.1.0"
-description = "Package providing custom sources and filters for Anemoi."
-readme = "README.rst"
+description = "Anemoi plugins used at MeteoSwiss"
+readme = "README.md"
 authors = [{ name = "MeteoSwiss" }]
 requires-python = ">=3.11"
 dependencies = [
@@ -28,26 +28,26 @@ dependencies = [
 
 
 [project.scripts]
-mch-anemoi-plugins = "mch_anemoi_plugins:main"
+anemoi-plugins-meteoswiss = "anemoi_plugins_meteoswiss:main"
 
 [project.entry-points."anemoi.transform.filters"]
-interp2res = "mch_anemoi_plugins.transform.filters:Interp2Res"
-interp2grid = "mch_anemoi_plugins.transform.filters:Interp2Grid"
-destagger = "mch_anemoi_plugins.transform.filters:Destagger"
-clip-lateral-boundaries = "mch_anemoi_plugins.transform.filters:ClipLateralBoundaries"
-interp-k2p = "mch_anemoi_plugins.transform.filters:InterpK2P"
-assign-grid = "mch_anemoi_plugins.transform.filters:AssignGrid"
-omega-from-w = "mch_anemoi_plugins.transform.filters:OmegaFromW"
-geopotential-from-height = "mch_anemoi_plugins.transform.filters:GeopotentialFromHeight"
+interp2res = "anemoi_plugins_meteoswiss.transform.filters:Interp2Res"
+interp2grid = "anemoi_plugins_meteoswiss.transform.filters:Interp2Grid"
+destagger = "anemoi_plugins_meteoswiss.transform.filters:Destagger"
+clip-lateral-boundaries = "anemoi_plugins_meteoswiss.transform.filters:ClipLateralBoundaries"
+interp-k2p = "anemoi_plugins_meteoswiss.transform.filters:InterpK2P"
+assign-grid = "anemoi_plugins_meteoswiss.transform.filters:AssignGrid"
+omega-from-w = "anemoi_plugins_meteoswiss.transform.filters:OmegaFromW"
+geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:GeopotentialFromHeight"
 
 [project.entry-points."anemoi.datasets.create.sources"]
-rea-l-ch1-precip = "mch_anemoi_plugins.transform.sources:ReaLCh1Precip"
-station = "mch_anemoi_plugins.transform.sources:SURFACE"
-satellite = "mch_anemoi_plugins.transform.sources:SATELLITE"
-dem = "mch_anemoi_plugins.transform.sources:NASADEM"
-opera = "mch_anemoi_plugins.transform.sources:OPERA"
-inca = "mch_anemoi_plugins.transform.sources:INCA"
-iconCH1 = "mch_anemoi_plugins.transform.sources:ICON_CH1"
+rea-l-ch1-precip = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1Precip"
+station = "anemoi_plugins_meteoswiss.transform.sources:SURFACE"
+satellite = "anemoi_plugins_meteoswiss.transform.sources:SATELLITE"
+dem = "anemoi_plugins_meteoswiss.transform.sources:NASADEM"
+opera = "anemoi_plugins_meteoswiss.transform.sources:OPERA"
+inca = "anemoi_plugins_meteoswiss.transform.sources:INCA"
+iconCH1 = "anemoi_plugins_meteoswiss.transform.sources:ICON_CH1"
 
 [build-system]
 requires = ["hatchling"]
@@ -68,8 +68,6 @@ dependencies = [
 
 [tool.uv.sources]
 anemoi-plugins = { git = "https://github.com/ecmwf/anemoi-plugins.git" }
-# anemoi-datasets = { git = "https://github.com/ecmwf/anemoi-datasets.git"}
-# anemoi-transform = { git = "https://github.com/ecmwf/anemoi-transform.git" }
 meteodata-lab = { git = "https://github.com/MeteoSwiss/meteodata-lab.git"}
 data-provider = {git = "https://github.com/MeteoSwiss/data-provider"}
 

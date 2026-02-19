@@ -2,8 +2,8 @@ import earthkit.data as ekd
 from anemoi.transform.filter import Filter
 from meteodatalab.operators import destagger
 
-from mch_anemoi_plugins.helpers import from_meteodatalab
-from mch_anemoi_plugins.helpers import to_meteodatalab
+from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
+from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
 
 
 class Destagger(Filter):

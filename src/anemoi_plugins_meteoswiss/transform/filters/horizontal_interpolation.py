@@ -8,10 +8,10 @@ from earthkit.data.indexing.fieldlist import FieldArray
 from pyproj import CRS
 from scipy.interpolate import NearestNDInterpolator
 
-from mch_anemoi_plugins.helpers import assign_lonlat
-from mch_anemoi_plugins.helpers import reproject
-from mch_anemoi_plugins.transform.filters._vendor.interp2grid import interp2grid
-from mch_anemoi_plugins.xarray_extensions import CustomFieldList
+from anemoi_plugins_meteoswiss.helpers import assign_lonlat
+from anemoi_plugins_meteoswiss.helpers import reproject
+from anemoi_plugins_meteoswiss.transform.filters._vendor.interp2grid import interp2grid
+from anemoi_plugins_meteoswiss.xarray_extensions import CustomFieldList
 
 
 def merge_fieldlist(field_array: FieldArray) -> xr.Dataset:

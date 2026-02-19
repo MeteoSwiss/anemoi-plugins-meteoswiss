@@ -11,9 +11,9 @@ from weathermart import DataProvider
 from weathermart.default_provider import available_retrievers
 from weathermart.default_provider import default_provider
 
-from mch_anemoi_plugins.helpers import assign_lonlat
-from mch_anemoi_plugins.xarray_extensions import CustomFieldList
-from mch_anemoi_plugins.xarray_extensions import check_indexing
+from anemoi_plugins_meteoswiss.helpers import assign_lonlat
+from anemoi_plugins_meteoswiss.xarray_extensions import CustomFieldList
+from anemoi_plugins_meteoswiss.xarray_extensions import check_indexing
 
 
 def get_all_available_sources() -> list[str]:

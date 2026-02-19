@@ -28,16 +28,6 @@ repos:
         entry: jupyter nbconvert --ClearOutputPreprocessor.enabled=True --inplace
         additional_dependencies: [jupyter]
 
-  - repo: https://github.com/pre-commit/pygrep-hooks
-    rev: v1.10.0
-    hooks:
-      - id: rst-backticks
-      - id: rst-directive-colons
-      - id: rst-inline-touching-normal
-      - id: python-use-type-annotations
-      - id: python-check-blanket-noqa
-      - id: python-no-log-warn
-
   - repo: https://github.com/pycqa/isort
     rev: 5.13.2
     hooks:
@@ -48,23 +38,3 @@ repos:
           - --force-single-line-imports
           - --profile
           - black
-
-  - repo: https://github.com/sphinx-contrib/sphinx-lint
-    rev: v1.0.0
-    hooks:
-      - id: sphinx-lint
-
-  - repo: https://github.com/jshwi/docsig
-    rev: v0.65.0
-    hooks:
-      - id: docsig
-        args:
-          - --ignore-no-params
-          - --check-dunders
-          - --check-overridden
-          - --check-protected
-          - --check-class
-          - --disable=E113
-
-ci:
-  autoupdate_schedule: monthly

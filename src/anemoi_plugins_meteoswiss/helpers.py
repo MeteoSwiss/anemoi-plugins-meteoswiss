@@ -1,44 +1,11 @@
 import io
-from copy import copy
 from typing import Callable
 from typing import Iterator
 
 import earthkit.data as ekd
-import numpy as np
 import xarray as xr
 from meteodatalab import data_source
 from meteodatalab import grib_decoder
-from pyproj import CRS
-from pyproj import Transformer
-
-
-def reproject(x_coords, y_coords, src_crs, dst_crs):
-    transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
-    return transformer.transform(x_coords, y_coords)
-
-
-def replace(instance, **kwargs):
-    new_instance = copy(instance)
-    for k, v in kwargs.items():
-        if hasattr(new_instance, k):
-            setattr(new_instance, k, v)
-        else:
-            raise AttributeError(f"Attribute '{k}' does not exist in the instance.")
-    return new_instance
-
-
-def assign_lonlat(array: xr.DataArray, crs: str) -> xr.DataArray:
-    xv, yv = np.meshgrid(array.x.values, array.y.values)
-    lon, lat = reproject(xv, yv, crs, CRS.from_user_input("epsg:4326"))
-    geodims = [k for k in array.dims if k in ["x", "y", "station", "cell"]]
-    if len(geodims) < 2 and crs == "epsg:4326" and "x" in array.coords:
-        # indexed by point and CRS WGS84: just rename coords
-        return array.assign_coords(longitude=array.x.values, latitude=array.y.values)
-    if geodims == ["y", "x"]:
-        return array.assign_coords(
-            longitude=(("y", "x"), lon), latitude=(("y", "x"), lat)
-        )
-    return array.assign_coords(longitude=(("x", "y"), lon), latitude=(("x", "y"), lat))
 
 
 class FieldListDataSource(data_source.DataSource):
@@ -97,9 +64,9 @@ def _meteodalab_ds_to_fieldlist(ds: dict[str, xr.DataArray]) -> ekd.FieldList:
             grib_decoder.save(
                 da, buffer, bits_per_value=32
             )  # TODO: find out why we need 32 and 16 leads to precision loss
-            
+
         del ds
-        
+
         # reset the buffer position to the beginning
         buffer.seek(0)
 

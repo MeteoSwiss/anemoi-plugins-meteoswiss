@@ -7,35 +7,28 @@
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
 
+import abc
 import logging
+from datetime import datetime
+from datetime import timedelta
+from typing import Any
 
 import earthkit.data as ekd
 import xarray as xr
-from anemoi.transform.filter import Filter
-
-from meteodatalab.operators import vertical_interpolation, vertical_extrapolation, destagger
-from meteodatalab import data_source, grib_decoder, metadata
-
-from mch_anemoi_plugins.helpers import to_meteodatalab, from_meteodatalab
-from datetime import datetime, timedelta
-from typing import Any
-import logging
-import abc
-from concurrent.futures import ThreadPoolExecutor
-
-import earthkit.data as ekd
-import numpy as np
+from anemoi.datasets.create.source import Source
 from anemoi.transform.fields import new_field_from_grid
 from anemoi.transform.fields import new_fieldlist_from_list
-from anemoi.transform.flavour import RuleBasedFlavour
 from anemoi.transform.grids import grid_registry
+from meteodatalab import data_source
+from meteodatalab import grib_decoder
+from meteodatalab import metadata
+from meteodatalab.operators import destagger
+from meteodatalab.operators import vertical_interpolation
 
-from anemoi.datasets.create.typing import DateList
-
-from anemoi.datasets.create.source import Source
-from anemoi.datasets.create.sources import source_registry
-
-from mch_anemoi_plugins.utils.grib import decode_step, encode_step
+from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
+from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
+from anemoi_plugins_meteoswiss.utils.grib import decode_step
+from anemoi_plugins_meteoswiss.utils.grib import encode_step
 
 VARIABLES_PROPERTIES = {
     "ALB_RAD": {"paramId": 500056, "type": "inst"},
@@ -107,14 +100,19 @@ BASE_FDB_REQUEST = {
     "type": "cf",
 }
 
-ICON_CONSTANTS_PATH = "/users/oprusers/osm/opr.inn/data/ICON_INPUT/ICON-CH1-EPS/lfff00000000c"
+ICON_CONSTANTS_PATH = (
+    "/users/oprusers/osm/opr.inn/data/ICON_INPUT/ICON-CH1-EPS/lfff00000000c"
+)
 ICON_GRID_PATH = "/scratch/mch/jenkins/icon/pool/data/ICON/mch/grids/icon-1/icon_grid_0001_R19B08_mch.nc"
 
 
 LOG = logging.getLogger(__name__)
 logging.getLogger("meteodatalab").setLevel(logging.WARNING)
 
-def realch1_source_router(context: Any, request: dict[str, Any], **kwargs: dict[str, Any]) -> Source:
+
+def realch1_source_router(
+    context: Any, request: dict[str, Any], **kwargs: dict[str, Any]
+) -> Source:
     """Route to the appropriate REA-L-CH1 data source type based on the requested variables."""
 
     # determine source type and check consistency
@@ -122,7 +120,11 @@ def realch1_source_router(context: Any, request: dict[str, Any], **kwargs: dict[
     if len(source_type) > 1:
         msg = "Expected all variables to have the same source type, got: \n"
         for st in source_type:
-            vars_of_type = [var for var in request["param"] if VARIABLES_PROPERTIES[var]["type"] == st]
+            vars_of_type = [
+                var
+                for var in request["param"]
+                if VARIABLES_PROPERTIES[var]["type"] == st
+            ]
             msg += f" - {st}: {vars_of_type}\n"
         raise ValueError(msg)
     source_type = source_type.pop()
@@ -136,10 +138,11 @@ def realch1_source_router(context: Any, request: dict[str, Any], **kwargs: dict[
         case "aggr-avg":
             raise NotImplementedError("Aggregation average source not yet implemented.")
         case _:
-            raise ValueError(f"Unsupported variable type: {VARIABLES_PROPERTIES[request['param']]['type']}")
+            raise ValueError(
+                f"Unsupported variable type: {VARIABLES_PROPERTIES[request['param']]['type']}"
+            )
 
 
-    
 class ReaLCh1Base(Source):
     """REA-L-CH1 data source base."""
 
@@ -167,19 +170,24 @@ class ReaLCh1Base(Source):
         self._processing_request = None
 
         self.request = BASE_FDB_REQUEST | request.copy()
-        self.request["param"] = [VARIABLES_PROPERTIES[var]["paramId"] for var in request["param"]]
+        self.request["param"] = [
+            VARIABLES_PROPERTIES[var]["paramId"] for var in request["param"]
+        ]
 
         # requests for pressure levels are deferred to processing step (interpolation)
         # so the initial request is modified to get model levels instead
         if request["levtype"] == "pl":
             self.request["levtype"] = "ml"
             self.request["levelist"] = "1/to/81"
-            self._processing_request = {"levtype": request["levtype"], "levelist": request["levelist"]}
+            self._processing_request = {
+                "levtype": request["levtype"],
+                "levelist": request["levelist"],
+            }
 
             if "FI" in request["param"]:
                 request["param"].remove("FI")
                 self._processing_request["param"] = "FI"
-        
+
         self.grid = grid_registry.from_config({"icon": {"path": ICON_GRID_PATH}})
 
         # pre-load constants
@@ -201,39 +209,58 @@ class ReaLCh1Base(Source):
         ekd.FieldList
             The FieldList with the grid assigned.
         """
-        return new_fieldlist_from_list([new_field_from_grid(field, self.grid) for field in fl])
-    
+        return new_fieldlist_from_list(
+            [new_field_from_grid(field, self.grid) for field in fl]
+        )
+
     @abc.abstractmethod
     def prepare_request(self, datetimes: list[datetime]) -> dict[str, Any]:
         pass
-    
-    def process_data(self, fl: ekd.FieldList) -> ekd.FieldList:
 
+    def process_data(self, fl: ekd.FieldList) -> ekd.FieldList:
         out_fl = ekd.SimpleFieldList()
         time_keys = set()
         for paramgroup in fl.group_by("param"):
             date, time, step = set(paramgroup.metadata("date", "time", "step")).pop()
             if self._processing_request and self._processing_request["levtype"] == "pl":
                 if (date, time, step) not in time_keys:
-                    pressure_fields = ekd.from_source("fdb", self.request | {
+                    pressure_fields = ekd.from_source(
+                        "fdb",
+                        self.request
+                        | {
                             "param": 500001,
                             "date": date,
                             "time": time,
                             "step": step,
-                        }
+                        },
                     )
-                    pressure_fields = next(iter(to_meteodatalab(pressure_fields).values()))
+                    pressure_fields = next(
+                        iter(to_meteodatalab(pressure_fields).values())
+                    )
 
                     if "FI" in self._processing_request.get("param", []):
                         now = datetime.now()
                         fi_pl = _interpolate_to_pressure_levels(
-                            {"FI": self.constants["FI"].assign_coords(pressure_fields.coords)},
+                            {
+                                "FI": self.constants["FI"].assign_coords(
+                                    pressure_fields.coords
+                                )
+                            },
                             pressure_fields,
-                            [float(lvl) for lvl in self._processing_request["levelist"]],
+                            [
+                                float(lvl)
+                                for lvl in self._processing_request["levelist"]
+                            ],
                         )
                         fi_pl = from_meteodatalab(fi_pl)
                         elapsed = (datetime.now() - now).total_seconds()
-                        LOG.info("Interpolation to pressure levels for param=FI, date=%s, time=%s, step=%s completed in %s seconds.", date, time, step, elapsed)
+                        LOG.info(
+                            "Interpolation to pressure levels for param=FI, date=%s, time=%s, step=%s completed in %s seconds.",
+                            date,
+                            time,
+                            step,
+                            elapsed,
+                        )
                         for field in fi_pl.order_by("valid_time"):
                             out_fl.append(field)
 
@@ -246,7 +273,14 @@ class ReaLCh1Base(Source):
                 )
                 paramgroup = from_meteodatalab(paramgroup)
                 elapsed = (datetime.now() - now).total_seconds()
-                LOG.info("Interpolation to pressure levels for param=%s, date=%s, time=%s, step=%s completed in %s seconds.", paramgroup[0].metadata("param"), date, time, step, elapsed)
+                LOG.info(
+                    "Interpolation to pressure levels for param=%s, date=%s, time=%s, step=%s completed in %s seconds.",
+                    paramgroup[0].metadata("param"),
+                    date,
+                    time,
+                    step,
+                    elapsed,
+                )
             for field in paramgroup.order_by("valid_time"):
                 field = override_time_metadata(field)
                 out_fl.append(field)
@@ -255,14 +289,16 @@ class ReaLCh1Base(Source):
 
         return out_fl
 
-
     def execute(self, dates: list[datetime]) -> ekd.FieldList:
         request = self.prepare_request(dates)
         self._last_request = request
         LOG.info("Submitting FDB request: %s", request)
         now = datetime.now()
         fl = ekd.from_source("fdb", request, stream=True)
-        LOG.info("FDB request completed in %s seconds.", (datetime.now() - now).total_seconds())
+        LOG.info(
+            "FDB request completed in %s seconds.",
+            (datetime.now() - now).total_seconds(),
+        )
         fl = self.process_data(fl)
         fl = self.assign_grid(fl)
         return fl
@@ -275,7 +311,7 @@ class _Instantaneous(ReaLCh1Base):
     def time_request(datetimes: list[datetime]) -> dict[str, Any]:
         """Defines the time-related keys for the FDB request."""
         dates = set()
-        steps = set()        
+        steps = set()
         for dt in datetimes:
             dates.add(dt.strftime("%Y%m%d"))
             steps.add(int((dt - dt.replace(hour=0, minute=0)).total_seconds() // 3600))
@@ -284,16 +320,16 @@ class _Instantaneous(ReaLCh1Base):
             "time": "0000",
             "step": sorted(steps),
         }
-    
-    def prepare_request(self, dates: list[datetime]) -> dict[str, Any]: 
+
+    def prepare_request(self, dates: list[datetime]) -> dict[str, Any]:
         return self.request | self.time_request(dates)
 
-class _AccumulationFromStart(ReaLCh1Base):
 
+class _AccumulationFromStart(ReaLCh1Base):
     def __init__(self, context, request: dict[str], accumulation_period_hours: int = 1):
         self.accumulation_period_hours = accumulation_period_hours
         super().__init__(context, request)
-        
+
     @staticmethod
     def time_request(datetimes: list[datetime]) -> dict[str, Any]:
         """Defines the time-related keys for the FDB request."""
@@ -310,19 +346,19 @@ class _AccumulationFromStart(ReaLCh1Base):
                 continue
             dates.add(dt.strftime("%Y%m%d"))
             steps.add(int((dt - dt.replace(hour=0, minute=0)).total_seconds() // 3600))
-        
+
         return {
             "date": sorted(dates),
             "time": "0000",
             "step": sorted(steps),
         }
-    
+
     def prepare_request(self, dates: list[datetime]) -> dict[str, Any]:
         """Ensure unique and sorted dates."""
 
         if len(set(dates)) != len((dates := sorted(dates))):
             raise ValueError("dates must be unique and sorted.")
-        
+
         # add previous datetimes for accumulation
         accum_steps = []
         for step in range(1, self.accumulation_period_hours + 1):
@@ -338,16 +374,22 @@ class _AccumulationFromStart(ReaLCh1Base):
         for paramgroup in fl.group_by("param"):
             for field in paramgroup.order_by("valid_time")[::-1]:
                 field = override_time_metadata(field)
-                valid_time = datetime.strptime(field.metadata("valid_time"), "%Y-%m-%dT%H:%M:%S")
-                accum_start_valid_time = valid_time - timedelta(hours=self.accumulation_period_hours)
-                accum_start_field = paramgroup.sel(valid_time=datetime.strftime(
-                    accum_start_valid_time,
-                    "%Y-%m-%dT%H:%M:%S",
-                ))
+                valid_time = datetime.strptime(
+                    field.metadata("valid_time"), "%Y-%m-%dT%H:%M:%S"
+                )
+                accum_start_valid_time = valid_time - timedelta(
+                    hours=self.accumulation_period_hours
+                )
+                accum_start_field = paramgroup.sel(
+                    valid_time=datetime.strftime(
+                        accum_start_valid_time,
+                        "%Y-%m-%dT%H:%M:%S",
+                    )
+                )
                 if len(accum_start_field) == 0:
                     # for now, skip fields where we don't have the previous accumulation start field
                     # a check is done later to ensure all expected fields are present
-                    continue  
+                    continue
                 if len(accum_start_field) > 1:
                     raise ValueError(
                         f"Expected a single field for accumulation start at {accum_start_valid_time}, "
@@ -358,28 +400,41 @@ class _AccumulationFromStart(ReaLCh1Base):
                 # then the value is the sum of the current value and the difference between
                 # the previous day 24h accumulation and the previous field value
                 if accum_start_valid_time < valid_time:
-                    LOG.debug("Handling accumulation crossing previous day boundary. valid_time=%s, accum_start_valid_time=%s", valid_time, accum_start_valid_time)
+                    LOG.debug(
+                        "Handling accumulation crossing previous day boundary. valid_time=%s, accum_start_valid_time=%s",
+                        valid_time,
+                        accum_start_valid_time,
+                    )
                     day_boundary_valid_time = valid_time.replace(hour=0, minute=0)
-                    day_boundary_accum_field = paramgroup.sel(valid_time=datetime.strftime(
-                        day_boundary_valid_time,
-                        "%Y-%m-%dT%H:%M:%S",
-                    ))
+                    day_boundary_accum_field = paramgroup.sel(
+                        valid_time=datetime.strftime(
+                            day_boundary_valid_time,
+                            "%Y-%m-%dT%H:%M:%S",
+                        )
+                    )
                     if len(day_boundary_accum_field) == 0:
                         raise ValueError(
                             f"Cannot compute accumulation for field at {valid_time} and "
                             f"period of {self.accumulation_period_hours}h, missing previous "
                             f"day boundary field at {day_boundary_valid_time}."
                         )
-                    accum_field = field.values + (day_boundary_accum_field.values - accum_start_field.values).squeeze()
+                    accum_field = (
+                        field.values
+                        + (
+                            day_boundary_accum_field.values - accum_start_field.values
+                        ).squeeze()
+                    )
                     start_step = f"-{encode_step(timedelta(hours=self.accumulation_period_hours))}"
                     md = field.metadata().override(startStep=start_step)
                     accum_fl.append(field.copy(values=accum_field, metadata=md))
                     continue
-                
+
                 # in the regular case, the accumulation is simply the difference
                 # between the current and the previous field
                 accum_field = field.values - accum_field.values
-                start_step = f"-{encode_step(timedelta(hours=self.accumulation_period_hours))}"
+                start_step = (
+                    f"-{encode_step(timedelta(hours=self.accumulation_period_hours))}"
+                )
                 md = field.metadata().override(startStep=start_step)
                 accum_fl.append(field.copy(values=accum_field, metadata=md))
         return accum_fl
@@ -388,10 +443,10 @@ class _AccumulationFromStart(ReaLCh1Base):
 def override_time_metadata(field: ekd.Field) -> ekd.Field:
     """Override time-related metadata of a field.
 
-    Each field in the returned FieldList will have its metadata modified 
-    to have time keys encoded as one would expect for a reanalysis dataset. 
-    That is, the data datetime will be set to the validity datetime and the 
-    step will be set to 0; the startStep/endStep (important for 
+    Each field in the returned FieldList will have its metadata modified
+    to have time keys encoded as one would expect for a reanalysis dataset.
+    That is, the data datetime will be set to the validity datetime and the
+    step will be set to 0; the startStep/endStep (important for
     accumulations/aggregations) will also be adjusted accordingly.
 
     Parameters
@@ -419,26 +474,26 @@ def override_time_metadata(field: ekd.Field) -> ekd.Field:
             time_keys["startStep"] = f"-{encode_step(end_step)}"
         case _:
             raise ValueError(f"Unsupported stepType: {md['stepType']}")
-    
+
     md = md.override(time_keys)
     field = field.copy(values=field.values, metadata=md)
     return field
 
 
-
 def _interpolate_to_pressure_levels(
-        fields: dict[str, xr.DataArray],
-        pressure: xr.DataArray,
-        p_lev: list[float],
-    ) -> dict[str, xr.DataArray]:
+    fields: dict[str, xr.DataArray],
+    pressure: xr.DataArray,
+    p_lev: list[float],
+) -> dict[str, xr.DataArray]:
     """Interpolate to pressure levels and extrapolate below the surface where needed."""
     pressure[{"z": 0}] = pressure[{"z": 0}].where(
         pressure[{"z": 0}] < 5000, 5000 - 1e-5
     )
     for name, field in fields.items():
-        fields[name] = vertical_interpolation.interpolate_k2p(field, "linear_in_lnp", pressure, p_lev, "hPa")
+        fields[name] = vertical_interpolation.interpolate_k2p(
+            field, "linear_in_lnp", pressure, p_lev, "hPa"
+        )
     return fields
-
 
 
 G = 9.80665

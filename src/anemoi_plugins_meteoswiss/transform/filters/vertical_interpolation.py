@@ -6,8 +6,8 @@ from anemoi.transform.filter import Filter
 from meteodatalab.operators import vertical_extrapolation
 from meteodatalab.operators import vertical_interpolation
 
-from mch_anemoi_plugins.helpers import from_meteodatalab
-from mch_anemoi_plugins.helpers import to_meteodatalab
+from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
+from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
 
 SFC_VCOORD_TYPES = [
     "surface",

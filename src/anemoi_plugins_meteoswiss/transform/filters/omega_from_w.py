@@ -2,8 +2,8 @@ import earthkit.data as ekd
 import xarray as xr
 from anemoi.transform.filter import Filter
 
-from mch_anemoi_plugins.helpers import from_meteodatalab
-from mch_anemoi_plugins.helpers import to_meteodatalab
+from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
+from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
 
 G = 9.80665
 R_D = 287.053

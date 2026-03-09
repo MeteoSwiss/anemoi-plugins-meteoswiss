@@ -3,6 +3,7 @@ import logging
 import earthkit.data as ekd
 import xarray as xr
 from anemoi.transform.filter import Filter
+from earthkit.meteo import vertical
 from meteodatalab.operators import vertical_extrapolation
 from meteodatalab.operators import vertical_interpolation
 
@@ -42,36 +43,81 @@ class InterpK2P(Filter):
         self.ext_levels = ext_levels
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
-        ds = to_meteodatalab(data)
+        # ds = to_meteodatalab(data)
 
-        # make sure constant variables have same time coordinates as other fields
-        time_coords = {
-            k: ds["P"].coords[k] for k in ["ref_time", "lead_time", "valid_time"]
-        }
-        for var in [
-            "HSURF",
-            "HHL",
-            "h",
-        ]:  # for some reason 'HHL' is sometimes decoded as 'h'
-            if var not in ds:
-                continue
-            ds[var] = xr.DataArray(
-                ds[var].values.repeat(ds["P"].shape[2], axis=2),
-                dims=ds[var].dims,
-                coords=dict(ds[var].coords) | time_coords,
-                attrs=ds[var].attrs,
-            )
+        # # make sure constant variables have same time coordinates as other fields
+        # time_coords = {
+        #     k: ds["P"].coords[k] for k in ["ref_time", "lead_time", "valid_time"]
+        # }
+        # for var in [
+        #     "HSURF",
+        #     "HHL",
+        #     "h",
+        # ]:  # for some reason 'HHL' is sometimes decoded as 'h'
+        #     if var not in ds:
+        #         continue
+        #     ds[var] = xr.DataArray(
+        #         ds[var].values.repeat(ds["P"].shape[2], axis=2),
+        #         dims=ds[var].dims,
+        #         coords=dict(ds[var].coords) | time_coords,
+        #         attrs=ds[var].attrs,
+        #     )
 
-        ds = _interpolate_to_pressure_levels(
-            ds,
-            ds.pop("P"),
-            self.levels,
-            self.ext_levels,
+        # ds = _interpolate_to_pressure_levels(
+        #     ds,
+        #     ds.pop("P"),
+        #     self.levels,
+        #     self.ext_levels,
+        # )
+
+        # data = from_meteodatalab(ds)
+
+
+
+        # pressure field
+        pressure = data.sel(shortName="P").to_xarray()["P"]
+        # ensure all values at the top-most level are below 5000 hPa
+        # else the interpolation will leave NaNs at the top
+        pressure[{"level": 0}] = pressure[{"level": 0}].where(
+            pressure[{"level": 0}] < 5000, 5000 - 1e-5
         )
 
-        data = from_meteodatalab(ds)
+        out = ekd.SimpleFieldList()
 
-        return data
+        for fields in data.group_by("shortName"):
+            md = fields[0].metadata()
+            param = md["shortName"]
+
+            # skip pressure and fields on unsuited vertical levels
+            if param == "P" or md.get("typeOfLevel") != "generalVerticalLayer":
+                continue
+
+            LOG.info("Interpolating %s to pressure levels %s", param, self.levels)
+            da = fields.to_xarray()[param]
+            interp = vertical.interpolate_to_pressure_levels(
+                da,
+                pressure,
+                self.levels,
+                "hPa",
+                "log",
+                "level",
+            )
+
+            # reconstruct fields
+            for i, lev in enumerate(interp.level.values):
+                field_da = interp.isel(level=i)
+                metadata_mod = md.override(
+                    typeOfLevel="isobaricInhPa",
+                    level=int(lev),
+                )
+                out.append(
+                    ekd.ArrayField(
+                        field_da.values,
+                        metadata_mod,
+                    )
+                )
+
+        return out
 
 
 def _interpolate_to_pressure_levels(

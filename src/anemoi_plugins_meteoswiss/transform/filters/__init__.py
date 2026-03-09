@@ -4,8 +4,11 @@ from .geopotential_from_height import GeopotentialFromHeight
 from .grid import AssignGrid
 from .omega_from_w import OmegaFromW
 from .vertical_interpolation import InterpK2P
+from .lambda_filters import LambdaFilter
+from .time_integration import AverageFluxToCumulativeQuantity
 
 __all__ = [
+    "AverageFluxToCumulativeQuantity",
     "ClipLateralBoundaries",
     "Destagger",
     "AssignGrid",
@@ -14,5 +17,6 @@ __all__ = [
     "InterpNAFilter",
     "Interp2Res",
     "OmegaFromW",
+    "LambdaFilter",
     "GeopotentialFromHeight",
 ]

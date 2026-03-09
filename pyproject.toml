@@ -17,7 +17,9 @@ dependencies = [
 anemoi-plugins-meteoswiss = "anemoi_plugins_meteoswiss:main"
 
 [project.entry-points."anemoi.transform.filters"]
+average-flux-to-cumulative-quantity = "anemoi_plugins_meteoswiss.transform.filters:AverageFluxToCumulativeQuantity"
 destagger = "anemoi_plugins_meteoswiss.transform.filters:Destagger"
+lambda = "anemoi_plugins_meteoswiss.transform.filters:LambdaFilter"
 clip-lateral-boundaries = "anemoi_plugins_meteoswiss.transform.filters:ClipLateralBoundaries"
 interp-k2p = "anemoi_plugins_meteoswiss.transform.filters:InterpK2P"
 assign-grid = "anemoi_plugins_meteoswiss.transform.filters:AssignGrid"

@@ -17,6 +17,7 @@ dependencies = [
 anemoi-plugins-meteoswiss = "anemoi_plugins_meteoswiss:main"
 
 [project.entry-points."anemoi.transform.filters"]
+average-flux-to-cumulative-quantity = "anemoi_plugins_meteoswiss.transform.filters:AverageFluxToCumulativeQuantity"
 destagger = "anemoi_plugins_meteoswiss.transform.filters:Destagger"
 clip-lateral-boundaries = "anemoi_plugins_meteoswiss.transform.filters:ClipLateralBoundaries"
 interp-k2p = "anemoi_plugins_meteoswiss.transform.filters:InterpK2P"
@@ -26,6 +27,7 @@ geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:Geopoten
 
 [project.entry-points."anemoi.datasets.create.sources"]
 rea-l-ch1-precip = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1Precip"
+rea-l-ch1-wind-gust = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1WindGust"
 
 [build-system]
 requires = ["hatchling"]

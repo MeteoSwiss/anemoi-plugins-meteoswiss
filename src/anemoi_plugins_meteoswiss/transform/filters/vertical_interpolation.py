@@ -7,8 +7,6 @@ from earthkit.meteo import vertical
 from meteodatalab.operators import vertical_extrapolation
 from meteodatalab.operators import vertical_interpolation
 
-from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
-from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
 
 SFC_VCOORD_TYPES = [
     "surface",
@@ -20,7 +18,12 @@ LOG = logging.getLogger(__name__)
 
 
 class InterpK2P(Filter):
-    """A filter to perform vertical interpolation from model to pressure levels."""
+    """
+    A filter to perform vertical interpolation from model to pressure levels.
+
+    Some parameters need to be in the data: P.
+
+    """
 
     def __init__(
         self,
@@ -43,36 +46,8 @@ class InterpK2P(Filter):
         self.ext_levels = ext_levels
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
-        # ds = to_meteodatalab(data)
-
-        # # make sure constant variables have same time coordinates as other fields
-        # time_coords = {
-        #     k: ds["P"].coords[k] for k in ["ref_time", "lead_time", "valid_time"]
-        # }
-        # for var in [
-        #     "HSURF",
-        #     "HHL",
-        #     "h",
-        # ]:  # for some reason 'HHL' is sometimes decoded as 'h'
-        #     if var not in ds:
-        #         continue
-        #     ds[var] = xr.DataArray(
-        #         ds[var].values.repeat(ds["P"].shape[2], axis=2),
-        #         dims=ds[var].dims,
-        #         coords=dict(ds[var].coords) | time_coords,
-        #         attrs=ds[var].attrs,
-        #     )
-
-        # ds = _interpolate_to_pressure_levels(
-        #     ds,
-        #     ds.pop("P"),
-        #     self.levels,
-        #     self.ext_levels,
-        # )
-
-        # data = from_meteodatalab(ds)
-
-
+        # metadata of pressure field (needed to make time info consistent)
+        p_md = data.sel(shortName="P")[0].metadata()
 
         # pressure field
         pressure = data.sel(shortName="P").to_xarray()["P"]
@@ -85,16 +60,26 @@ class InterpK2P(Filter):
         out = ekd.SimpleFieldList()
 
         for fields in data.group_by("shortName"):
-            md = fields[0].metadata()
-            param = md["shortName"]
+            _field = fields[0]
+            param = _field.metadata().get("shortName")
+
+            # make sure constant variables have same time coordinates as other fields
+            if param in ("HHL", "h", "HSURF"):
+                _field = _field.copy(
+                    metadata=_field.metadata().override(
+                        date=p_md.get("date"),
+                        time=p_md.get("time"),
+                        step=p_md.get("step"),
+                    )
+                )
 
             # skip pressure and fields on unsuited vertical levels
-            if param == "P" or md.get("typeOfLevel") != "generalVerticalLayer":
+            if param == "P" or _field.metadata().get("typeOfLevel") != "generalVerticalLayer":
                 continue
 
-            LOG.info("Interpolating %s to pressure levels %s", param, self.levels)
             da = fields.to_xarray()[param]
-            interp = vertical.interpolate_to_pressure_levels(
+            LOG.info("Interpolating %s to pressure levels %s", param, self.levels)
+            pinterp = vertical.interpolate_to_pressure_levels(
                 da,
                 pressure,
                 self.levels,
@@ -104,20 +89,25 @@ class InterpK2P(Filter):
             )
 
             # reconstruct fields
-            for i, lev in enumerate(interp.level.values):
-                field_da = interp.isel(level=i)
-                metadata_mod = md.override(
-                    typeOfLevel="isobaricInhPa",
-                    level=int(lev),
-                )
-                out.append(
-                    ekd.ArrayField(
-                        field_da.values,
-                        metadata_mod,
-                    )
-                )
+            _construct_fields(out, pinterp, _field)
 
         return out
+
+def _construct_fields(
+    out: ekd.SimpleFieldList,
+    da: xr.DataArray,
+    template: ekd.core.fieldlist.Field,
+):
+    for i, lev in enumerate(da.level.values):
+        field_da = da.isel(level=i)
+        out.append(
+            template.clone(
+                values=field_da.values,
+                typeOfLevel="isobaricInhPa",
+                level=int(lev),
+                levelist=int(lev),
+            )
+        )
 
 
 def _interpolate_to_pressure_levels(

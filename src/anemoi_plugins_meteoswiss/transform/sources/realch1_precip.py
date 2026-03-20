@@ -13,7 +13,6 @@ from typing import Any
 
 import earthkit.data as ekd
 from anemoi.datasets.create.source import Source
-from anemoi.datasets.create.sources import source_registry
 from anemoi.transform.fields import new_field_from_grid
 from anemoi.transform.fields import new_fieldlist_from_list
 from anemoi.transform.grids import grid_registry
@@ -31,7 +30,6 @@ FDB_REQUEST = {
 ICON_GRID_PATH = "/scratch/mch/jenkins/icon/pool/data/ICON/mch/grids/icon-1/icon_grid_0001_R19B08_mch.nc"
 
 
-@source_registry.register("rea-l-ch1-precip")
 class ReaLCh1Precip(Source):
     """REA-L-CH1 data source plugin."""
 

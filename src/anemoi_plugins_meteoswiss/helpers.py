@@ -59,7 +59,7 @@ def _meteodalab_ds_to_fieldlist(ds: dict[str, xr.DataArray]) -> ekd.FieldList:
     with io.BytesIO() as buffer:
         # write data to the buffer
         for da in ds.values():
-            if "z" in da.dims and da["z"].size == 1 and bool(da["z"].values is None):
+            if "z" in da.dims and da["z"].size == 1 and bool(da["z"].values[0] is None):
                 da = da.squeeze("z", drop=True)
             grib_decoder.save(
                 da, buffer, bits_per_value=32

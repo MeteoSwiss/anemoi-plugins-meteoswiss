@@ -4,14 +4,14 @@ from .geopotential_from_height import GeopotentialFromHeight
 from .grid import AssignGrid
 from .omega_from_w import OmegaFromW
 from .time_processing import AverageFluxToCumulativeQuantity
-from .vertical_interpolation import InterpK2P
+from .vertical_interpolation import ModelToPressureLevel
 
 __all__ = [
     "AverageFluxToCumulativeQuantity",
     "ClipLateralBoundaries",
     "Destagger",
     "AssignGrid",
-    "InterpK2P",
+    "ModelToPressureLevel",
     "Interp2Grid",
     "InterpNAFilter",
     "Interp2Res",

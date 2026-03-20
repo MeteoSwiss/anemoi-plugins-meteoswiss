@@ -9,6 +9,7 @@ dependencies = [
     "anemoi-datasets",
     "anemoi-plugins",
     "anemoi-transform",
+    "earthkit-meteo",
     "meteodata-lab",
 ]
 
@@ -20,7 +21,7 @@ anemoi-plugins-meteoswiss = "anemoi_plugins_meteoswiss:main"
 average-flux-to-cumulative-quantity = "anemoi_plugins_meteoswiss.transform.filters:AverageFluxToCumulativeQuantity"
 destagger = "anemoi_plugins_meteoswiss.transform.filters:Destagger"
 clip-lateral-boundaries = "anemoi_plugins_meteoswiss.transform.filters:ClipLateralBoundaries"
-interp-k2p = "anemoi_plugins_meteoswiss.transform.filters:InterpK2P"
+model-to-pressure-level = "anemoi_plugins_meteoswiss.transform.filters:ModelToPressureLevel"
 assign-grid = "anemoi_plugins_meteoswiss.transform.filters:AssignGrid"
 omega-from-w = "anemoi_plugins_meteoswiss.transform.filters:OmegaFromW"
 geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:GeopotentialFromHeight"
@@ -41,4 +42,5 @@ dev = [
 
 [tool.uv.sources]
 anemoi-plugins = { git = "https://github.com/ecmwf/anemoi-plugins.git" }
+earthkit-meteo = { git = "https://github.com/ecmwf/earthkit-meteo.git" , rev = "develop" }
 meteodata-lab = { git = "https://github.com/MeteoSwiss/meteodata-lab.git", rev = "main" }

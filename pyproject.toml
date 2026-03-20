@@ -9,6 +9,7 @@ dependencies = [
     "anemoi-datasets",
     "anemoi-plugins",
     "anemoi-transform",
+    "earthkit-meteo",
     "meteodata-lab",
 ]
 

@@ -1,11 +1,12 @@
 import logging
+from datetime import datetime
 from typing import Literal
 
 import earthkit.data as ekd
 import numpy as np
 import xarray as xr
 from anemoi.transform.filter import Filter
-from earthkit.meteo import vertical
+from earthkit.meteo.vertical.interpolation import interpolate_to_pressure_levels
 
 SFC_VCOORD_TYPES = [
     "surface",
@@ -16,128 +17,154 @@ SFC_VCOORD_TYPES = [
 LOG = logging.getLogger(__name__)
 
 
-class InterpK2P(Filter):
+BASE_REQUEST = {
+    "stream": "reanl",
+    "class": "rd",
+    "expver": "r001",
+    "model": "icon-rea-l-ch1",
+    "type": "cf",
+}
+
+# silence logs from 'anemoi.transform'
+logging.getLogger("anemoi.transform").setLevel(logging.CRITICAL)
+
+
+class ModelToPressureLevel(Filter):
     """
     A filter to perform vertical interpolation from model to pressure levels.
-
-    Some parameters need to be in the data: P, PS, HSURF/h, T_2M.
-
+    Also performs extrapolation for values below orography that would be otherwise
+    undefined. Auxiliary variables are needed:
+        - HHL: model levels height
+        - HSURF: surface height
+        - T_2M: 2-meter temperature
+        - PS: surface pressure
     """
 
     def __init__(
         self,
-        levels: list[float],
-        ext_levels: list[float] = [],
+        interpolate_levels: list[float],
+        extrapolate_levels: list[float] = [],
     ):
         """Initialize the filter.
 
         Parameters
         ----------
-        levels: list of numbers
+        interpolate_levels : list of float
             The pressure levels to interpolate to, in hPa.
-        ext_levels: list of numbers, optional
+        extrapolate_levels : list of float, optional
             The pressure levels to extrapolate to below the surface, in hPa.
+
         """
 
         super().__init__()
 
-        self.levels = levels
-        self.ext_levels = ext_levels
+        self.interpolate_levels = interpolate_levels
+        self.extrapolate_levels = extrapolate_levels
+
+        constant_time_keys = {"date": "20200101", "time": "0000", "step": "0"}
+        hhl_constant_keys = {
+            "param": "HHL",
+            "levtype": "ml",
+            "levelist": "1/to/81",
+        } | constant_time_keys
+        self.hhl = self.load_auxiliary(hhl_constant_keys)["HHL"]
+        hsurf_constant_keys = {"param": "HSURF", "levtype": "sfc"} | constant_time_keys
+        self.hsurf = self.load_auxiliary(hsurf_constant_keys)["HSURF"]
+
+    def _construct_time_request(self, date: datetime | None):
+        if date is None:
+            return {}
+        base = date.replace(hour=0, minute=0, second=0, microsecond=0)
+        step = int((date - base).total_seconds() // 3600)
+        return {"date": base.strftime("%Y%m%d"), "time": "0000", "step": str(step)}
+
+    def load_auxiliary(
+        self, extra_request_keys: dict, date: datetime | None = None
+    ) -> xr.Dataset:
+        # Load auxiliary data based on the request keys and date
+        # TODO: if date is None, assume it's static keys
+        request = BASE_REQUEST | extra_request_keys
+        request |= self._construct_time_request(date)
+        return ekd.from_source("fdb", request).to_xarray()
+
+    def surface_temperature(self, date: datetime) -> xr.DataArray:
+        extra_request_keys = {"param": "T_2M", "levtype": "sfc"}
+        ds = self.load_auxiliary(extra_request_keys, date)
+        return ds["T_2M"]
+
+    def surface_pressure(self, date: datetime) -> xr.DataArray:
+        extra_request_keys = {"param": "PS", "levtype": "sfc"}
+        ds = self.load_auxiliary(extra_request_keys, date)
+        return ds["PS"]
+
+    def pressure(self, date: datetime) -> xr.DataArray:
+        extra_request_keys = {"param": "P", "levtype": "ml", "levelist": "1/to/81"}
+        da = self.load_auxiliary(extra_request_keys, date)["P"]
+        da[{"level": 0}] = da[{"level": 0}].where(da[{"level": 0}] < 5000, 5000 - 1e-5)
+        return da
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
-        # metadata of pressure field (needed to make time info consistent)
-        p_md = data.sel(shortName="P")[0].metadata()
+        out = ekd.FieldList()
+        for time_group in data.group_by("validTime"):
+            valid_datetime = time_group[0].metadata("valid_datetime")
+            valid_datetime = datetime.strptime(valid_datetime, "%Y-%m-%dT%H:%M:%S")
+            t2m = self.surface_temperature(valid_datetime)
+            ps = self.surface_pressure(valid_datetime)
+            p = self.pressure(valid_datetime)
+            for param_group in time_group.group_by("shortName"):
+                template_field = param_group[0]
+                param = template_field.metadata("shortName")
+                da = param_group.to_xarray()[param]
 
-        # pressure field
-        pressure = data.sel(shortName="P").to_xarray()["P"]
-        # ensure all values at the top-most level are below 5000 hPa
-        # else the interpolation will leave NaNs at the top
-        pressure[{"level": 0}] = pressure[{"level": 0}].where(
-            pressure[{"level": 0}] < 5000, 5000 - 1e-5
-        )
-        # topography height
-        hsurf = data.sel(shortName="HSURF").to_xarray()["HSURF"]
-        # 2m temperature
-        t2m = data.sel(shortName="T_2M").to_xarray()["T_2M"]
-        # surface pressure
-        ps = data.sel(shortName="PS").to_xarray()["PS"]
+                if param == "W":
+                    da = destagger_z(da)
 
-        out = ekd.SimpleFieldList()
+                LOG.info(
+                    "Interpolating %s to pressure levels %s",
+                    param,
+                    self.interpolate_levels,
+                )
+                interp = interpolate_to_pressure_levels(
+                    da, p, self.interpolate_levels, "hPa", "log", "level"
+                )
 
-        for fields in data.group_by("shortName"):
-            _field = fields[0]
-            param = _field.metadata().get("shortName")
-
-            # make sure constant variables have same time coordinates as other fields
-            if param in ("HHL", "h", "HSURF"):
-                _field = _field.copy(
-                    metadata=_field.metadata().override(
-                        date=p_md.get("date"),
-                        time=p_md.get("time"),
-                        step=p_md.get("step"),
+                LOG.info(
+                    "Extrapolating %s below surface for pressure levels %s",
+                    param,
+                    self.extrapolate_levels,
+                )
+                for p_level in self.extrapolate_levels:
+                    idx = {"level": [el for el in interp.level].index(p_level * 100)}
+                    if param == "T":
+                        extrap = extrapolate_temperature_sfc2p(
+                            t2m, self.hsurf, ps, p_level * 100
+                        )
+                    elif param == "FI":
+                        extrap = extrapolate_geopotential_sfc2p(
+                            self.hsurf, t2m, ps, p_level * 100
+                        )
+                    else:
+                        extrap = extrapolate_k2p(da, p_level * 100)
+                    interp[idx] = interp[idx].where(
+                        interp[idx].notnull(),
+                        extrap.squeeze().assign_coords(level=p_level * 100),
                     )
-                )
+                out += interp.earthkit.to_fieldlist()
 
-            # skip pressure and fields on unsuited vertical levels
-            if (
-                param == "P"
-                or _field.metadata().get("typeOfLevel") != "generalVerticalLayer"
-            ):
-                continue
-
-            da = fields.to_xarray()[param]
-            LOG.info("Interpolating %s to pressure levels %s", param, self.levels)
-            interp = vertical.interpolate_to_pressure_levels(
-                da,
-                pressure,
-                self.levels,
-                "hPa",
-                "log",
-                "level",
-            )
-
-            LOG.info(
-                "Extrapolating %s below surface for pressure levels %s",
-                param,
-                self.ext_levels,
-            )
-            for p in self.ext_levels:
-                idx = {"level": self.levels.index(p)}
-                if param == "T":
-                    extrap = extrapolate_temperature_sfc2p(t2m, hsurf, ps, p * 100)
-                elif param == "FI":
-                    extrap = extrapolate_geopotential_sfc2p(hsurf, t2m, ps, p * 100)
-                else:
-                    extrap = extrapolate_k2p(da, p * 100)
-                interp[idx] = interp[idx].where(
-                    interp[idx].notnull(), extrap.squeeze().assign_coords(level=p)
-                )
-
-            # reconstruct fields
-            _construct_fields(out, interp, _field)
-
-        return out
+        return _override_pressure_level_units(out)
 
 
-def _construct_fields(
-    out: ekd.SimpleFieldList,
-    da: xr.DataArray,
-    template: ekd.core.fieldlist.Field,
-):
-    for i, lev in enumerate(da.level.values):
-        field_da = da.isel(level=i)
-        # clone() allows to set inconsistent metadata: switching to isobaricInPa
-        # means that eccodes exposes level (not the mars keyword levelist) in the
-        # metadata - but for some reason anemoi-datasets uses levelist downstream
-        # to determine the levels (can we change that? is it configurable?)
-        out.append(
-            template.clone(
-                values=field_da.values,
-                typeOfLevel="isobaricInhPa",
-                level=int(lev),
-                levelist=int(lev),
-            )
-        )
+def _override_pressure_level_units(fields):
+    out = ekd.SimpleFieldList()
+    for field in fields:
+        level_hpa = int(int(field.metadata("level")) / 100)
+        overrides = {
+            "typeOfLevel": "isobaricInhPa",
+            "level": level_hpa,
+            "levelist": level_hpa,
+        }
+        out.append(field.clone(**overrides))
+    return out
 
 
 ###
@@ -340,3 +367,21 @@ def _assign_vcoord(x: xr.DataArray, p_target: float) -> xr.DataArray:
         x = x.expand_dims(level=[p_target])
     x["level"].attrs = attrs
     return x
+
+
+def destagger_z(field: xr.DataArray) -> xr.DataArray:
+    """Destagger a field in the vertical (z) direction."""
+    dims = list(field.sizes.keys())
+    out = (
+        xr.apply_ufunc(
+            lambda a: 0.5 * (a[..., :-1] + a[..., 1:]),
+            field,
+            input_core_dims=[["level"]],
+            output_core_dims=[["level"]],
+            exclude_dims={"level"},
+            keep_attrs=True,
+        )
+        .transpose(*dims)
+        .assign_coords(level=field.level[:-1])
+    )
+    return out

@@ -44,6 +44,7 @@ class ModelToPressureLevel(Filter):
         self,
         interpolate_levels: list[float],
         extrapolate_levels: list[float] = [],
+        add_geopotential: bool = True,
     ):
         """Initialize the filter.
 
@@ -53,6 +54,8 @@ class ModelToPressureLevel(Filter):
             The pressure levels to interpolate to, in hPa.
         extrapolate_levels : list of float, optional
             The pressure levels to extrapolate to below the surface, in hPa.
+        add_geopotential : bool, optional
+            Whether to add geopotential (FI) to the output FieldList.
 
         """
 
@@ -60,16 +63,27 @@ class ModelToPressureLevel(Filter):
 
         self.interpolate_levels = interpolate_levels
         self.extrapolate_levels = extrapolate_levels
+        self.add_geopotential = add_geopotential
 
+        # constant auxiliary variables
         constant_time_keys = {"date": "20200101", "time": "0000", "step": "0"}
+
         hhl_constant_keys = {
             "param": "HHL",
             "levtype": "ml",
             "levelist": "1/to/81",
         } | constant_time_keys
-        self.hhl = self.load_auxiliary(hhl_constant_keys)["HHL"]
+        hhl = self.load_auxiliary(hhl_constant_keys).to_fieldlist()
+        _fi_values = (destagger_z(hhl.to_xarray()["HHL"]) * 9.80665).values
+        _fi_md = [
+            md.override(shortName="FI", typeOfLevel="generalVerticalLayer")
+            for md in hhl[:-1].metadata()
+        ]
+        self.fi = ekd.FieldList.from_array(_fi_values, _fi_md).to_xarray()["FI"]
+
+        # surface height (orography)
         hsurf_constant_keys = {"param": "HSURF", "levtype": "sfc"} | constant_time_keys
-        self.hsurf = self.load_auxiliary(hsurf_constant_keys)["HSURF"]
+        self.hsurf = self.load_auxiliary(hsurf_constant_keys).to_xarray()["HSURF"]
 
     def _construct_time_request(self, date: datetime | None):
         if date is None:
@@ -80,32 +94,72 @@ class ModelToPressureLevel(Filter):
 
     def load_auxiliary(
         self, extra_request_keys: dict, date: datetime | None = None
-    ) -> xr.Dataset:
+    ) -> ekd.FieldList:
         # Load auxiliary data based on the request keys and date
         # TODO: if date is None, assume it's static keys
         request = BASE_REQUEST | extra_request_keys
         request |= self._construct_time_request(date)
-        return ekd.from_source("fdb", request).to_xarray()
+        return ekd.from_source("fdb", request)
 
     def surface_temperature(self, date: datetime) -> xr.DataArray:
         extra_request_keys = {"param": "T_2M", "levtype": "sfc"}
-        ds = self.load_auxiliary(extra_request_keys, date)
+        ds = self.load_auxiliary(extra_request_keys, date).to_xarray()
         return ds["T_2M"]
 
     def surface_pressure(self, date: datetime) -> xr.DataArray:
         extra_request_keys = {"param": "PS", "levtype": "sfc"}
-        ds = self.load_auxiliary(extra_request_keys, date)
+        ds = self.load_auxiliary(extra_request_keys, date).to_xarray()
         return ds["PS"]
 
     def pressure(self, date: datetime) -> xr.DataArray:
         extra_request_keys = {"param": "P", "levtype": "ml", "levelist": "1/to/81"}
-        da = self.load_auxiliary(extra_request_keys, date)["P"]
+        da = self.load_auxiliary(extra_request_keys, date).to_xarray()["P"]
         da[{"level": 0}] = da[{"level": 0}].where(da[{"level": 0}] < 5000, 5000 - 1e-5)
         return da
 
+    def interpolate_extrapolate(
+        self,
+        da: xr.DataArray,
+        p: xr.DataArray,
+        t2m: xr.DataArray,
+        ps: xr.DataArray,
+        param: str,
+    ) -> xr.DataArray:
+        LOG.info(
+            "Interpolating %s to pressure levels %s",
+            param,
+            self.interpolate_levels,
+        )
+        interp = interpolate_to_pressure_levels(
+            da, p, self.interpolate_levels, "hPa", "log", "level"
+        )
+
+        LOG.info(
+            "Extrapolating %s below surface for pressure levels %s",
+            param,
+            self.extrapolate_levels,
+        )
+        for p_level in self.extrapolate_levels:
+            idx = {"level": [el for el in interp.level].index(p_level * 100)}
+            if param == "T":
+                extrap = extrapolate_temperature_sfc2p(
+                    t2m, self.hsurf, ps, p_level * 100
+                )
+            elif param == "FI":
+                extrap = extrapolate_geopotential_sfc2p(
+                    self.hsurf, t2m, ps, p_level * 100
+                )
+            else:
+                extrap = extrapolate_k2p(da, p_level * 100)
+            interp[idx] = interp[idx].where(
+                interp[idx].notnull(),
+                extrap.squeeze().assign_coords(level=p_level * 100),
+            )
+        return interp
+
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
         out = ekd.FieldList()
-        for time_group in data.group_by("validTime"):
+        for time_group in data.group_by("validityTime"):
             valid_datetime = time_group[0].metadata("valid_datetime")
             valid_datetime = datetime.strptime(valid_datetime, "%Y-%m-%dT%H:%M:%S")
             t2m = self.surface_temperature(valid_datetime)
@@ -119,39 +173,29 @@ class ModelToPressureLevel(Filter):
                 if param == "W":
                     da = destagger_z(da)
 
-                LOG.info(
-                    "Interpolating %s to pressure levels %s",
-                    param,
-                    self.interpolate_levels,
+                out += self.interpolate_extrapolate(
+                    da, p, t2m, ps, param
+                ).earthkit.to_fieldlist()
+            if self.add_geopotential:
+                time_metadata = time_group[0].metadata(namespace="time")
+                _fi = _override_time_metadata_on_constant_auxiliary(
+                    self.fi, time_metadata
                 )
-                interp = interpolate_to_pressure_levels(
-                    da, p, self.interpolate_levels, "hPa", "log", "level"
-                )
-
-                LOG.info(
-                    "Extrapolating %s below surface for pressure levels %s",
-                    param,
-                    self.extrapolate_levels,
-                )
-                for p_level in self.extrapolate_levels:
-                    idx = {"level": [el for el in interp.level].index(p_level * 100)}
-                    if param == "T":
-                        extrap = extrapolate_temperature_sfc2p(
-                            t2m, self.hsurf, ps, p_level * 100
-                        )
-                    elif param == "FI":
-                        extrap = extrapolate_geopotential_sfc2p(
-                            self.hsurf, t2m, ps, p_level * 100
-                        )
-                    else:
-                        extrap = extrapolate_k2p(da, p_level * 100)
-                    interp[idx] = interp[idx].where(
-                        interp[idx].notnull(),
-                        extrap.squeeze().assign_coords(level=p_level * 100),
-                    )
-                out += interp.earthkit.to_fieldlist()
-
+                out += self.interpolate_extrapolate(
+                    _fi, p, t2m, ps, "FI"
+                ).earthkit.to_fieldlist()
         return _override_pressure_level_units(out)
+
+
+def _override_time_metadata_on_constant_auxiliary(
+    da: xr.DataArray, time_metadata: dict
+) -> xr.DataArray:
+    """Metadata override for constant auxiliary fields."""
+    del time_metadata["validityDate"]  # read-only
+    del time_metadata["validityTime"]  # read-only
+    md = da.earthkit.metadata.override(**time_metadata)
+    da.attrs["_earthkit"]["message"] = md._handle.get_buffer()
+    return da
 
 
 def _override_pressure_level_units(fields):

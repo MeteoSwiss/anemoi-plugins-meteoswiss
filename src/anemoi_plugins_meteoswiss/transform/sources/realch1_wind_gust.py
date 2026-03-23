@@ -62,16 +62,18 @@ class ReaLCh1WindGust(Source):
         self.grid = grid_registry.from_config({"icon": {"path": ICON_GRID_PATH}})
 
     def execute(self, dates: list[datetime]) -> ekd.FieldList:
-        dates = _prepare_dates(dates, self.aggregation_period_minutes)
-        if len(dates) != self.aggregation_period_minutes // DT:
-            raise ValueError(
-                f"Expected {self.aggregation_period_minutes // DT} dates needed for aggregation, got {len(dates)}."
-            )
+        out = []
+        for date in dates:
+            aggregation_dates = _prepare_dates(date, self.aggregation_period_minutes)
+            if len(aggregation_dates) != self.aggregation_period_minutes // DT:
+                raise ValueError(
+                    f"Expected {self.aggregation_period_minutes // DT} dates needed for aggregation, got {len(dates)}."
+                )
 
-        fieldlist = _get_data_from_fdb(self.request, dates)
-        field = _aggregate(fieldlist)
-        fieldlist = new_fieldlist_from_list([new_field_from_grid(field, self.grid)])
-        return fieldlist
+            fieldlist = _get_data_from_fdb(self.request, aggregation_dates)
+            field = _aggregate(fieldlist)
+            out.append(new_field_from_grid(field, self.grid))
+        return new_fieldlist_from_list(out)
 
 
 def _as_fct_time_request(dt: datetime) -> str:
@@ -92,18 +94,13 @@ def _as_fct_time_request(dt: datetime) -> str:
     return out
 
 
-def _prepare_dates(
-    dates: list[datetime], aggregation_period_minutes: int
-) -> list[datetime]:
+def _prepare_dates(date: datetime, aggregation_period_minutes: int) -> list[datetime]:
     """Ensure unique and sorted dates."""
-    if len(set(dates)) != len((dates := sorted(dates))):
-        raise ValueError("dates must be unique and sorted.")
-
     # add previous datetimes for aggregation
     required_dates = []
     for step in range(DT, aggregation_period_minutes, DT):
-        required_dates.append(dates[0] - timedelta(minutes=step))
-    dates = sorted(set(dates) | set(required_dates))
+        required_dates.append(date - timedelta(minutes=step))
+    dates = sorted(set([date] + required_dates))
     return dates
 
 

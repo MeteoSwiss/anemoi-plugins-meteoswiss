@@ -118,7 +118,7 @@ def _get_data_from_fdb(request: dict[str, Any], dates: list[datetime]):
     for request in requests:
         fl += ekd.from_source("fdb", request, read_all=True)
 
-    return fl
+    return ekd.FieldList.from_fields([f.clone(level=None, levelist=None) for f in fl])
 
 
 def _aggregate(fl: ekd.FieldList) -> ekd.FieldList:

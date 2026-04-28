@@ -104,9 +104,7 @@ def test_gaussian_smoother(data_dir, hostname):
         pytest.skip("Only runs on Balfrin.")
 
     regridder = IconRemapToRegLatLon(ICONREMAP_WEIGHTS)
-    smoother = GaussianSmoother(
-        sigma=5, nx=regridder.nx, ny=regridder.ny, params=["T_2M"]
-    )
+    smoother = GaussianSmoother(sigma=5, params=["T_2M"])
 
     fn = str(data_dir / "iaf2025010100")
     fs = ekd.from_source("file", fn)

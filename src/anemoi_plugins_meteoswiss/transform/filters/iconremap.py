@@ -97,7 +97,9 @@ class IconRemapToRegLatLon(Filter):
             regridded[~self.valid_mask] = np.nan
             result.append(
                 new_field_from_latitudes_longitudes(
-                    new_field_from_numpy(regridded, template=field),
+                    new_field_from_numpy(
+                        regridded.reshape(self.ny, self.nx), template=field
+                    ),
                     latitudes=self._latitudes,
                     longitudes=self._longitudes,
                 )

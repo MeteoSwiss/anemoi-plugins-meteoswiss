@@ -17,18 +17,12 @@ class GaussianSmoother(Filter):
     ----------
     sigma:
         Standard deviation of the Gaussian kernel in grid cells.
-    nx:
-        Number of grid columns (longitude axis).
-    ny:
-        Number of grid rows (latitude axis).
     params:
         Short names of the parameters to smooth. If omitted, all fields are smoothed.
     """
 
-    def __init__(self, sigma: float, nx: int, ny: int, params: list[str] | None = None):
+    def __init__(self, sigma: float, params: list[str] | None = None):
         self.sigma = sigma
-        self.nx = nx
-        self.ny = ny
         self.params = set(params) if params is not None else None
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
@@ -40,7 +34,7 @@ class GaussianSmoother(Filter):
             ):
                 result.append(field)
                 continue
-            values = field.to_numpy(flatten=True).reshape(self.ny, self.nx)
+            values = field.to_numpy(flatten=True).reshape(field.shape)
             result.append(
                 new_field_from_numpy(
                     _smooth(values, self.sigma).ravel(), template=field

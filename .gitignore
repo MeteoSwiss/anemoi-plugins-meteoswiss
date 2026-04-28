@@ -123,3 +123,4 @@ _dev/
 
 # Project specific
 uv.lock
+_ekd_cache/

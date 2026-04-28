@@ -1,10 +1,9 @@
 import earthkit.data as ekd
 import numpy as np
-from scipy.ndimage import gaussian_filter
-
 from anemoi.transform.fields import new_field_from_numpy
 from anemoi.transform.fields import new_fieldlist_from_list
 from anemoi.transform.filter import Filter
+from scipy.ndimage import gaussian_filter
 
 
 class GaussianSmoother(Filter):
@@ -35,11 +34,18 @@ class GaussianSmoother(Filter):
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
         result = []
         for field in data:
-            if self.params is not None and field.metadata("shortName") not in self.params:
+            if (
+                self.params is not None
+                and field.metadata("shortName") not in self.params
+            ):
                 result.append(field)
                 continue
             values = field.to_numpy(flatten=True).reshape(self.ny, self.nx)
-            result.append(new_field_from_numpy(_smooth(values, self.sigma).ravel(), template=field))
+            result.append(
+                new_field_from_numpy(
+                    _smooth(values, self.sigma).ravel(), template=field
+                )
+            )
         return new_fieldlist_from_list(result)
 
 

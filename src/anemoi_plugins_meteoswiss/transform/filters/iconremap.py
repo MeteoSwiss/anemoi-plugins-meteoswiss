@@ -25,7 +25,9 @@ def _rot_to_geo(
     rlon = np.radians(rlon_deg)
     rlat = np.radians(rlat_deg)
 
-    sin_lat = np.sin(pollat) * np.sin(rlat) + np.cos(pollat) * np.cos(rlat) * np.cos(rlon)
+    sin_lat = np.sin(pollat) * np.sin(rlat) + np.cos(pollat) * np.cos(rlat) * np.cos(
+        rlon
+    )
     lat = np.degrees(np.arcsin(np.clip(sin_lat, -1.0, 1.0)))
 
     dlon_rad = np.arctan2(

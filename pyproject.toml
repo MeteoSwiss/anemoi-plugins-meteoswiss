@@ -7,10 +7,10 @@ authors = [{ name = "MeteoSwiss" }]
 requires-python = ">=3.11"
 dependencies = [
     "anemoi-datasets",
-    "anemoi-plugins @ git+https://github.com/ecmwf/anemoi-plugins.git",
+    "anemoi-plugins == 0.2.0",
     "anemoi-transform",
-    "earthkit-meteo @ git+https://github.com/ecmwf/earthkit-meteo.git@develop",
-    "meteodata-lab @ git+https://github.com/MeteoSwiss/meteodata-lab.git@main",
+    "earthkit-meteo == 0.6.2",
+    "meteodata-lab == 0.6.0",
 ]
 
 
@@ -21,7 +21,7 @@ anemoi-plugins-meteoswiss = "anemoi_plugins_meteoswiss:main"
 average-flux-to-cumulative-quantity = "anemoi_plugins_meteoswiss.transform.filters:AverageFluxToCumulativeQuantity"
 destagger = "anemoi_plugins_meteoswiss.transform.filters:Destagger"
 clip-lateral-boundaries = "anemoi_plugins_meteoswiss.transform.filters:ClipLateralBoundaries"
-model-to-pressure-level = "anemoi_plugins_meteoswiss.transform.filters:ModelToPressureLevel"
+# model-to-pressure-level = "anemoi_plugins_meteoswiss.transform.filters:ModelToPressureLevel"
 assign-grid = "anemoi_plugins_meteoswiss.transform.filters:AssignGrid"
 gaussian-smoother = "anemoi_plugins_meteoswiss.transform.filters:GaussianSmoother"
 icon-remap-to-reg-lat-lon = "anemoi_plugins_meteoswiss.transform.filters:IconRemapToRegLatLon"
@@ -48,4 +48,3 @@ dev = [
     "pre-commit>=4.5.1",
     "pytest>=9.0.2",
 ]
-

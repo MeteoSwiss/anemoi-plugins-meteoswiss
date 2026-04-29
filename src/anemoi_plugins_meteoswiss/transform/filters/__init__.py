@@ -6,7 +6,7 @@ from .iconremap import IconRemapToRegLatLon
 from .omega_from_w import OmegaFromW
 from .smoothing import GaussianSmoother
 from .time_processing import AverageFluxToCumulativeQuantity
-from .vertical_interpolation import ModelToPressureLevel
+# from .vertical_interpolation import ModelToPressureLevel
 
 __all__ = [
     "AverageFluxToCumulativeQuantity",

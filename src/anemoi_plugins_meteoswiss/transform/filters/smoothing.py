@@ -30,7 +30,7 @@ class GaussianSmoother(Filter):
         for field in data:
             if (
                 self.params is not None
-                and field.metadata("shortName") not in self.params
+                and _field_name(field) not in self.params
             ):
                 result.append(field)
                 continue
@@ -41,6 +41,15 @@ class GaussianSmoother(Filter):
                 )
             )
         return new_fieldlist_from_list(result)
+
+
+def _field_name(field) -> str | None:
+    for key in ("shortName", "param", "name"):
+        try:
+            return field.metadata(key)
+        except (KeyError, Exception):
+            pass
+    return None
 
 
 def _smooth(grid: np.ndarray, sigma: float) -> np.ndarray:

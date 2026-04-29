@@ -7,10 +7,10 @@ authors = [{ name = "MeteoSwiss" }]
 requires-python = ">=3.11"
 dependencies = [
     "anemoi-datasets",
-    "anemoi-plugins",
+    "anemoi-plugins @ git+https://github.com/ecmwf/anemoi-plugins.git",
     "anemoi-transform",
-    "earthkit-meteo",
-    "meteodata-lab",
+    "earthkit-meteo @ git+https://github.com/ecmwf/earthkit-meteo.git@develop",
+    "meteodata-lab @ git+https://github.com/MeteoSwiss/meteodata-lab.git@main",
 ]
 
 
@@ -40,13 +40,12 @@ rea-l-ch1-wind-gust = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1WindGu
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [dependency-groups]
 dev = [
     "pre-commit>=4.5.1",
     "pytest>=9.0.2",
 ]
 
-[tool.uv.sources]
-anemoi-plugins = { git = "https://github.com/ecmwf/anemoi-plugins.git" }
-earthkit-meteo = { git = "https://github.com/ecmwf/earthkit-meteo.git" , rev = "develop" }
-meteodata-lab = { git = "https://github.com/MeteoSwiss/meteodata-lab.git", rev = "main" }

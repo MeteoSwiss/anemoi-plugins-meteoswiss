@@ -1,3 +1,5 @@
+import fnmatch
+
 import earthkit.data as ekd
 import numpy as np
 from anemoi.transform.fields import new_field_from_numpy
@@ -18,20 +20,25 @@ class GaussianSmoother(Filter):
     sigma:
         Standard deviation of the Gaussian kernel in grid cells.
     params:
-        Short names of the parameters to smooth. If omitted, all fields are smoothed.
+        Names (or glob patterns, e.g. ``z_*``) of the parameters to smooth.
+        If omitted, all fields are smoothed.
     """
 
     def __init__(self, sigma: float, params: list[str] | None = None):
         self.sigma = sigma
-        self.params = set(params) if params is not None else None
+        self.params = list(params) if params is not None else None
+
+    def _matches(self, name: str | None) -> bool:
+        if self.params is None:
+            return True
+        if name is None:
+            return False
+        return any(fnmatch.fnmatch(name, pat) for pat in self.params)
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
         result = []
         for field in data:
-            if (
-                self.params is not None
-                and _field_name(field) not in self.params
-            ):
+            if not self._matches(_field_name(field)):
                 result.append(field)
                 continue
             values = field.to_numpy(flatten=True).reshape(field.shape)

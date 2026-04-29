@@ -9,8 +9,8 @@ dependencies = [
     "anemoi-datasets",
     "anemoi-plugins == 0.2.0",
     "anemoi-transform",
-    "earthkit-meteo == 0.5.1",
-    "meteodata-lab @ git+https://github.com/MeteoSwiss/meteodata-lab.git@main",
+    "earthkit-meteo == 0.5.0",
+    "meteodata-lab == 0.6.0",
 ]
 
 

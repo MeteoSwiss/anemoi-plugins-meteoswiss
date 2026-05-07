@@ -11,6 +11,7 @@ dependencies = [
     "anemoi-transform",
     "earthkit-meteo",
     "meteodata-lab",
+    "pandas",
 ]
 
 
@@ -29,6 +30,7 @@ geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:Geopoten
 [project.entry-points."anemoi.datasets.create.sources"]
 rea-l-ch1-precip = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1Precip"
 rea-l-ch1-wind-gust = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1WindGust"
+synop-dwh = "anemoi_plugins_meteoswiss.transform.sources:SynopDwhSource"
 
 [build-system]
 requires = ["hatchling"]

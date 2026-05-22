@@ -25,7 +25,7 @@ class SynopDwhSource(Source):
     """Retrieves Swiss synop station observations from DWH and exposes them as a
     gridded earthkit FieldList (one cell per station)."""
 
-    emoji = "📡"
+    emoji = "🗂️"
 
     def __init__(
         self,

@@ -1,7 +1,9 @@
 """Subprocess wrapper around `jretrievedwh.py`.
 
-Mirrors the auth/env-var setup that the operational zsh wrapper does, then
-invokes the Python REST client and parses CSV output into pandas DataFrames.
+Mirrors the auth/env-var setup that the operational osm wrapper
+(https://github.com/MeteoSwiss-APN/oprtools/blob/main/scripts/jretrievedwh)
+does, then invokes the Python REST client and parses CSV output into pandas
+DataFrames.
 """
 
 from __future__ import annotations

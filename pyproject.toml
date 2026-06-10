@@ -25,6 +25,7 @@ model-to-pressure-level = "anemoi_plugins_meteoswiss.transform.filters:ModelToPr
 assign-grid = "anemoi_plugins_meteoswiss.transform.filters:AssignGrid"
 omega-from-w = "anemoi_plugins_meteoswiss.transform.filters:OmegaFromW"
 geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:GeopotentialFromHeight"
+nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
 
 [project.entry-points."anemoi.datasets.create.sources"]
 rea-l-ch1-precip = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1Precip"

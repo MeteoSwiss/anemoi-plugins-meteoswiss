@@ -1,6 +1,7 @@
 from .clipping import ClipLateralBoundaries
 from .destaggering import Destagger
 from .geopotential_from_height import GeopotentialFromHeight
+from .nudging import NudgeObservation
 from .grid import AssignGrid
 from .omega_from_w import OmegaFromW
 from .time_processing import AverageFluxToCumulativeQuantity
@@ -17,4 +18,5 @@ __all__ = [
     "Interp2Res",
     "OmegaFromW",
     "GeopotentialFromHeight",
+    "NudgeTowardObservation",
 ]

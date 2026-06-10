@@ -10,9 +10,7 @@ dependencies = [
     "anemoi-plugins",
     "anemoi-transform",
     "earthkit-meteo",
-    "meteodata-lab",
 ]
-
 
 [project.scripts]
 anemoi-plugins-meteoswiss = "anemoi_plugins_meteoswiss:main"

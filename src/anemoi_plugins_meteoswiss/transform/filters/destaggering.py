@@ -1,9 +1,5 @@
 import earthkit.data as ekd
 from anemoi.transform.filter import Filter
-from meteodatalab.operators import destagger
-
-from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
-from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
 
 
 class Destagger(Filter):
@@ -21,6 +17,10 @@ class Destagger(Filter):
         self.param = list(param_dim.keys())
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
+        from meteodatalab.operators import destagger
+        from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
+        from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
+        
         ds = to_meteodatalab(data)
         for name, dim in self.param_dim.items():
             if name not in ds:

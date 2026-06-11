@@ -1,15 +1,13 @@
 import earthkit.data as ekd
 import numpy as np
 import pytest
-from meteodatalab import data_source
-from meteodatalab import grib_decoder
-
-from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
-from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
 
 
 def test_earthkit_meteodatalab_roundtrip(data_dir, hostname):
     """Test conversion to and from meteodatalab."""
+    from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
+    from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
+
     if not hostname.startswith("balfrin"):
         pytest.skip("Only runs on Balfrin.")
     fl_original = ekd.from_source("file", data_dir / "iaf2025010100")
@@ -20,6 +18,11 @@ def test_earthkit_meteodatalab_roundtrip(data_dir, hostname):
 
 def test_meteodatalab_earthkit_roundtrip(data_dir, hostname):
     """Test conversion to and from meteodatalab."""
+    from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
+    from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
+    from meteodatalab import data_source
+    from meteodatalab import grib_decoder
+
     if not hostname.startswith("balfrin"):
         pytest.skip("Only runs on Balfrin.")
     fds = data_source.FileDataSource(datafiles=[str(data_dir / "iaf2025010100")])
@@ -30,9 +33,12 @@ def test_meteodatalab_earthkit_roundtrip(data_dir, hostname):
 
 
 def test_earthkit_meteodatalab_oneway(data_dir, hostname):
+    """Test conversion to and from meteodatalab."""
+    from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
+
     if not hostname.startswith("balfrin"):
         pytest.skip("Only runs on Balfrin.")
-    """Test conversion to and from meteodatalab."""
+
     fl = ekd.from_source("file", data_dir / "iaf2025010100")
     ds = to_meteodatalab(fl)
     np.testing.assert_array_equal(
@@ -42,6 +48,10 @@ def test_earthkit_meteodatalab_oneway(data_dir, hostname):
 
 def test_meteodatalab_earthkit_oneway(data_dir, hostname):
     """Test conversion to and from meteodatalab."""
+    from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
+    from meteodatalab import data_source
+    from meteodatalab import grib_decoder
+
     if not hostname.startswith("balfrin"):
         pytest.skip("Only runs on Balfrin.")
     fds = data_source.FileDataSource(datafiles=[str(data_dir / "iaf2025010100")])

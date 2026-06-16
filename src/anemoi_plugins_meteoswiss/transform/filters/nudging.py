@@ -1,4 +1,5 @@
 import logging
+import sys
 from pathlib import Path
 
 import earthkit.data as ekd
@@ -10,7 +11,7 @@ LOG = logging.getLogger(__name__)
 class NudgeTowardObservation(Filter):
     """A filter that nudges the forecast toward observations"""
 
-    def __init__(self, nugget: float, observation_path: str):
+    def __init__(self, nugget: float, path_to_observation: str):
         """Initialize the filter.
 
         Parameters
@@ -21,14 +22,19 @@ class NudgeTowardObservation(Filter):
             Path to the observation data used for nudging.
         """
         self.nugget = nugget
-        self.observation_path = Path(observation_path)
+        self.path_to_observation = Path(path_to_observation)
+        LOG.info(
+            "NudgeTowardObservation filter active in init (nugget=%s, path_to_observation=%s)",
+            self.nugget,
+            self.path_to_observation,
+            )
         super().__init__()
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
         LOG.info(
-            "NudgeTowardObservation filter active (nugget=%s, observation_path=%s)",
+            "NudgeTowardObservation filter active (nugget=%s, path_to_observation=%s)",
             self.nugget,
-            self.observation_path,
+            self.path_to_observation,
             )
         for field in data:
             # TODO: apply nudging to some fields

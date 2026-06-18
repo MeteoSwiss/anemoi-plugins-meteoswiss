@@ -24,7 +24,7 @@ class NudgeTowardObservation(Filter):
         self.nugget = nugget
         self.path_to_observation = Path(path_to_observation)
         LOG.info(
-            "NudgeTowardObservation filter active in init (nugget=%s, path_to_observation=%s)",
+            "Initialised nudging filter with nugget=%.4f, observations from '%s'",
             self.nugget,
             self.path_to_observation,
             )
@@ -32,7 +32,7 @@ class NudgeTowardObservation(Filter):
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
         LOG.info(
-            "NudgeTowardObservation filter active (nugget=%s, path_to_observation=%s)",
+            "Applying nudging toward observations (nugget=%.4f, observations='%s')",
             self.nugget,
             self.path_to_observation,
             )

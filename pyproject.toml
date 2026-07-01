@@ -10,6 +10,7 @@ dependencies = [
     "anemoi-plugins",
     "anemoi-transform",
     "earthkit-meteo",
+    "peakweather",
 ]
 
 [project.scripts]
@@ -42,3 +43,4 @@ dev = [
 [tool.uv.sources]
 anemoi-plugins = { git = "https://github.com/ecmwf/anemoi-plugins.git" }
 earthkit-meteo = { git = "https://github.com/ecmwf/earthkit-meteo.git" , rev = "develop" }
+peakweather = { git = "https://github.com/MeteoSwiss/PeakWeather.git" }

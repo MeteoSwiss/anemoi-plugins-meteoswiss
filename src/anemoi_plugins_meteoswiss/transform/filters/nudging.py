@@ -1,4 +1,5 @@
 import logging
+import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -14,7 +15,10 @@ import xarray as xr
 
 LOG = logging.getLogger(__name__)
 
-# Maps GRIB shortName -> (PeakWeather column, unit offset applied to obs before nudging)
+# DWH parameter names used by jretrieve
+_JR_PARAMS = ["tre200s0", "fkl010z0", "dkl010z0"]  # 2 m temperature, wind speed, wind direction
+
+# Maps GRIB shortName -> (station DataFrame column, unit offset applied to obs before nudging)
 # Uses COSMO/ICON shortNames as output by the LAM forecaster
 PARAM_MAP = {
     "T_2M":   ("2t",            0.0),  # already in K after conversion below
@@ -106,13 +110,16 @@ class NudgeTowardObservation(Filter):
         k: int = 3,
         power: float = 4.0,
         max_dist: float = 0.5,
+        backend: str = "peakweather",
+        jretrieve_bbox: list = None,
+        jretrieve_src_path: str = "/scratch/mch/llanzila/sruc/evalml/src",
     ):
         """Initialize the filter.
 
         Parameters
         ----------
         path_to_observation : str
-            Root path of the PeakWeather dataset.
+            Root path of the PeakWeather dataset (used when backend='peakweather').
         k : int
             Number of nearest observation stations used in IDW interpolation.
         power : float
@@ -120,14 +127,29 @@ class NudgeTowardObservation(Filter):
         max_dist : float
             Tapering radius in degrees; correction fades to zero beyond this distance
             from the nearest station.
+        backend : str
+            Observation source: 'peakweather' (default) or 'jretrieve'.
+        jretrieve_bbox : list, optional
+            Bounding box [minlat, maxlat, minlon, maxlon] for station selection when
+            backend='jretrieve'. Defaults to a wide domain covering Switzerland and
+            surroundings: [40.5, 53.0, 0.0, 17.5].
+        jretrieve_src_path : str
+            Path to the directory containing the ``data_input`` package with
+            ``jretrieve.py`` (used when backend='jretrieve').
         """
+        if backend not in ("peakweather", "jretrieve"):
+            raise ValueError(f"backend must be 'peakweather' or 'jretrieve', got {backend!r}")
         self.path_to_observation = Path(path_to_observation)
         self.k = k
         self.power = power
         self.max_dist = max_dist
+        self.backend = backend
+        self.jretrieve_bbox = jretrieve_bbox if jretrieve_bbox is not None else [40.5, 53.0, 0.0, 17.5]
+        self.jretrieve_src_path = jretrieve_src_path
         self._nudging_done = False  # nudging is applied exactly once (first forward call)
         LOG.info(
-            "Initialised nudging filter: observations='%s', k=%d, power=%.1f, max_dist=%.2f",
+            "Initialised nudging filter: backend='%s', observations='%s', k=%d, power=%.1f, max_dist=%.2f",
+            self.backend,
             self.path_to_observation,
             self.k,
             self.power,
@@ -260,7 +282,13 @@ class NudgeTowardObservation(Filter):
         return new_fieldlist_from_list(result)  #data #
 
     def _load_stations(self, ref_time) -> pd.DataFrame:
-        """Load PeakWeather observations at ref_time and join with station metadata."""
+        """Dispatch to the configured observation backend."""
+        if self.backend == "jretrieve":
+            return self._load_stations_jretrieve(ref_time)
+        return self._load_stations_peakweather(ref_time)
+
+    def _load_stations_peakweather(self, ref_time) -> pd.DataFrame:
+        """Load observations at ref_time from a local PeakWeather dataset."""
         LOG.info("Initialising PeakWeatherDataset from '%s'", self.path_to_observation)
         peakweather = PeakWeatherDataset(
             root=self.path_to_observation, freq="1h", compute_uv=True
@@ -288,4 +316,51 @@ class NudgeTowardObservation(Filter):
         stations["2t"] += 273.15  # °C -> K
         LOG.info("Stations table built: %d rows", len(stations))
 
+        return stations
+
+    def _load_stations_jretrieve(self, ref_time) -> pd.DataFrame:
+        """Load observations at ref_time from the DWH via jretrieve."""
+        src_path = self.jretrieve_src_path
+        if src_path not in sys.path:
+            sys.path.insert(0, src_path)
+        from data_input import jretrieve as jr
+
+        stations_sel = {"bbox": self.jretrieve_bbox}
+        LOG.info("Checking jretrieve prerequisites")
+        jr.check_prerequisites()
+
+        LOG.info("Fetching station metadata (bbox=%s)", self.jretrieve_bbox)
+        meta = jr.fetch_meta(stations=stations_sel, params=_JR_PARAMS)
+        catalog = jr.StationCatalog.from_meta(meta)
+        LOG.info("Catalog built: %d stations", catalog.n)
+
+        LOG.info("Fetching observations at %s", ref_time)
+        df = jr.fetch_data(
+            stations=stations_sel,
+            params=_JR_PARAMS,
+            start=ref_time,
+            end=ref_time,
+            increment_minutes=60,
+        )
+
+        id_to_abbr = dict(zip(catalog.station_id, catalog.nat_abbr))
+        id_to_lat  = dict(zip(catalog.station_id, catalog.latitude))
+        id_to_lon  = dict(zip(catalog.station_id, catalog.longitude))
+
+        df["nat_abbr"]  = df["station"].map(id_to_abbr)
+        df["latitude"]  = df["station"].map(id_to_lat)
+        df["longitude"] = df["station"].map(id_to_lon)
+        df = df.dropna(subset=["nat_abbr"]).set_index("nat_abbr")
+        df.index.name = "station"
+
+        df["2t"]  = df["tre200s0"] + 273.15  # °C -> K
+        dd_rad    = np.deg2rad(df["dkl010z0"])
+        df["10u"] = -df["fkl010z0"] * np.sin(dd_rad)
+        df["10v"] = -df["fkl010z0"] * np.cos(dd_rad)
+
+        stations = df[["2t", "10u", "10v", "latitude", "longitude"]].copy()
+        LOG.info(
+            "Stations table built: %d rows, valid 2t: %d",
+            len(stations), int(stations["2t"].notna().sum()),
+        )
         return stations

@@ -150,16 +150,16 @@ class NudgeTowardObservation(Filter):
             toward station observations.
         """
         LOG.info("Fields in data (%d total):", len(data))
-        for f in data:
-            LOG.info(
-                "  shortName=%s, levtype=%s, level=%s, validityDate=%s validityTime=%s, shape=%s",
-                f.metadata("shortName"),
-                f.metadata("typeOfLevel"),
-                f.metadata("level"),
-                f.metadata("validityDate"),
-                f.metadata("validityTime"),
-                f.shape,
-            )
+        # for f in data:
+        #     LOG.info(
+        #         "  shortName=%s, levtype=%s, level=%s, validityDate=%s validityTime=%s, shape=%s",
+        #         f.metadata("shortName"),
+        #         f.metadata("typeOfLevel"),
+        #         f.metadata("level"),
+        #         f.metadata("validityDate"),
+        #         f.metadata("validityTime"),
+        #         f.shape,
+        #     )
         
         if self._nudging_done:
             LOG.info("Nudging already applied, passing through unchanged")
@@ -246,16 +246,16 @@ class NudgeTowardObservation(Filter):
         self._nudging_done = True # apply nudging to initial condition only
         
         LOG.info("Fields in data (%d total):", len(new_fieldlist_from_list(result)))
-        for f in new_fieldlist_from_list(result):
-            LOG.info(
-                "  shortName=%s, levtype=%s, level=%s, validityDate=%s validityTime=%s, shape=%s",
-                f.metadata("shortName"),
-                f.metadata("typeOfLevel"),
-                f.metadata("level"),
-                f.metadata("validityDate"),
-                f.metadata("validityTime"),
-                f.shape,
-            )
+        # for f in new_fieldlist_from_list(result):
+        #     LOG.info(
+        #         "  shortName=%s, levtype=%s, level=%s, validityDate=%s validityTime=%s, shape=%s",
+        #         f.metadata("shortName"),
+        #         f.metadata("typeOfLevel"),
+        #         f.metadata("level"),
+        #         f.metadata("validityDate"),
+        #         f.metadata("validityTime"),
+        #         f.shape,
+        #     )
         
         return new_fieldlist_from_list(result)  #data #
 

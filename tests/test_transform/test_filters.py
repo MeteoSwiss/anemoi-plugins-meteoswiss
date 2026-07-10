@@ -2,9 +2,8 @@ import earthkit.data as ekd
 import numpy as np
 import pytest
 from anemoi.transform.filters import filter_registry
-
-
 from numpy.testing import assert_array_equal
+
 from anemoi_plugins_meteoswiss.transform.filters import ClipLateralBoundaries
 from anemoi_plugins_meteoswiss.transform.filters import Destagger
 
@@ -13,9 +12,9 @@ def test_clip_lateral_boundaries(data_dir, hostname):
     if not hostname.startswith("balfrin"):
         pytest.skip("Only runs on Balfrin.")
 
-    from meteodatalab.operators.clip import clip_lateral_boundary_strip
     from meteodatalab import data_source
     from meteodatalab import grib_decoder
+    from meteodatalab.operators.clip import clip_lateral_boundary_strip
 
     fn = str(data_dir / "iaf2025010100")
     gridfile_fn = "/scratch/mch/jenkins/icon/pool/data/ICON/mch/grids/icon-1/icon_grid_0001_R19B08_mch.nc"
@@ -41,9 +40,10 @@ def test_destagger(data_dir, hostname):
     if not hostname.startswith("balfrin"):
         pytest.skip("Only runs on Balfrin.")
 
-    from meteodatalab.operators.destagger import destagger
     from meteodatalab import data_source
     from meteodatalab import grib_decoder
+    from meteodatalab.operators.destagger import destagger
+
     from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
 
     # test vertical destaggering

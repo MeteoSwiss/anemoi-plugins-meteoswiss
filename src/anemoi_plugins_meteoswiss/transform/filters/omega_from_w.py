@@ -24,7 +24,7 @@ class OmegaFromW(Filter):
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
         from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
         from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
-        
+
         ds = to_meteodatalab(data)
         ds["OMEGA"] = omega_from_w(ds.pop("W"), ds["T"], ds["P"])
         return from_meteodatalab(ds)

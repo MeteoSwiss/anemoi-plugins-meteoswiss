@@ -18,9 +18,10 @@ class Destagger(Filter):
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
         from meteodatalab.operators import destagger
+
         from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
         from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
-        
+
         ds = to_meteodatalab(data)
         for name, dim in self.param_dim.items():
             if name not in ds:

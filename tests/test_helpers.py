@@ -18,10 +18,11 @@ def test_earthkit_meteodatalab_roundtrip(data_dir, hostname):
 
 def test_meteodatalab_earthkit_roundtrip(data_dir, hostname):
     """Test conversion to and from meteodatalab."""
-    from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
-    from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
     from meteodatalab import data_source
     from meteodatalab import grib_decoder
+
+    from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
+    from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
 
     if not hostname.startswith("balfrin"):
         pytest.skip("Only runs on Balfrin.")
@@ -48,9 +49,10 @@ def test_earthkit_meteodatalab_oneway(data_dir, hostname):
 
 def test_meteodatalab_earthkit_oneway(data_dir, hostname):
     """Test conversion to and from meteodatalab."""
-    from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
     from meteodatalab import data_source
     from meteodatalab import grib_decoder
+
+    from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
 
     if not hostname.startswith("balfrin"):
         pytest.skip("Only runs on Balfrin.")

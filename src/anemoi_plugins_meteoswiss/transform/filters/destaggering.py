@@ -1,9 +1,39 @@
+import io
+
 import earthkit.data as ekd
 from anemoi.transform.filter import Filter
+from meteodatalab import data_source
+from meteodatalab import grib_decoder
 from meteodatalab.operators import destagger
 
-from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
-from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
+
+def to_meteodatalab(fieldlist: ekd.FieldList) -> dict:
+    source = _FieldListDataSource(fieldlist)
+    return grib_decoder.load(source, {})
+
+
+def from_meteodatalab(ds: dict) -> ekd.FieldList:
+    return _meteodatalab_ds_to_fieldlist(ds)
+
+
+class _FieldListDataSource(data_source.DataSource):
+    def __init__(self, fieldlist: ekd.FieldList):
+        self.fieldlist = fieldlist
+
+    def _retrieve(self, request: dict):
+        yield from self.fieldlist.sel(**request)
+
+
+def _meteodatalab_ds_to_fieldlist(ds: dict) -> ekd.FieldList:
+    with io.BytesIO() as buffer:
+        for da in ds.values():
+            if "z" in da.dims and da["z"].size == 1 and bool(da["z"].values[0] is None):
+                da = da.squeeze("z", drop=True)
+            grib_decoder.save(da, buffer, bits_per_value=32)
+        buffer.seek(0)
+        fs = ekd.from_source("stream", buffer, read_all=True, lazily=False)
+        fl = ekd.FieldList.from_fields(fs)
+    return fl
 
 
 class Destagger(Filter):

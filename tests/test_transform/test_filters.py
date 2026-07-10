@@ -4,37 +4,9 @@ import pytest
 from anemoi.transform.filters import filter_registry
 from meteodatalab import data_source
 from meteodatalab import grib_decoder
-from numpy.testing import assert_array_equal
 
-from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
-from anemoi_plugins_meteoswiss.transform.filters import ClipLateralBoundaries
 from anemoi_plugins_meteoswiss.transform.filters import Destagger
-
-
-def test_clip_lateral_boundaries(data_dir, hostname):
-    if not hostname.startswith("balfrin"):
-        pytest.skip("Only runs on Balfrin.")
-
-    from meteodatalab.operators.clip import clip_lateral_boundary_strip
-
-    fn = str(data_dir / "iaf2025010100")
-    gridfile_fn = "/scratch/mch/jenkins/icon/pool/data/ICON/mch/grids/icon-1/icon_grid_0001_R19B08_mch.nc"
-    strip_idx = 14
-
-    filter: ClipLateralBoundaries = filter_registry.create(
-        "clip_lateral_boundaries", strip_idx, gridfile_fn
-    )
-
-    # expected
-    source = data_source.FileDataSource(datafiles=[fn])
-    ds = grib_decoder.load(source, {"param": ["T_2M"]})
-    ds["T_2M"] = clip_lateral_boundary_strip(ds["T_2M"], strip_idx)
-
-    # actual
-    fieldlist = ekd.from_source("file", fn)
-    res = filter.forward(fieldlist)
-
-    assert_array_equal(ds["T_2M"].values.ravel(), res[0].values)
+from anemoi_plugins_meteoswiss.transform.filters.destaggering import from_meteodatalab
 
 
 def test_destagger(data_dir, hostname):

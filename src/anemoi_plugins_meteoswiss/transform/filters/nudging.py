@@ -15,16 +15,29 @@ import xarray as xr
 
 LOG = logging.getLogger(__name__)
 
-# DWH parameter names used by jretrieve
-_JR_PARAMS = ["tre200s0", "fkl010z0", "dkl010z0"]  # 2 m temperature, wind speed, wind direction
-
 # Maps GRIB shortName -> (station DataFrame column, unit offset applied to obs before nudging)
 # Uses COSMO/ICON shortNames as output by the LAM forecaster
 PARAM_MAP = {
-    "T_2M":   ("2t",            0.0),  # already in K after conversion below
-    "U_10M":  ("10u",           0.0),
-    "V_10M":  ("10v",           0.0),
+    "T_2M":     ("2t",            0.0),  # already in K after conversion below
+    "U_10M":    ("10u",           0.0),
+    "V_10M":    ("10v",           0.0),
     "TOT_PREC": ("precipitation", 0.0),
+}
+
+# Maps station column -> PeakWeather parameter names required to produce it
+_STATION_COL_TO_PW_PARAMS = {
+    "2t":            ["temperature"],
+    "10u":           ["wind_u", "wind_v"],  # U and V are derived together
+    "10v":           ["wind_u", "wind_v"],
+    "precipitation": ["precipitation"],
+}
+
+# Maps station column -> DWH (jretrieve) parameter names required to produce it
+_STATION_COL_TO_JR_PARAMS = {
+    "2t":            ["tre200s0"],
+    "10u":           ["fkl010z0", "dkl010z0"],  # wind speed + direction -> U/V
+    "10v":           ["fkl010z0", "dkl010z0"],
+    "precipitation": [],  # not yet supported via jretrieve
 }
 
 
@@ -113,6 +126,7 @@ class NudgeTowardObservation(Filter):
         backend: str = "peakweather",
         jretrieve_bbox: list = None,
         jretrieve_src_path: str = "/scratch/mch/llanzila/sruc/evalml/src",
+        nudge_variables: list = None,
     ):
         """Initialize the filter.
 
@@ -136,6 +150,9 @@ class NudgeTowardObservation(Filter):
         jretrieve_src_path : str
             Path to the directory containing the ``data_input`` package with
             ``jretrieve.py`` (used when backend='jretrieve').
+        nudge_variables : list, optional
+            GRIB shortNames to nudge, e.g. ``["T_2M"]``. Must be keys of PARAM_MAP.
+            Defaults to all variables in PARAM_MAP.
         """
         if backend not in ("peakweather", "jretrieve"):
             raise ValueError(f"backend must be 'peakweather' or 'jretrieve', got {backend!r}")
@@ -146,11 +163,19 @@ class NudgeTowardObservation(Filter):
         self.backend = backend
         self.jretrieve_bbox = jretrieve_bbox if jretrieve_bbox is not None else [40.5, 53.0, 0.0, 17.5]
         self.jretrieve_src_path = jretrieve_src_path
+        if nudge_variables is not None:
+            unknown = set(nudge_variables) - PARAM_MAP.keys()
+            if unknown:
+                raise ValueError(f"Unknown variables for nudging: {unknown}. Valid: {list(PARAM_MAP)}")
+            self.param_map = {k: PARAM_MAP[k] for k in nudge_variables}
+        else:
+            self.param_map = PARAM_MAP
         self._nudging_done = False  # nudging is applied exactly once (first forward call)
         LOG.info(
-            "Initialised nudging filter: backend='%s', observations='%s', k=%d, power=%.1f, max_dist=%.2f",
+            "Initialised nudging filter: backend='%s', observations='%s', variables=%s, k=%d, power=%.1f, max_dist=%.2f",
             self.backend,
             self.path_to_observation,
+            list(self.param_map.keys()),
             self.k,
             self.power,
             self.max_dist,
@@ -210,7 +235,7 @@ class NudgeTowardObservation(Filter):
             if col in stations.columns:
                 LOG.info("  %s: %d valid / %d total", col, int(stations[col].notna().sum()), len(stations))
 
-        nudgeable_shortnames = list(PARAM_MAP.keys())
+        nudgeable_shortnames = list(self.param_map.keys())
         fields_to_nudge = data.sel(shortName=nudgeable_shortnames)
         LOG.info("Fields selected for nudging: %d (shortNames=%s, valid_time=%s)", len(fields_to_nudge), nudgeable_shortnames, ref_time)
 
@@ -223,7 +248,7 @@ class NudgeTowardObservation(Filter):
                 LOG.info("Skipping '%s' at step %s (not initial condition)", shortname, step)
                 continue
 
-            pw_param, offset = PARAM_MAP[shortname]
+            pw_param, offset = self.param_map[shortname]
             LOG.info("Processing field '%s' -> pw_param='%s', step=%s", shortname, pw_param, step)
 
             if pw_param not in stations.columns or stations[pw_param].isna().all():
@@ -289,15 +314,19 @@ class NudgeTowardObservation(Filter):
 
     def _load_stations_peakweather(self, ref_time) -> pd.DataFrame:
         """Load observations at ref_time from a local PeakWeather dataset."""
+        needed_cols = {col for col, _ in self.param_map.values()}
+        pw_params = list(dict.fromkeys(
+            p for col in needed_cols for p in _STATION_COL_TO_PW_PARAMS.get(col, [])
+        ))
         LOG.info("Initialising PeakWeatherDataset from '%s'", self.path_to_observation)
         peakweather = PeakWeatherDataset(
             root=self.path_to_observation, freq="1h", compute_uv=True
         )
         first_date = f"{ref_time - timedelta(hours=1):%Y-%m-%d %H:%M}"
         last_date = f"{ref_time:%Y-%m-%d %H:%M}"
-        LOG.info("Fetching observations: first_date='%s', last_date='%s'", first_date, last_date)
+        LOG.info("Fetching observations: first_date='%s', last_date='%s', params=%s", first_date, last_date, pw_params)
         obs, mask = peakweather.get_observations(
-            parameters=["temperature", "humidity", "wind_u", "wind_v"],
+            parameters=pw_params,
             first_date=first_date,
             last_date=last_date,
             return_mask=True,
@@ -313,7 +342,8 @@ class NudgeTowardObservation(Filter):
         peakweather.stations_table.index.names = ["station"]
         stations = pd.concat([obs, peakweather.stations_table], axis=1)
         stations = stations.rename(columns={"temperature": "2t", "wind_u": "10u", "wind_v": "10v"})
-        stations["2t"] += 273.15  # °C -> K
+        if "2t" in stations.columns:
+            stations["2t"] += 273.15  # °C -> K
         LOG.info("Stations table built: %d rows", len(stations))
 
         return stations
@@ -325,19 +355,26 @@ class NudgeTowardObservation(Filter):
             sys.path.insert(0, src_path)
         from data_input import jretrieve as jr
 
+        needed_cols = {col for col, _ in self.param_map.values()}
+        jr_params = list(dict.fromkeys(
+            p for col in needed_cols for p in _STATION_COL_TO_JR_PARAMS.get(col, [])
+        ))
+        if not jr_params:
+            raise ValueError(f"No jretrieve parameters found for station columns: {needed_cols}")
+
         stations_sel = {"bbox": self.jretrieve_bbox}
         LOG.info("Checking jretrieve prerequisites")
         jr.check_prerequisites()
 
-        LOG.info("Fetching station metadata (bbox=%s)", self.jretrieve_bbox)
-        meta = jr.fetch_meta(stations=stations_sel, params=_JR_PARAMS)
+        LOG.info("Fetching station metadata (bbox=%s, params=%s)", self.jretrieve_bbox, jr_params)
+        meta = jr.fetch_meta(stations=stations_sel, params=jr_params)
         catalog = jr.StationCatalog.from_meta(meta)
         LOG.info("Catalog built: %d stations", catalog.n)
 
         LOG.info("Fetching observations at %s", ref_time)
         df = jr.fetch_data(
             stations=stations_sel,
-            params=_JR_PARAMS,
+            params=jr_params,
             start=ref_time,
             end=ref_time,
             increment_minutes=60,
@@ -353,14 +390,14 @@ class NudgeTowardObservation(Filter):
         df = df.dropna(subset=["nat_abbr"]).set_index("nat_abbr")
         df.index.name = "station"
 
-        df["2t"]  = df["tre200s0"] + 273.15  # °C -> K
-        dd_rad    = np.deg2rad(df["dkl010z0"])
-        df["10u"] = -df["fkl010z0"] * np.sin(dd_rad)
-        df["10v"] = -df["fkl010z0"] * np.cos(dd_rad)
+        if "tre200s0" in df.columns:
+            df["2t"] = df["tre200s0"] + 273.15  # °C -> K
+        if "fkl010z0" in df.columns and "dkl010z0" in df.columns:
+            dd_rad    = np.deg2rad(df["dkl010z0"])
+            df["10u"] = -df["fkl010z0"] * np.sin(dd_rad)
+            df["10v"] = -df["fkl010z0"] * np.cos(dd_rad)
 
-        stations = df[["2t", "10u", "10v", "latitude", "longitude"]].copy()
-        LOG.info(
-            "Stations table built: %d rows, valid 2t: %d",
-            len(stations), int(stations["2t"].notna().sum()),
-        )
+        result_cols = [c for c in needed_cols if c in df.columns] + ["latitude", "longitude"]
+        stations = df[result_cols].copy()
+        LOG.info("Stations table built: %d rows, columns=%s", len(stations), result_cols)
         return stations

@@ -17,27 +17,37 @@ LOG = logging.getLogger(__name__)
 
 # Maps GRIB shortName -> (station DataFrame column, unit offset applied to obs before nudging)
 # Uses COSMO/ICON shortNames as output by the LAM forecaster
+# Maps GRIB shortName -> (station DataFrame column, unit offset applied to obs before nudging)
 PARAM_MAP = {
-    "T_2M":     ("2t",            0.0),  # already in K after conversion below
-    "U_10M":    ("10u",           0.0),
-    "V_10M":    ("10v",           0.0),
-    "TOT_PREC": ("precipitation", 0.0),
+    "T_2M":     ("2t",   0.0),  # 2 m temperature        [K]
+    "TD_2M":    ("2d",   0.0),  # 2 m dewpoint           [K]
+    "U_10M":    ("10u",  0.0),  # 10 m wind U component  [m/s]
+    "V_10M":    ("10v",  0.0),  # 10 m wind V component  [m/s]
+    "PMSL":     ("msl",  0.0),  # mean sea-level pressure [Pa]
+    "TOT_PREC": ("tp",   0.0),  # hourly precipitation   [kg m-2]
+    "VMAX_10M": ("vmax", 0.0),  # 10 m wind gust         [m/s]
 }
 
 # Maps station column -> PeakWeather parameter names required to produce it
 _STATION_COL_TO_PW_PARAMS = {
-    "2t":            ["temperature"],
-    "10u":           ["wind_u", "wind_v"],  # U and V are derived together
-    "10v":           ["wind_u", "wind_v"],
-    "precipitation": ["precipitation"],
+    "2t":   ["temperature"],
+    "2d":   [],                    # not available in PeakWeather
+    "10u":  ["wind_u", "wind_v"],  # U and V are derived together
+    "10v":  ["wind_u", "wind_v"],
+    "msl":  [],                    # not available in PeakWeather
+    "tp":   ["precipitation"],
+    "vmax": [],                    # not available in PeakWeather
 }
 
 # Maps station column -> DWH (jretrieve) parameter names required to produce it
 _STATION_COL_TO_JR_PARAMS = {
-    "2t":            ["tre200s0"],
-    "10u":           ["fkl010z0", "dkl010z0"],  # wind speed + direction -> U/V
-    "10v":           ["fkl010z0", "dkl010z0"],
-    "precipitation": [],  # not yet supported via jretrieve
+    "2t":   ["tre200s0"],                   # 2 m temperature    [°C -> K]
+    "2d":   ["tde200s0"],                   # 2 m dewpoint       [°C -> K]
+    "10u":  ["fkl010z0", "dkl010z0"],       # wind speed + dir   -> U/V [m/s]
+    "10v":  ["fkl010z0", "dkl010z0"],
+    "msl":  ["pp0qffs0"],                   # MSLP               [hPa -> Pa]
+    "tp":   ["rre150h0"],                   # hourly precip      [mm = kg m-2]
+    "vmax": ["fkl010z1"],                   # 10 m wind gust     [m/s]
 }
 
 
@@ -127,6 +137,7 @@ class NudgeTowardObservation(Filter):
         jretrieve_bbox: list = None,
         jretrieve_src_path: str = "/scratch/mch/llanzila/sruc/evalml/src",
         nudge_variables: list = None,
+        use_limitation: int = None,
     ):
         """Initialize the filter.
 
@@ -153,6 +164,10 @@ class NudgeTowardObservation(Filter):
         nudge_variables : list, optional
             GRIB shortNames to nudge, e.g. ``["T_2M"]``. Must be keys of PARAM_MAP.
             Defaults to all variables in PARAM_MAP.
+        use_limitation : int, optional
+            Passed to jretrieve ``--use-limitation`` flag (used when backend='jretrieve').
+            Limits the time window (in minutes) used to select observations. E.g. 50
+            means only observations within ±50 minutes of the target time are used.
         """
         if backend not in ("peakweather", "jretrieve"):
             raise ValueError(f"backend must be 'peakweather' or 'jretrieve', got {backend!r}")
@@ -163,6 +178,7 @@ class NudgeTowardObservation(Filter):
         self.backend = backend
         self.jretrieve_bbox = jretrieve_bbox if jretrieve_bbox is not None else [40.5, 53.0, 0.0, 17.5]
         self.jretrieve_src_path = jretrieve_src_path
+        self.use_limitation = use_limitation
         if nudge_variables is not None:
             unknown = set(nudge_variables) - PARAM_MAP.keys()
             if unknown:
@@ -341,7 +357,12 @@ class NudgeTowardObservation(Filter):
 
         peakweather.stations_table.index.names = ["station"]
         stations = pd.concat([obs, peakweather.stations_table], axis=1)
-        stations = stations.rename(columns={"temperature": "2t", "wind_u": "10u", "wind_v": "10v"})
+        stations = stations.rename(columns={
+            "temperature":   "2t",
+            "wind_u":        "10u",
+            "wind_v":        "10v",
+            "precipitation": "tp",
+        })
         if "2t" in stations.columns:
             stations["2t"] += 273.15  # °C -> K
         LOG.info("Stations table built: %d rows", len(stations))
@@ -371,13 +392,14 @@ class NudgeTowardObservation(Filter):
         catalog = jr.StationCatalog.from_meta(meta)
         LOG.info("Catalog built: %d stations", catalog.n)
 
-        LOG.info("Fetching observations at %s", ref_time)
+        LOG.info("Fetching observations at %s (use_limitation=%s)", ref_time, self.use_limitation)
         df = jr.fetch_data(
             stations=stations_sel,
             params=jr_params,
             start=ref_time,
             end=ref_time,
             increment_minutes=60,
+            use_limitation=self.use_limitation,
         )
 
         id_to_abbr = dict(zip(catalog.station_id, catalog.nat_abbr))
@@ -391,11 +413,19 @@ class NudgeTowardObservation(Filter):
         df.index.name = "station"
 
         if "tre200s0" in df.columns:
-            df["2t"] = df["tre200s0"] + 273.15  # °C -> K
+            df["2t"] = df["tre200s0"] + 273.15       # °C -> K
+        if "tde200s0" in df.columns:
+            df["2d"] = df["tde200s0"] + 273.15       # °C -> K
         if "fkl010z0" in df.columns and "dkl010z0" in df.columns:
             dd_rad    = np.deg2rad(df["dkl010z0"])
             df["10u"] = -df["fkl010z0"] * np.sin(dd_rad)
             df["10v"] = -df["fkl010z0"] * np.cos(dd_rad)
+        if "pp0qffs0" in df.columns:
+            df["msl"] = df["pp0qffs0"] * 100.0       # hPa -> Pa
+        if "rre150h0" in df.columns:
+            df["tp"] = df["rre150h0"]                # mm = kg m-2, no conversion
+        if "fkl010z1" in df.columns:
+            df["vmax"] = df["fkl010z1"]              # m/s, no conversion
 
         result_cols = [c for c in needed_cols if c in df.columns] + ["latitude", "longitude"]
         stations = df[result_cols].copy()

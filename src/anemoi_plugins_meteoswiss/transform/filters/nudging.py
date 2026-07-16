@@ -234,7 +234,8 @@ class NudgeTowardObservation(Filter):
         )
 
         LOG.info("Loading grid coordinates from NC file")
-        ds = xr.open_dataset("/scratch/mch/llanzila/sruc/aux_files/icon_grid_0001_R19B08_mch.nc")
+        # ds = xr.open_dataset("/scratch/mch/llanzila/sruc/aux_files/icon_grid_0001_R19B08_mch.nc")
+        ds = xr.open_dataset("/data/aux_files/icon_grid_0001_R19B08_mch.nc")
         lat_icon = np.degrees(ds["clat"])
         lon_icon = np.degrees(ds["clon"])
         LOG.info("Grid loaded: %d points, lat=[%.3f, %.3f], lon=[%.3f, %.3f]",

@@ -130,6 +130,7 @@ class NudgeTowardObservation(Filter):
     def __init__(
         self,
         path_to_observation: str = "/scratch/mch/llanzila/sruc/evalml/output/data/observation/PeakWeather",
+        icon_grid_dir: str = "/scratch/mch/llanzila/sruc/aux_files",
         k: int = 3,
         power: float = 4.0,
         max_dist: float = 0.5,
@@ -145,6 +146,8 @@ class NudgeTowardObservation(Filter):
         ----------
         path_to_observation : str
             Root path of the PeakWeather dataset (used when backend='peakweather').
+        icon_grid_dir : str
+            Directory containing the ICON grid file ``icon_grid_0001_R19B08_mch.nc``.
         k : int
             Number of nearest observation stations used in IDW interpolation.
         power : float
@@ -172,6 +175,7 @@ class NudgeTowardObservation(Filter):
         if backend not in ("peakweather", "jretrieve"):
             raise ValueError(f"backend must be 'peakweather' or 'jretrieve', got {backend!r}")
         self.path_to_observation = Path(path_to_observation)
+        self.icon_grid_dir = Path(icon_grid_dir)
         self.k = k
         self.power = power
         self.max_dist = max_dist
@@ -234,8 +238,7 @@ class NudgeTowardObservation(Filter):
         )
 
         LOG.info("Loading grid coordinates from NC file")
-        # ds = xr.open_dataset("/scratch/mch/llanzila/sruc/aux_files/icon_grid_0001_R19B08_mch.nc")
-        ds = xr.open_dataset("/data/aux_files/icon_grid_0001_R19B08_mch.nc")
+        ds = xr.open_dataset(self.icon_grid_dir / "icon_grid_0001_R19B08_mch.nc")
         lat_icon = np.degrees(ds["clat"])
         lon_icon = np.degrees(ds["clon"])
         LOG.info("Grid loaded: %d points, lat=[%.3f, %.3f], lon=[%.3f, %.3f]",

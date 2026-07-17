@@ -7,10 +7,10 @@ authors = [{ name = "MeteoSwiss" }]
 requires-python = ">=3.11"
 dependencies = [
     "anemoi-datasets",
-    "anemoi-plugins",
+    "anemoi-plugins==0.2.1",
     "anemoi-transform",
-    "earthkit-meteo",
-    "peakweather",
+    "earthkit-meteo==1.0.1",
+    "peakweather==0.2.2",
 ]
 
 [project.scripts]
@@ -43,7 +43,7 @@ dev = [
     "pytest>=9.0.2",
 ]
 
-[tool.uv.sources]
-anemoi-plugins = { git = "https://github.com/ecmwf/anemoi-plugins.git" }
-earthkit-meteo = { git = "https://github.com/ecmwf/earthkit-meteo.git" , rev = "develop" }
-peakweather = { git = "https://github.com/MeteoSwiss/PeakWeather.git" }
+# [tool.uv.sources]
+# anemoi-plugins = { git = "https://github.com/ecmwf/anemoi-plugins.git" }
+# earthkit-meteo = { git = "https://github.com/ecmwf/earthkit-meteo.git" , rev = "develop" }
+# peakweather = { git = "https://github.com/MeteoSwiss/PeakWeather.git" }

@@ -7,7 +7,7 @@ authors = [{ name = "MeteoSwiss" }]
 requires-python = ">=3.11"
 dependencies = [
     "anemoi-datasets",
-    "anemoi-plugins==0.2.1",
+    "anemoi-plugins==0.2.0",
     "anemoi-transform",
     "earthkit-meteo==1.0.0",
     "peakweather==0.2.2",

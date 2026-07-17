@@ -11,6 +11,8 @@ dependencies = [
     "anemoi-transform",
     "earthkit-meteo==1.0.0",
     "peakweather==0.2.2",
+    "earthkit-data==0.19.2",
+    "earthkit-utils ==1.0.2",
 ]
 
 [project.scripts]

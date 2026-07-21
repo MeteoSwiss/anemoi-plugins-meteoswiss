@@ -139,6 +139,7 @@ class NudgeTowardObservation(Filter):
         jretrieve_src_path: str = "/scratch/mch/llanzila/sruc/evalml/src",
         nudge_variables: list = None,
         use_limitation: int = None,
+        run_mode: str = "depl",
     ):
         """Initialize the filter.
 
@@ -171,6 +172,9 @@ class NudgeTowardObservation(Filter):
             Passed to jretrieve ``--use-limitation`` flag (used when backend='jretrieve').
             Limits the time window (in minutes) used to select observations. E.g. 50
             means only observations within ±50 minutes of the target time are used.
+        run_mode : str
+            Execution mode: 'depl' (default) takes ref_time as the minimum valid_time
+            across all fields; 'devl' takes ref_time from data[0] (assumes field order).
         """
         if backend not in ("peakweather", "jretrieve"):
             raise ValueError(f"backend must be 'peakweather' or 'jretrieve', got {backend!r}")
@@ -183,6 +187,9 @@ class NudgeTowardObservation(Filter):
         self.jretrieve_bbox = jretrieve_bbox if jretrieve_bbox is not None else [40.5, 53.0, 0.0, 17.5]
         self.jretrieve_src_path = jretrieve_src_path
         self.use_limitation = use_limitation
+        if run_mode not in ("devl", "depl"):
+            raise ValueError(f"run_mode must be 'devl' or 'depl', got {run_mode!r}")
+        self.run_mode = run_mode
         if nudge_variables is not None:
             unknown = set(nudge_variables) - PARAM_MAP.keys()
             if unknown:
@@ -217,24 +224,28 @@ class NudgeTowardObservation(Filter):
             toward station observations.
         """
         LOG.info("Fields in data (%d total):", len(data))
-        # for f in data:
-        #     LOG.info(
-        #         "  shortName=%s, levtype=%s, level=%s, validityDate=%s validityTime=%s, shape=%s",
-        #         f.metadata("shortName"),
-        #         f.metadata("typeOfLevel"),
-        #         f.metadata("level"),
-        #         f.metadata("validityDate"),
-        #         f.metadata("validityTime"),
-        #         f.shape,
-        #     )
+        for f in data:
+            LOG.info(
+                "  shortName=%s, levtype=%s, level=%s, validityDate=%s validityTime=%s, shape=%s",
+                f.metadata("shortName"),
+                f.metadata("typeOfLevel"),
+                f.metadata("level"),
+                f.metadata("validityDate"),
+                f.metadata("validityTime"),
+                f.shape,
+            )
         
         if self._nudging_done:
             LOG.info("Nudging already applied, passing through unchanged")
             return data
 
+        if self.run_mode == "devl":
+            ref_time = data[0].datetime()["valid_time"]
+        else:
+            ref_time = min(f.datetime()["valid_time"] for f in data)
         LOG.info(
             "Applying nudging at date=%s, observations='%s'",
-            data[0].datetime()["valid_time"], self.path_to_observation,
+            ref_time, self.path_to_observation,
         )
 
         LOG.info("Loading grid coordinates from NC file")
@@ -245,8 +256,6 @@ class NudgeTowardObservation(Filter):
                  len(lat_icon), float(lat_icon.min()), float(lat_icon.max()),
                  float(lon_icon.min()), float(lon_icon.max()))
 
-        ref_time = data[0].datetime()["valid_time"]
-        LOG.info("Reference time: '%s'", ref_time)
 
         LOG.info("Loading station observations from '%s'", self.path_to_observation)
         stations = self._load_stations(ref_time)

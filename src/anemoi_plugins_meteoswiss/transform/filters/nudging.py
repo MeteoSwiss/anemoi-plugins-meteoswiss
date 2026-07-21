@@ -225,16 +225,16 @@ class NudgeTowardObservation(Filter):
             toward station observations.
         """
         LOG.info("Fields in data (%d total):", len(data))
-        for f in data:
-            LOG.info(
-                "  shortName=%s, levtype=%s, level=%s, validityDate=%s validityTime=%s, shape=%s",
-                f.metadata("shortName"),
-                f.metadata("typeOfLevel"),
-                f.metadata("level"),
-                f.metadata("validityDate"),
-                f.metadata("validityTime"),
-                f.shape,
-            )
+        # for f in data:
+        #     LOG.info(
+        #         "  shortName=%s, levtype=%s, level=%s, validityDate=%s validityTime=%s, shape=%s",
+        #         f.metadata("shortName"),
+        #         f.metadata("typeOfLevel"),
+        #         f.metadata("level"),
+        #         f.metadata("validityDate"),
+        #         f.metadata("validityTime"),
+        #         f.shape,
+        #     )
         
         if self._nudging_done:
             LOG.info("Nudging already applied, passing through unchanged")
@@ -389,7 +389,8 @@ class NudgeTowardObservation(Filter):
         src_path = self.jretrieve_src_path
         if src_path not in sys.path:
             sys.path.insert(0, src_path)
-        from data_input import jretrieve as jr
+        # from data_input import jretrieve as jr
+        import jretrieve as jr
 
         needed_cols = {col for col, _ in self.param_map.values()}
         jr_params = list(dict.fromkeys(

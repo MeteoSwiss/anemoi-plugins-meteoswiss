@@ -2,6 +2,7 @@ import logging
 import sys
 from datetime import timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import earthkit.data as ekd
 import numpy as np
@@ -243,6 +244,7 @@ class NudgeTowardObservation(Filter):
             ref_time = data[0].datetime()["valid_time"]
         else:
             ref_time = min(f.datetime()["valid_time"] for f in data)
+        ref_time = ref_time.replace(tzinfo=ZoneInfo("Europe/Zurich")).astimezone(ZoneInfo("UTC")).replace(tzinfo=None)  # from swiss time to utc
         LOG.info(
             "Applying nudging at date=%s, observations='%s'",
             ref_time, self.path_to_observation,

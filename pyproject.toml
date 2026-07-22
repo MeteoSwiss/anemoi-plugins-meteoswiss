@@ -30,8 +30,6 @@ nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTow
 
 [project.entry-points."anemoi.transform.filters.fields"]
 nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
-
-[project.entry-points."anemoi.transform.filters.fields"]
 gaussian-smoother = "anemoi_plugins_meteoswiss.transform.filters.fields:GaussianSmoother"
 icon-remap-to-reg-lat-lon = "anemoi_plugins_meteoswiss.transform.filters.fields:IconRemapToRegLatLon"
 

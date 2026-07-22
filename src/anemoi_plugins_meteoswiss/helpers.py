@@ -4,8 +4,8 @@ from typing import Iterator
 
 import earthkit.data as ekd
 import xarray as xr
-from meteodatalab import data_source
-from meteodatalab import grib_decoder
+# from meteodatalab import data_source
+
 
 
 class FieldListDataSource(data_source.DataSource):
@@ -46,6 +46,7 @@ def meteodatalab_wrapper(
 
 def to_meteodatalab(fieldlist: ekd.FieldList) -> dict[str, xr.DataArray]:
     """Convert an ekd.FieldList to a dictionary of xarray DataArrays."""
+    from meteodatalab import grib_decoder
     source = FieldListDataSource(fieldlist)
     return grib_decoder.load(source, {})
 
@@ -56,6 +57,7 @@ def from_meteodatalab(ds: dict[str, xr.DataArray]) -> ekd.FieldList:
 
 
 def _meteodalab_ds_to_fieldlist(ds: dict[str, xr.DataArray]) -> ekd.FieldList:
+    from meteodatalab import grib_decoder
     with io.BytesIO() as buffer:
         # write data to the buffer
         for da in ds.values():

@@ -2,9 +2,6 @@ import earthkit.data as ekd
 import xarray as xr
 from anemoi.transform.filter import Filter
 
-from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
-from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
-
 G = 9.80665
 R_D = 287.053
 
@@ -25,6 +22,9 @@ class OmegaFromW(Filter):
         super().__init__()
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
+        from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
+        from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
+        
         ds = to_meteodatalab(data)
         ds["OMEGA"] = omega_from_w(ds.pop("W"), ds["T"], ds["P"])
         return from_meteodatalab(ds)

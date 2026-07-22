@@ -7,12 +7,13 @@ authors = [{ name = "MeteoSwiss" }]
 requires-python = ">=3.11"
 dependencies = [
     "anemoi-datasets",
-    "anemoi-plugins == 0.2.0",
+    "anemoi-plugins==0.2.0",
     "anemoi-transform",
-    "earthkit-meteo == 0.5.0",
-    "meteodata-lab == 0.6.0",
+    "earthkit-meteo==1.0.0",
+    "peakweather==0.2.2",
+    "earthkit-data==0.19.2",
+    "earthkit-utils ==1.0.2",
 ]
-
 
 [project.scripts]
 anemoi-plugins-meteoswiss = "anemoi_plugins_meteoswiss:main"
@@ -25,6 +26,10 @@ clip-lateral-boundaries = "anemoi_plugins_meteoswiss.transform.filters:ClipLater
 assign-grid = "anemoi_plugins_meteoswiss.transform.filters:AssignGrid"
 omega-from-w = "anemoi_plugins_meteoswiss.transform.filters:OmegaFromW"
 geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:GeopotentialFromHeight"
+nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
+
+[project.entry-points."anemoi.transform.filters.fields"]
+nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
 
 [project.entry-points."anemoi.transform.filters.fields"]
 gaussian-smoother = "anemoi_plugins_meteoswiss.transform.filters.fields:GaussianSmoother"
@@ -46,3 +51,8 @@ dev = [
     "pre-commit>=4.5.1",
     "pytest>=9.0.2",
 ]
+
+# [tool.uv.sources]
+# anemoi-plugins = { git = "https://github.com/ecmwf/anemoi-plugins.git" }
+# earthkit-meteo = { git = "https://github.com/ecmwf/earthkit-meteo.git" , rev = "develop" }
+# peakweather = { git = "https://github.com/MeteoSwiss/PeakWeather.git" }

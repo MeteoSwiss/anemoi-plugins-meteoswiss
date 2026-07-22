@@ -6,7 +6,7 @@ import earthkit.data as ekd
 import numpy as np
 import xarray as xr
 from anemoi.transform.filter import Filter
-from earthkit.meteo.vertical.interpolation import interpolate_to_pressure_levels
+from earthkit.meteo.vertical import interpolate_to_pressure_levels
 
 SFC_VCOORD_TYPES = [
     "surface",
@@ -26,7 +26,7 @@ BASE_REQUEST = {
 }
 
 # silence logs from 'anemoi.transform'
-logging.getLogger("anemoi.transform").setLevel(logging.CRITICAL)
+# logging.getLogger("anemoi.transform").setLevel(logging.CRITICAL)
 
 
 class ModelToPressureLevel(Filter):

@@ -175,7 +175,7 @@ class NudgeTowardObservation(Filter):
             means only observations within ±50 minutes of the target time are used.
         run_mode : str
             Execution mode: 'depl' (default) takes ref_time as the minimum valid_time
-            across all fields; 'devl' takes ref_time from data[0] (assumes field order).
+            across all fields; 'devt' takes ref_time from data[0] (assumes field order).
         """
         if backend not in ("peakweather", "jretrieve"):
             raise ValueError(f"backend must be 'peakweather' or 'jretrieve', got {backend!r}")
@@ -188,8 +188,8 @@ class NudgeTowardObservation(Filter):
         self.jretrieve_bbox = jretrieve_bbox if jretrieve_bbox is not None else [40.5, 53.0, 0.0, 17.5]
         self.jretrieve_src_path = jretrieve_src_path
         self.use_limitation = use_limitation
-        if run_mode not in ("devl", "depl"):
-            raise ValueError(f"run_mode must be 'devl' or 'depl', got {run_mode!r}")
+        if run_mode not in ("devt", "depl"):
+            raise ValueError(f"run_mode must be 'devt' or 'depl', got {run_mode!r}")
         self.run_mode = run_mode
         if nudge_variables is not None:
             unknown = set(nudge_variables) - PARAM_MAP.keys()
@@ -240,11 +240,11 @@ class NudgeTowardObservation(Filter):
             LOG.info("Nudging already applied, passing through unchanged")
             return data
 
-        if self.run_mode == "devl":
+        if self.run_mode == "devt":
             ref_time = data[0].datetime()["valid_time"]
         else:
             ref_time = min(f.datetime()["valid_time"] for f in data)
-        ref_time = ref_time.replace(tzinfo=ZoneInfo("Europe/Zurich")).astimezone(ZoneInfo("UTC")).replace(tzinfo=None)  # from swiss time to utc
+        # ref_time = ref_time.replace(tzinfo=ZoneInfo("Europe/Zurich")).astimezone(ZoneInfo("UTC")).replace(tzinfo=None)  # from swiss time to utc
         LOG.info(
             "Applying nudging at date=%s, observations='%s'",
             ref_time, self.path_to_observation,

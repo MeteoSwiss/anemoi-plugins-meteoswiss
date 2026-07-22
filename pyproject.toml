@@ -23,14 +23,12 @@ destagger = "anemoi_plugins_meteoswiss.transform.filters:Destagger"
 clip-lateral-boundaries = "anemoi_plugins_meteoswiss.transform.filters:ClipLateralBoundaries"
 # model-to-pressure-level = "anemoi_plugins_meteoswiss.transform.filters:ModelToPressureLevel"
 assign-grid = "anemoi_plugins_meteoswiss.transform.filters:AssignGrid"
-gaussian-smoother = "anemoi_plugins_meteoswiss.transform.filters:GaussianSmoother"
-icon-remap-to-reg-lat-lon = "anemoi_plugins_meteoswiss.transform.filters:IconRemapToRegLatLon"
 omega-from-w = "anemoi_plugins_meteoswiss.transform.filters:OmegaFromW"
 geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:GeopotentialFromHeight"
 
 [project.entry-points."anemoi.transform.filters.fields"]
-gaussian-smoother = "anemoi_plugins_meteoswiss.transform.filters:GaussianSmoother"
-icon-remap-to-reg-lat-lon = "anemoi_plugins_meteoswiss.transform.filters:IconRemapToRegLatLon"
+gaussian-smoother = "anemoi_plugins_meteoswiss.transform.filters.fields:GaussianSmoother"
+icon-remap-to-reg-lat-lon = "anemoi_plugins_meteoswiss.transform.filters.fields:IconRemapToRegLatLon"
 
 [project.entry-points."anemoi.datasets.create.sources"]
 rea-l-ch1-precip = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1Precip"

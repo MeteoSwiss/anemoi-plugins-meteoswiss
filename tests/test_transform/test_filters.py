@@ -10,8 +10,8 @@ from numpy.testing import assert_array_equal
 from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
 from anemoi_plugins_meteoswiss.transform.filters import ClipLateralBoundaries
 from anemoi_plugins_meteoswiss.transform.filters import Destagger
-from anemoi_plugins_meteoswiss.transform.filters import GaussianSmoother
-from anemoi_plugins_meteoswiss.transform.filters import IconRemapToRegLatLon
+from anemoi_plugins_meteoswiss.transform.filters.fields import GaussianSmoother
+from anemoi_plugins_meteoswiss.transform.filters.fields import IconRemapToRegLatLon
 
 ICONREMAP_WEIGHTS = (
     "/store_new/mch/msopr/icon_workflow_2/iconremap-weights/icon-ch1-eps-rotlatlon.nc"

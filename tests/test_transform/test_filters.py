@@ -1,6 +1,7 @@
 import earthkit.data as ekd
 import numpy as np
 import pytest
+from anemoi.transform.fields import new_field_from_numpy
 from anemoi.transform.fields import new_fieldlist_from_list
 from anemoi.transform.filters import filter_registry
 from meteodatalab import data_source
@@ -89,14 +90,15 @@ def test_icon_remap_to_reg_lat_lon(data_dir, hostname):
 
     n_out = regridder.ny * regridder.nx
     assert len(result) == len(fieldlist)
-    for field in result:
-        values = field.to_numpy(flatten=True)
+    for src_field, out_field in zip(fieldlist, result):
+        src_values = src_field.to_numpy(flatten=True)
+        values = out_field.to_numpy(flatten=True)
         assert values.shape == (n_out,)
         # All output points are valid for this weights file (no sentinel zeros)
         assert not np.any(np.isnan(values))
-        # Physical temperature range in Kelvin
-        assert values.min() > 200.0
-        assert values.max() < 340.0
+        # Conservative interpolation: output stays within the source's range.
+        assert values.min() >= src_values.min() - 1e-6
+        assert values.max() <= src_values.max() + 1e-6
 
 
 def test_gaussian_smoother(data_dir, hostname):
@@ -113,7 +115,12 @@ def test_gaussian_smoother(data_dir, hostname):
         list(fs.sel(shortName="T_2M")) + [fs.sel(shortName="W")[0]]
     )
 
-    regridded = regridder.forward(fieldlist)
+    regridded = list(regridder.forward(fieldlist))
+    synthetic = np.zeros((regridder.ny, regridder.nx))
+    synthetic[::20, ::20] = 100.0
+    regridded[0] = new_field_from_numpy(synthetic.ravel(), template=regridded[0])
+    regridded = new_fieldlist_from_list(regridded)
+
     smoothed = smoother.forward(regridded)
 
     assert len(smoothed) == len(regridded) == 2

@@ -11,6 +11,7 @@ include:
 stages:
   - test
 
+
 .baremetal-runner-balfrin:
   extends: [.baremetal-runner-santis-gh200]
   variables:

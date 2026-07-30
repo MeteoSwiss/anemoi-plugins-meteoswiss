@@ -42,5 +42,9 @@ dev = [
 
 [tool.uv.sources]
 anemoi-plugins = { git = "https://github.com/ecmwf/anemoi-plugins.git" }
-earthkit-meteo = { git = "https://github.com/ecmwf/earthkit-meteo.git" , rev = "develop" }
-meteodata-lab = { git = "https://github.com/MeteoSwiss/meteodata-lab.git", rev = "main" }
+# Pinned: `develop` has moved on to 1.x, which drops
+# earthkit.meteo.vertical.interpolation (used by transform/filters/vertical_interpolation.py).
+earthkit-meteo = { git = "https://github.com/ecmwf/earthkit-meteo.git" , rev = "688d7f2345fa710a7505be93fec473027dc68e13" }
+# Pinned: `main` is now 0.8.0, which requires earthkit-data>=1, excluded by
+# anemoi-datasets (earthkit-data[mars]>=0.14,<1).
+meteodata-lab = { git = "https://github.com/MeteoSwiss/meteodata-lab.git", rev = "8298239507dd79738d8fc7e16f0948947a545986" }

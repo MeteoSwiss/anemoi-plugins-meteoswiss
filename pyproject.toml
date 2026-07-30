@@ -7,9 +7,12 @@ authors = [{ name = "MeteoSwiss" }]
 requires-python = ">=3.11"
 dependencies = [
     "anemoi-datasets",
-    "anemoi-plugins",
+    "anemoi-plugins==0.2.0",
     "anemoi-transform",
-    "earthkit-meteo",
+    "earthkit-meteo==1.0.0",
+    "peakweather==0.2.2",
+    "earthkit-data==0.19.2",
+    "earthkit-utils ==1.0.2",
 ]
 
 
@@ -35,7 +38,3 @@ dev = [
     "pre-commit>=4.5.1",
     "pytest>=9.0.2",
 ]
-
-[tool.uv.sources]
-anemoi-plugins = { git = "https://github.com/ecmwf/anemoi-plugins.git" }
-earthkit-meteo = { git = "https://github.com/ecmwf/earthkit-meteo.git" , rev = "develop" }

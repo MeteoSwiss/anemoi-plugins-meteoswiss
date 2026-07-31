@@ -4,6 +4,7 @@ from .geopotential_from_height import GeopotentialFromHeight
 from .nudging import NudgeTowardObservation
 from .grid import AssignGrid
 from .omega_from_w import OmegaFromW
+from .retrieve_observation import RetrieveObservation
 from .time_processing import AverageFluxToCumulativeQuantity
 from .vertical_interpolation import ModelToPressureLevel
 
@@ -19,4 +20,5 @@ __all__ = [
     "OmegaFromW",
     "GeopotentialFromHeight",
     "NudgeTowardObservation",
+    "RetrieveObservation",
 ]

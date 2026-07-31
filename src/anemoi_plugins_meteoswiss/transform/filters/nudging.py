@@ -1,5 +1,4 @@
 import logging
-import sys
 from pathlib import Path
 
 import earthkit.data as ekd
@@ -23,17 +22,6 @@ PARAM_MAP = {
     "PMSL":     ("msl",  0.0),  # mean sea-level pressure [Pa]
     "TOT_PREC": ("tp",   0.0),  # hourly precipitation   [kg m-2]
     "VMAX_10M": ("vmax", 0.0),  # 10 m wind gust         [m/s]
-}
-
-# Maps station column -> DWH (jretrieve) parameter names required to produce it.
-_STATION_COL_TO_JR_PARAMS = {
-    "2t":   ["tre200s0"],              # 2 m temperature    [°C -> K]
-    "2d":   ["tde200s0"],              # 2 m dewpoint       [°C -> K]
-    "10u":  ["fkl010z0", "dkl010z0"], # wind speed + dir   -> U/V [m/s]
-    "10v":  ["fkl010z0", "dkl010z0"],
-    "msl":  ["pp0qffs0"],              # MSLP               [hPa -> Pa]
-    "tp":   ["rre150h0"],              # hourly precip      [mm = kg m-2]
-    "vmax": ["fkl010z1"],              # 10 m wind gust     [m/s]
 }
 
 
@@ -148,26 +136,31 @@ class NudgeTowardObservation(Filter):
     from the background, with a distance-based taper that vanishes the correction
     beyond *max_dist* degrees from the nearest station.
 
-    Observations are loaded from the MeteoSwiss DWH via jretrieve.
+    Observations are read from a pre-fetched Parquet file. The file must contain
+    columns for ``latitude``, ``longitude``, and the station-column names referenced
+    in PARAM_MAP (e.g. ``2t``, ``10u``, ``msl``, …), already converted to SI units.
     Nudging is applied exactly once — to the initial-condition time step only.
     """
 
     def __init__(
         self,
+        obs_path: str,
         icon_grid_dir: str = "/scratch/mch/llanzila/sruc/aux_files",
         k: int = 3,
         power: float = 4.0,
         max_dist: float = 0.5,
-        jretrieve_bbox: list = None,
-        jretrieve_src_path: str = "/scratch/mch/llanzila/sruc/evalml/src",
         nudge_variables: list = None,
-        use_limitation: int = None,
         run_mode: str = "depl",
     ):
         """Initialise the nudging filter.
 
         Parameters
         ----------
+        obs_path : str
+            Path to a Parquet file containing pre-fetched station observations.
+            Required columns: ``latitude``, ``longitude``, and one column per
+            nudged variable (e.g. ``2t``, ``2d``, ``10u``, ``10v``, ``msl``,
+            ``tp``, ``vmax``), all in SI units.
         icon_grid_dir : str
             Directory containing ``icon_grid_0001_R19B08_mch.nc``.
         k : int
@@ -177,18 +170,9 @@ class NudgeTowardObservation(Filter):
         max_dist : float
             Tapering radius [degrees]; correction fades to zero beyond this
             distance from the nearest station.
-        jretrieve_bbox : list, optional
-            Bounding box ``[minlat, maxlat, minlon, maxlon]`` for station
-            selection. Defaults to ``[40.5, 53.0, 0.0, 17.5]`` (Switzerland
-            and surroundings).
-        jretrieve_src_path : str
-            Directory containing ``jretrieve.py``.
         nudge_variables : list, optional
             GRIB shortNames to nudge (must be keys of PARAM_MAP). Defaults to
             all variables in PARAM_MAP.
-        use_limitation : int, optional
-            Passed to jretrieve ``--use-limitation``; limits the observation
-            time window in minutes (e.g. 50 means observations within ±50 min).
         run_mode : str
             ``'depl'`` (default): ref_time = minimum valid_time across all
             fields. ``'devt'``: ref_time = valid_time of the first field.
@@ -196,13 +180,11 @@ class NudgeTowardObservation(Filter):
         if run_mode not in ("devt", "depl"):
             raise ValueError(f"run_mode must be 'devt' or 'depl', got {run_mode!r}")
 
+        self.obs_path = Path(obs_path)
         self.icon_grid_dir = Path(icon_grid_dir)
         self.k = k
         self.power = power
         self.max_dist = max_dist
-        self.jretrieve_bbox = jretrieve_bbox if jretrieve_bbox is not None else [40.5, 53.0, 0.0, 17.5]
-        self.jretrieve_src_path = jretrieve_src_path
-        self.use_limitation = use_limitation
         self.run_mode = run_mode
         self._nudging_done = False
 
@@ -250,7 +232,7 @@ class NudgeTowardObservation(Filter):
         lat_icon = np.degrees(ds["clat"])
         lon_icon = np.degrees(ds["clon"])
 
-        stations = self._load_stations(ref_time)
+        stations = self._load_stations()
         LOG.info("Stations loaded: %d", len(stations))
 
         nudged = {}
@@ -292,73 +274,15 @@ class NudgeTowardObservation(Filter):
         LOG.info("Nudging complete: %d/%d fields updated", len(nudged), len(result))
         return new_fieldlist_from_list(result)
 
-    def _load_stations(self, ref_time) -> pd.DataFrame:
-        """Load station observations at *ref_time* from the MeteoSwiss DWH via jretrieve.
-
-        Fetches the DWH parameters needed for the configured nudge variables,
-        converts units to SI (°C→K, hPa→Pa, speed+direction→U/V), and returns
-        a DataFrame indexed by station abbreviation.
-
-        Parameters
-        ----------
-        ref_time : datetime
-            Target validity time for which observations are requested.
+    def _load_stations(self) -> pd.DataFrame:
+        """Read pre-fetched station observations from the configured Parquet file.
 
         Returns
         -------
         pandas.DataFrame
-            Station observations indexed by ``nat_abbr``, with columns matching
-            the station-column names in PARAM_MAP plus ``latitude`` and
-            ``longitude``.
+            Station observations with columns matching the station-column names
+            in PARAM_MAP plus ``latitude`` and ``longitude``, in SI units.
         """
-        src_path = self.jretrieve_src_path
-        if src_path not in sys.path:
-            sys.path.insert(0, src_path)
-        import jretrieve as jr
-
-        needed_cols = {col for col, _ in self.param_map.values()}
-        jr_params = list(dict.fromkeys(
-            p for col in needed_cols for p in _STATION_COL_TO_JR_PARAMS.get(col, [])
-        ))
-        if not jr_params:
-            raise ValueError(f"No jretrieve parameters found for station columns: {needed_cols}")
-
-        jr.check_prerequisites()
-
-        stations_sel = {"bbox": self.jretrieve_bbox}
-        meta = jr.fetch_meta(stations=stations_sel, params=jr_params)
-        catalog = jr.StationCatalog.from_meta(meta)
-        LOG.info("Station catalog: %d stations", catalog.n)
-
-        df = jr.fetch_data(
-            stations=stations_sel,
-            params=jr_params,
-            start=ref_time,
-            end=ref_time,
-            increment_minutes=60,
-            use_limitation=self.use_limitation,
-        )
-
-        df["nat_abbr"] = df["station"].map(dict(zip(catalog.station_id, catalog.nat_abbr)))
-        df["latitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.latitude)))
-        df["longitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.longitude)))
-        df = df.dropna(subset=["nat_abbr"]).set_index("nat_abbr")
-        df.index.name = "station"
-
-        if "tre200s0" in df.columns:
-            df["2t"] = df["tre200s0"] + 273.15         # °C -> K
-        if "tde200s0" in df.columns:
-            df["2d"] = df["tde200s0"] + 273.15         # °C -> K
-        if "fkl010z0" in df.columns and "dkl010z0" in df.columns:
-            dd_rad = np.deg2rad(df["dkl010z0"])
-            df["10u"] = -df["fkl010z0"] * np.sin(dd_rad)
-            df["10v"] = -df["fkl010z0"] * np.cos(dd_rad)
-        if "pp0qffs0" in df.columns:
-            df["msl"] = df["pp0qffs0"] * 100.0         # hPa -> Pa
-        if "rre150h0" in df.columns:
-            df["tp"] = df["rre150h0"]                  # mm = kg m-2, no conversion needed
-        if "fkl010z1" in df.columns:
-            df["vmax"] = df["fkl010z1"]                # m/s, no conversion needed
-
-        result_cols = [c for c in needed_cols if c in df.columns] + ["latitude", "longitude"]
-        return df[result_cols].copy()
+        if not self.obs_path.exists():
+            raise FileNotFoundError(f"Observation file not found: {self.obs_path}")
+        return pd.read_parquet(self.obs_path)

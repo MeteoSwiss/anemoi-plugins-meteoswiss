@@ -27,6 +27,7 @@ assign-grid = "anemoi_plugins_meteoswiss.transform.filters:AssignGrid"
 omega-from-w = "anemoi_plugins_meteoswiss.transform.filters:OmegaFromW"
 geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:GeopotentialFromHeight"
 nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
+retrieve-observation = "anemoi_plugins_meteoswiss.transform.filters:RetrieveObservation"
 
 [project.entry-points."anemoi.transform.filters.fields"]
 nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"

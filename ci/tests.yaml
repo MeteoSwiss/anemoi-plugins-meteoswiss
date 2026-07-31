@@ -63,6 +63,12 @@ stages:
       banner "uv sync"
       uv sync --dev
 
+.pytest:
+  script:
+    - |
+      banner "pytest"
+      uv run pytest
+
 # ── pipeline ─────────────────────────────────────────────────────────────────
 
 tests:
@@ -73,3 +79,4 @@ tests:
     - !reference [.log_ci_context, script]
     - !reference [.install_uv, script]
     - !reference [.uv_sync, script]
+    - !reference [.pytest, script]

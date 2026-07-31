@@ -27,6 +27,8 @@ nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTow
 
 [project.entry-points."anemoi.transform.filters.fields"]
 nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
+gaussian-smoother = "anemoi_plugins_meteoswiss.transform.filters:GaussianSmoother"
+icon-remap-to-reg-lat-lon = "anemoi_plugins_meteoswiss.transform.filters:IconRemapToRegLatLon"
 
 [project.entry-points."anemoi.datasets.create.sources"]
 rea-l-ch1-precip = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1Precip"
@@ -35,6 +37,9 @@ rea-l-ch1-wind-gust = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1WindGu
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [dependency-groups]
 dev = [

@@ -15,7 +15,6 @@ dependencies = [
     "earthkit-utils ==1.0.2",
 ]
 
-
 [project.scripts]
 anemoi-plugins-meteoswiss = "anemoi_plugins_meteoswiss:main"
 
@@ -24,6 +23,10 @@ average-flux-to-cumulative-quantity = "anemoi_plugins_meteoswiss.transform.filte
 model-to-pressure-level = "anemoi_plugins_meteoswiss.transform.filters:ModelToPressureLevel"
 assign-grid = "anemoi_plugins_meteoswiss.transform.filters:AssignGrid"
 geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:GeopotentialFromHeight"
+nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
+
+[project.entry-points."anemoi.transform.filters.fields"]
+nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
 
 [project.entry-points."anemoi.datasets.create.sources"]
 rea-l-ch1-precip = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1Precip"

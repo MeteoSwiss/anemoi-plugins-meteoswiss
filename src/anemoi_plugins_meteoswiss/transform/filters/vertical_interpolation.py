@@ -25,7 +25,7 @@ BASE_REQUEST = {
 }
 
 # silence logs from 'anemoi.transform'
-logging.getLogger("anemoi.transform").setLevel(logging.CRITICAL)
+# logging.getLogger("anemoi.transform").setLevel(logging.CRITICAL)
 
 
 class ModelToPressureLevel(Filter):

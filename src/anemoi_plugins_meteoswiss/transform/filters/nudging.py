@@ -16,24 +16,24 @@ LOG = logging.getLogger(__name__)
 # Maps GRIB shortName -> (station DataFrame column, unit offset applied to obs before nudging).
 # Uses COSMO/ICON shortNames as output by the LAM forecaster.
 PARAM_MAP = {
-    "T_2M":     ("2t",   0.0),  # 2 m temperature        [K]
-    "TD_2M":    ("2d",   0.0),  # 2 m dewpoint           [K]
-    "U_10M":    ("10u",  0.0),  # 10 m wind U component  [m/s]
-    "V_10M":    ("10v",  0.0),  # 10 m wind V component  [m/s]
-    "PMSL":     ("msl",  0.0),  # mean sea-level pressure [Pa]
-    "TOT_PREC": ("tp",   0.0),  # hourly precipitation   [kg m-2]
+    "T_2M": ("2t", 0.0),  # 2 m temperature        [K]
+    "TD_2M": ("2d", 0.0),  # 2 m dewpoint           [K]
+    "U_10M": ("10u", 0.0),  # 10 m wind U component  [m/s]
+    "V_10M": ("10v", 0.0),  # 10 m wind V component  [m/s]
+    "PMSL": ("msl", 0.0),  # mean sea-level pressure [Pa]
+    "TOT_PREC": ("tp", 0.0),  # hourly precipitation   [kg m-2]
     "VMAX_10M": ("vmax", 0.0),  # 10 m wind gust         [m/s]
 }
 
 # Maps station column -> DWH (jretrieve) parameter names required to produce it.
 _STATION_COL_TO_JR_PARAMS = {
-    "2t":   ["tre200s0"],              # 2 m temperature    [°C -> K]
-    "2d":   ["tde200s0"],              # 2 m dewpoint       [°C -> K]
-    "10u":  ["fkl010z0", "dkl010z0"], # wind speed + dir   -> U/V [m/s]
-    "10v":  ["fkl010z0", "dkl010z0"],
-    "msl":  ["pp0qffs0"],              # MSLP               [hPa -> Pa]
-    "tp":   ["rre150h0"],              # hourly precip      [mm = kg m-2]
-    "vmax": ["fkl010z1"],              # 10 m wind gust     [m/s]
+    "2t": ["tre200s0"],  # 2 m temperature    [°C -> K]
+    "2d": ["tde200s0"],  # 2 m dewpoint       [°C -> K]
+    "10u": ["fkl010z0", "dkl010z0"],  # wind speed + dir   -> U/V [m/s]
+    "10v": ["fkl010z0", "dkl010z0"],
+    "msl": ["pp0qffs0"],  # MSLP               [hPa -> Pa]
+    "tp": ["rre150h0"],  # hourly precip      [mm = kg m-2]
+    "vmax": ["fkl010z1"],  # 10 m wind gust     [m/s]
 }
 
 
@@ -200,7 +200,9 @@ class NudgeTowardObservation(Filter):
         self.k = k
         self.power = power
         self.max_dist = max_dist
-        self.jretrieve_bbox = jretrieve_bbox if jretrieve_bbox is not None else [40.5, 53.0, 0.0, 17.5]
+        self.jretrieve_bbox = (
+            jretrieve_bbox if jretrieve_bbox is not None else [40.5, 53.0, 0.0, 17.5]
+        )
         self.jretrieve_src_path = jretrieve_src_path
         self.use_limitation = use_limitation
         self.run_mode = run_mode
@@ -209,14 +211,19 @@ class NudgeTowardObservation(Filter):
         if nudge_variables is not None:
             unknown = set(nudge_variables) - PARAM_MAP.keys()
             if unknown:
-                raise ValueError(f"Unknown nudge variables: {unknown}. Valid: {list(PARAM_MAP)}")
+                raise ValueError(
+                    f"Unknown nudge variables: {unknown}. Valid: {list(PARAM_MAP)}"
+                )
             self.param_map = {k: PARAM_MAP[k] for k in nudge_variables}
         else:
             self.param_map = PARAM_MAP
 
         LOG.info(
             "Nudging filter initialised: variables=%s, k=%d, power=%.1f, max_dist=%.2f",
-            list(self.param_map.keys()), self.k, self.power, self.max_dist,
+            list(self.param_map.keys()),
+            self.k,
+            self.power,
+            self.max_dist,
         )
         super().__init__()
 
@@ -270,9 +277,15 @@ class NudgeTowardObservation(Filter):
             st_obs = stations.loc[valid, col].to_numpy() + offset
 
             corrected = interpolation_of_residuals(
-                field.values, lat_icon, lon_icon,
-                st_lat, st_lon, st_obs,
-                k=self.k, power=self.power, max_dist=self.max_dist,
+                field.values,
+                lat_icon,
+                lon_icon,
+                st_lat,
+                st_lon,
+                st_obs,
+                k=self.k,
+                power=self.power,
+                max_dist=self.max_dist,
             )
             nudged[shortname] = new_field_from_numpy(
                 corrected,
@@ -285,7 +298,9 @@ class NudgeTowardObservation(Filter):
             LOG.info("Nudged '%s' using %d stations", shortname, int(valid.sum()))
 
         result = [
-            nudged.get(f.metadata("shortName"), f) if f.datetime()["valid_time"] == ref_time else f
+            nudged.get(f.metadata("shortName"), f)
+            if f.datetime()["valid_time"] == ref_time
+            else f
             for f in data
         ]
         self._nudging_done = True
@@ -317,11 +332,15 @@ class NudgeTowardObservation(Filter):
         import jretrieve as jr
 
         needed_cols = {col for col, _ in self.param_map.values()}
-        jr_params = list(dict.fromkeys(
-            p for col in needed_cols for p in _STATION_COL_TO_JR_PARAMS.get(col, [])
-        ))
+        jr_params = list(
+            dict.fromkeys(
+                p for col in needed_cols for p in _STATION_COL_TO_JR_PARAMS.get(col, [])
+            )
+        )
         if not jr_params:
-            raise ValueError(f"No jretrieve parameters found for station columns: {needed_cols}")
+            raise ValueError(
+                f"No jretrieve parameters found for station columns: {needed_cols}"
+            )
 
         jr.check_prerequisites()
 
@@ -339,26 +358,35 @@ class NudgeTowardObservation(Filter):
             use_limitation=self.use_limitation,
         )
 
-        df["nat_abbr"] = df["station"].map(dict(zip(catalog.station_id, catalog.nat_abbr)))
-        df["latitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.latitude)))
-        df["longitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.longitude)))
+        df["nat_abbr"] = df["station"].map(
+            dict(zip(catalog.station_id, catalog.nat_abbr))
+        )
+        df["latitude"] = df["station"].map(
+            dict(zip(catalog.station_id, catalog.latitude))
+        )
+        df["longitude"] = df["station"].map(
+            dict(zip(catalog.station_id, catalog.longitude))
+        )
         df = df.dropna(subset=["nat_abbr"]).set_index("nat_abbr")
         df.index.name = "station"
 
         if "tre200s0" in df.columns:
-            df["2t"] = df["tre200s0"] + 273.15         # °C -> K
+            df["2t"] = df["tre200s0"] + 273.15  # °C -> K
         if "tde200s0" in df.columns:
-            df["2d"] = df["tde200s0"] + 273.15         # °C -> K
+            df["2d"] = df["tde200s0"] + 273.15  # °C -> K
         if "fkl010z0" in df.columns and "dkl010z0" in df.columns:
             dd_rad = np.deg2rad(df["dkl010z0"])
             df["10u"] = -df["fkl010z0"] * np.sin(dd_rad)
             df["10v"] = -df["fkl010z0"] * np.cos(dd_rad)
         if "pp0qffs0" in df.columns:
-            df["msl"] = df["pp0qffs0"] * 100.0         # hPa -> Pa
+            df["msl"] = df["pp0qffs0"] * 100.0  # hPa -> Pa
         if "rre150h0" in df.columns:
-            df["tp"] = df["rre150h0"]                  # mm = kg m-2, no conversion needed
+            df["tp"] = df["rre150h0"]  # mm = kg m-2, no conversion needed
         if "fkl010z1" in df.columns:
-            df["vmax"] = df["fkl010z1"]                # m/s, no conversion needed
+            df["vmax"] = df["fkl010z1"]  # m/s, no conversion needed
 
-        result_cols = [c for c in needed_cols if c in df.columns] + ["latitude", "longitude"]
+        result_cols = [c for c in needed_cols if c in df.columns] + [
+            "latitude",
+            "longitude",
+        ]
         return df[result_cols].copy()

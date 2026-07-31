@@ -2,7 +2,6 @@ import numpy as np
 import pytest
 
 from anemoi_plugins_meteoswiss.transform import filters
-
 from anemoi_plugins_meteoswiss.transform.filters import GaussianSmoother
 from anemoi_plugins_meteoswiss.transform.filters import IconRemapToRegLatLon
 

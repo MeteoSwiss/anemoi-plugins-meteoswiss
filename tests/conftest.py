@@ -14,7 +14,7 @@ os.environ["ECCODES_DEFINITION_PATH"] = str(eccodes_definitions)
 
 @pytest.fixture
 def hostname():
-    return os.uname().nodename
+    return os.environ.get("CLUSTER_NAME") or os.uname().nodename
 
 
 @pytest.fixture

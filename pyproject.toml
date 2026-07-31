@@ -20,17 +20,22 @@ anemoi-plugins-meteoswiss = "anemoi_plugins_meteoswiss:main"
 
 [project.entry-points."anemoi.transform.filters"]
 average-flux-to-cumulative-quantity = "anemoi_plugins_meteoswiss.transform.filters:AverageFluxToCumulativeQuantity"
-destagger = "anemoi_plugins_meteoswiss.transform.filters:Destagger"
-clip-lateral-boundaries = "anemoi_plugins_meteoswiss.transform.filters:ClipLateralBoundaries"
 model-to-pressure-level = "anemoi_plugins_meteoswiss.transform.filters:ModelToPressureLevel"
 assign-grid = "anemoi_plugins_meteoswiss.transform.filters:AssignGrid"
-omega-from-w = "anemoi_plugins_meteoswiss.transform.filters:OmegaFromW"
 geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:GeopotentialFromHeight"
 nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
+<<<<<<< HEAD
 retrieve-observation = "anemoi_plugins_meteoswiss.transform.filters:RetrieveObservation"
 
 [project.entry-points."anemoi.transform.filters.fields"]
 nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
+=======
+
+[project.entry-points."anemoi.transform.filters.fields"]
+nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
+gaussian-smoother = "anemoi_plugins_meteoswiss.transform.filters:GaussianSmoother"
+icon-remap-to-reg-lat-lon = "anemoi_plugins_meteoswiss.transform.filters:IconRemapToRegLatLon"
+>>>>>>> main
 
 [project.entry-points."anemoi.datasets.create.sources"]
 rea-l-ch1-precip = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1Precip"
@@ -40,13 +45,19 @@ rea-l-ch1-wind-gust = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1WindGu
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [dependency-groups]
 dev = [
     "pre-commit>=4.5.1",
     "pytest>=9.0.2",
 ]
+<<<<<<< HEAD
 
 # [tool.uv.sources]
 # anemoi-plugins = { git = "https://github.com/ecmwf/anemoi-plugins.git" }
 # earthkit-meteo = { git = "https://github.com/ecmwf/earthkit-meteo.git" , rev = "develop" }
 # peakweather = { git = "https://github.com/MeteoSwiss/PeakWeather.git" }
+=======
+>>>>>>> main

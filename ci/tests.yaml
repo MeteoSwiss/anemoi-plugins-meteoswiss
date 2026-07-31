@@ -1,0 +1,82 @@
+# ci/tests.yaml — CSCS HPC pipeline "tests" (smoke test). On-demand only.
+# Trigger:  PR comment `cscs-ci run tests`  or the trigger API.
+#
+# Single job that allocates a compute node on balfrin and syncs the uv
+# environment. This proves the CSCS-CI plumbing (auth, runner, SLURM
+# allocation) and the uv environment setup work end-to-end. No FDB/uenv
+# dataset-create step yet — that can be layered on in a follow-up once this
+# is green.
+include:
+  - remote: 'https://gitlab.com/cscs-ci/recipes/-/raw/master/templates/v2/.ci-ext.yml'
+
+stages:
+  - test
+
+.baremetal-runner-balfrin:
+  extends: [.baremetal-runner-santis-gh200]
+  variables:
+    F7T_URL: 'https://api.cscs.ch/mch/firecrest/v2'
+    FIRECREST_SYSTEM: 'balfrin'
+    ARCH: 'x86_64'
+    SLURM_JOB_NUM_NODES: 1
+    SLURM_NTASKS: 1
+    # uv sync builds the venv from scratch (eccodes, earthkit, meteodata-lab,
+    # ...); give it more room than a bare hello-world needs.
+    SLURM_TIMELIMIT: '00:20:00'
+
+# ── reusable script fragments (hidden jobs) ──────────────────────────────────
+
+# Strict mode + a banner() helper for section headers. Referenced first so
+# both are in scope for every fragment that follows.
+.sh_preamble:
+  script:
+    - |
+      set -euo pipefail
+      banner() { printf '\n\033[1;36m==== %s ====\033[0m\n' "$*"; }
+
+# Print CI context up front so the log is self-explanatory.
+.log_ci_context:
+  script:
+    - |
+      banner "CI context"
+      echo "host=$(hostname -f 2>/dev/null || hostname)  user=$(whoami)"
+      echo "project=${CI_PROJECT_PATH:-?}  ref=${CI_COMMIT_REF_NAME:-?}  sha=${CI_COMMIT_SHA:-?}"
+
+# The runner already checked the repo out into $PWD. HOME is repointed there
+# since the compute node has no mounted home directory.
+.install_uv:
+  script:
+    - |
+      banner "Install uv"
+      export UV_CACHE_DIR="$SCRATCH/.cache/uv"  # wheel cache, persistent across pipelines
+      export HOME="$PWD/home"
+      export PATH="$PWD/.local/bin:$PATH"
+      # uv: bare metal assumes a user-managed env, so we install it ourselves
+      export UV_INSTALL_DIR="$PWD/.local/bin"
+      UV_VERSION='0.11.32'
+      curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | env INSTALLER_NO_MODIFY_PATH=1 sh
+      uv --version
+
+.uv_sync:
+  script:
+    - |
+      banner "uv sync"
+      uv sync --dev
+
+.pytest:
+  script:
+    - |
+      banner "pytest"
+      uv run pytest
+
+# ── pipeline ─────────────────────────────────────────────────────────────────
+
+tests:
+  extends: [.baremetal-runner-balfrin]
+  stage: test
+  script:
+    - !reference [.sh_preamble, script]
+    - !reference [.log_ci_context, script]
+    - !reference [.install_uv, script]
+    - !reference [.uv_sync, script]
+    - !reference [.pytest, script]

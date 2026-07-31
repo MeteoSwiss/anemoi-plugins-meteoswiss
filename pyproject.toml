@@ -11,7 +11,7 @@ dependencies = [
     "anemoi-transform",
     "earthkit-meteo==1.0.0",
     "peakweather==0.2.2",
-    "earthkit-data>=0.19,<1.0",
+    "earthkit-data==0.19.2",
     "earthkit-utils ==1.0.2",
 ]
 
@@ -20,14 +20,17 @@ anemoi-plugins-meteoswiss = "anemoi_plugins_meteoswiss:main"
 
 [project.entry-points."anemoi.transform.filters"]
 average-flux-to-cumulative-quantity = "anemoi_plugins_meteoswiss.transform.filters:AverageFluxToCumulativeQuantity"
-destagger = "anemoi_plugins_meteoswiss.transform.filters:Destagger"
-clip-lateral-boundaries = "anemoi_plugins_meteoswiss.transform.filters:ClipLateralBoundaries"
 model-to-pressure-level = "anemoi_plugins_meteoswiss.transform.filters:ModelToPressureLevel"
 assign-grid = "anemoi_plugins_meteoswiss.transform.filters:AssignGrid"
-omega-from-w = "anemoi_plugins_meteoswiss.transform.filters:OmegaFromW"
 geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:GeopotentialFromHeight"
 copy-prognostic-from-forecaster = "anemoi_plugins_meteoswiss.copy_prognostic_from_forecaster:CopyPrognosticFromForecaster"
 
+nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
+
+[project.entry-points."anemoi.transform.filters.fields"]
+nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
+gaussian-smoother = "anemoi_plugins_meteoswiss.transform.filters:GaussianSmoother"
+icon-remap-to-reg-lat-lon = "anemoi_plugins_meteoswiss.transform.filters:IconRemapToRegLatLon"
 
 [project.entry-points."anemoi.datasets.create.sources"]
 rea-l-ch1-precip = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1Precip"
@@ -37,13 +40,11 @@ rea-l-ch1-wind-gust = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1WindGu
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [dependency-groups]
 dev = [
     "pre-commit>=4.5.1",
     "pytest>=9.0.2",
 ]
-
-# [tool.uv.sources]
-# anemoi-plugins = { git = "https://github.com/ecmwf/anemoi-plugins.git" }
-# earthkit-meteo = { git = "https://github.com/ecmwf/earthkit-meteo.git" , rev = "develop" }
-# peakweather = { git = "https://github.com/MeteoSwiss/PeakWeather.git" }

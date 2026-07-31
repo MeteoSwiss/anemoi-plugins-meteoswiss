@@ -1,23 +1,16 @@
-from .clipping import ClipLateralBoundaries
-from .destaggering import Destagger
 from .geopotential_from_height import GeopotentialFromHeight
 from .nudging import NudgeTowardObservation
 from .grid import AssignGrid
-from .omega_from_w import OmegaFromW
 from .time_processing import AverageFluxToCumulativeQuantity
-
-# from .vertical_interpolation import ModelToPressureLevel
+from .iconremap import IconRemapToRegLatLon
+from. smoothing import GaussianSmoother
 
 __all__ = [
     "AverageFluxToCumulativeQuantity",
-    "ClipLateralBoundaries",
-    "Destagger",
     "AssignGrid",
     "ModelToPressureLevel",
-    "Interp2Grid",
-    "InterpNAFilter",
-    "Interp2Res",
-    "OmegaFromW",
     "GeopotentialFromHeight",
     "NudgeTowardObservation",
+    "IconRemapToRegLatLon",
+    "GaussianSmoother",
 ]

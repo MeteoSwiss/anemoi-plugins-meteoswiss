@@ -36,7 +36,7 @@ def test_icon_remap_to_reg_lat_lon(data_dir, hostname):
     assert regridder._longitudes.max() < 22.0
 
     fn = str(data_dir / "iaf2025010100")
-    fieldlist = ekd.from_source("file", fn).sel(shortName="T_2M")
+    fieldlist = ekd.from_source("file", fn).sel(shortName="2t")
 
     result = regridder.forward(fieldlist)
 
@@ -58,13 +58,13 @@ def test_gaussian_smoother(data_dir, hostname):
         pytest.skip("Only runs on Balfrin.")
 
     regridder = IconRemapToRegLatLon(ICONREMAP_WEIGHTS)
-    smoother = GaussianSmoother(sigma=5, params=["T_2M"])
+    smoother = GaussianSmoother(sigma=5, params=["2t"])
 
     fn = str(data_dir / "iaf2025010100")
     fs = ekd.from_source("file", fn)
     # T_2M (smoothed) + one level of W (pass-through, not in params)
     fieldlist = new_fieldlist_from_list(
-        list(fs.sel(shortName="T_2M")) + [fs.sel(shortName="W")[0]]
+        list(fs.sel(shortName="2t")) + [fs.sel(shortName="wz")[0]]
     )
 
     regridded = list(regridder.forward(fieldlist))

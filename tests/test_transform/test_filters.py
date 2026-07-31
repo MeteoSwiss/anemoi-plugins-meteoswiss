@@ -1,6 +1,6 @@
+import earthkit.data as ekd
 import numpy as np
 import pytest
-
 from anemoi.transform.fields import new_field_from_numpy
 from anemoi.transform.fields import new_fieldlist_from_list
 

@@ -3,30 +3,29 @@ import sys
 
 import earthkit.data as ekd
 import numpy as np
-import pandas as pd
 from anemoi.transform.filter import Filter
 
 LOG = logging.getLogger(__name__)
 
 # GRIB shortName -> station DataFrame column
 _PARAM_TO_COL = {
-    "T_2M":     "2t",
-    "TD_2M":    "2d",
-    "U_10M":    "10u",
-    "V_10M":    "10v",
-    "PMSL":     "msl",
+    "T_2M": "2t",
+    "TD_2M": "2d",
+    "U_10M": "10u",
+    "V_10M": "10v",
+    "PMSL": "msl",
     "TOT_PREC": "tp",
     "VMAX_10M": "vmax",
 }
 
 # Station column -> DWH (jretrieve) parameter names
 _COL_TO_JR_PARAMS = {
-    "2t":   ["tre200s0"],
-    "2d":   ["tde200s0"],
-    "10u":  ["fkl010z0", "dkl010z0"],
-    "10v":  ["fkl010z0", "dkl010z0"],
-    "msl":  ["pp0qffs0"],
-    "tp":   ["rre150h0"],
+    "2t": ["tre200s0"],
+    "2d": ["tde200s0"],
+    "10u": ["fkl010z0", "dkl010z0"],
+    "10v": ["fkl010z0", "dkl010z0"],
+    "msl": ["pp0qffs0"],
+    "tp": ["rre150h0"],
     "vmax": ["fkl010z1"],
 }
 
@@ -117,13 +116,13 @@ class RetrieveObservation(Filter):
             sys.path.insert(0, self.jretrieve_src_path)
         import jretrieve as jr
 
-        jr_params = list(dict.fromkeys(
-            p for col in self.cols for p in _COL_TO_JR_PARAMS.get(col, [])
-        ))
-        if not jr_params:
-            raise ValueError(
-                f"No jretrieve parameters found for columns: {self.cols}"
+        jr_params = list(
+            dict.fromkeys(
+                p for col in self.cols for p in _COL_TO_JR_PARAMS.get(col, [])
             )
+        )
+        if not jr_params:
+            raise ValueError(f"No jretrieve parameters found for columns: {self.cols}")
 
         jr.check_prerequisites()
 

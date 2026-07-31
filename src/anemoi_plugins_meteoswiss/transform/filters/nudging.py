@@ -1,5 +1,4 @@
 import logging
-import sys
 from pathlib import Path
 
 import earthkit.data as ekd
@@ -16,12 +15,12 @@ LOG = logging.getLogger(__name__)
 # Maps GRIB shortName -> (station DataFrame column, unit offset applied to obs before nudging).
 # Uses COSMO/ICON shortNames as output by the LAM forecaster.
 PARAM_MAP = {
-    "T_2M":     ("2t",   0.0),  # 2 m temperature        [K]
-    "TD_2M":    ("2d",   0.0),  # 2 m dewpoint           [K]
-    "U_10M":    ("10u",  0.0),  # 10 m wind U component  [m/s]
-    "V_10M":    ("10v",  0.0),  # 10 m wind V component  [m/s]
-    "PMSL":     ("msl",  0.0),  # mean sea-level pressure [Pa]
-    "TOT_PREC": ("tp",   0.0),  # hourly precipitation   [kg m-2]
+    "T_2M": ("2t", 0.0),  # 2 m temperature        [K]
+    "TD_2M": ("2d", 0.0),  # 2 m dewpoint           [K]
+    "U_10M": ("10u", 0.0),  # 10 m wind U component  [m/s]
+    "V_10M": ("10v", 0.0),  # 10 m wind V component  [m/s]
+    "PMSL": ("msl", 0.0),  # mean sea-level pressure [Pa]
+    "TOT_PREC": ("tp", 0.0),  # hourly precipitation   [kg m-2]
     "VMAX_10M": ("vmax", 0.0),  # 10 m wind gust         [m/s]
 }
 
@@ -191,14 +190,19 @@ class NudgeTowardObservation(Filter):
         if nudge_variables is not None:
             unknown = set(nudge_variables) - PARAM_MAP.keys()
             if unknown:
-                raise ValueError(f"Unknown nudge variables: {unknown}. Valid: {list(PARAM_MAP)}")
+                raise ValueError(
+                    f"Unknown nudge variables: {unknown}. Valid: {list(PARAM_MAP)}"
+                )
             self.param_map = {k: PARAM_MAP[k] for k in nudge_variables}
         else:
             self.param_map = PARAM_MAP
 
         LOG.info(
             "Nudging filter initialised: variables=%s, k=%d, power=%.1f, max_dist=%.2f",
-            list(self.param_map.keys()), self.k, self.power, self.max_dist,
+            list(self.param_map.keys()),
+            self.k,
+            self.power,
+            self.max_dist,
         )
         super().__init__()
 
@@ -252,9 +256,15 @@ class NudgeTowardObservation(Filter):
             st_obs = stations.loc[valid, col].to_numpy() + offset
 
             corrected = interpolation_of_residuals(
-                field.values, lat_icon, lon_icon,
-                st_lat, st_lon, st_obs,
-                k=self.k, power=self.power, max_dist=self.max_dist,
+                field.values,
+                lat_icon,
+                lon_icon,
+                st_lat,
+                st_lon,
+                st_obs,
+                k=self.k,
+                power=self.power,
+                max_dist=self.max_dist,
             )
             nudged[shortname] = new_field_from_numpy(
                 corrected,
@@ -267,7 +277,9 @@ class NudgeTowardObservation(Filter):
             LOG.info("Nudged '%s' using %d stations", shortname, int(valid.sum()))
 
         result = [
-            nudged.get(f.metadata("shortName"), f) if f.datetime()["valid_time"] == ref_time else f
+            nudged.get(f.metadata("shortName"), f)
+            if f.datetime()["valid_time"] == ref_time
+            else f
             for f in data
         ]
         self._nudging_done = True

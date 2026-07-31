@@ -7,7 +7,6 @@ import numpy as np
 import xarray as xr
 from anemoi.transform.filter import Filter
 
-
 SFC_VCOORD_TYPES = [
     "surface",
     "heightAboveGround",

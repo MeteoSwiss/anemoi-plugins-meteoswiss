@@ -29,7 +29,7 @@ Notes
   directory, exactly like the input source paths, the filter makes no
   assumption about any particular directory layout.
 - The value copy assumes the downscaler and forecaster share the same grid for a
-  given stream If this is failing, double check the level and position at which the postprocessor is applied 
+  given stream If this is failing, double check the level and position at which the postprocessor is applied
   (e.g in case of regriddings, make sure it's applied when the grids still align).
 """
 
@@ -49,10 +49,14 @@ LOG = logging.getLogger(__name__)
 
 
 def _parse_duration(value) -> timedelta:
-    """Parse a duration like ``6h``, ``30m``/``30min``, ``1d`` into a timedelta.
-    """
+    """Parse a duration like ``6h``, ``30m``/``30min``, ``1d`` into a timedelta."""
     s = str(value).strip().lower()
-    for suffix, unit in (("min", "minutes"), ("h", "hours"), ("m", "minutes"), ("d", "days")):
+    for suffix, unit in (
+        ("min", "minutes"),
+        ("h", "hours"),
+        ("m", "minutes"),
+        ("d", "days"),
+    ):
         if s.endswith(suffix):
             return timedelta(**{unit: float(s[: -len(suffix)])})
     raise ValueError(
@@ -74,7 +78,7 @@ def _namer_map(namer: dict | None) -> dict[str, str]:
 
 
 def _anemoi_name(short_name: str, level: int, type_of_level: str, namer: dict) -> str:
-    """Map a forecaster GRIB field to its anemoi variable name. 
+    """Map a forecaster GRIB field to its anemoi variable name.
     The anemoi variable is the variable "understood" by the model (usually IFS names, which can differ from the GRIB names).
 
     ICON names (LAM stream) go through the ``namer`` (``T`` -> ``t_{level}``,
@@ -149,9 +153,7 @@ class CopyPrognosticFromForecaster(Filter):
             These need to be in anemoi names (``2t``, ``sp``, ``tp``, ``t_500``, ...), not COSMOS/ICON shortNames.
         """
         if (params_to_copy is None) == (params_to_keep is None):
-            raise ValueError(
-                "Provide exactly one of params_to_copy or params_to_keep."
-            )
+            raise ValueError("Provide exactly one of params_to_copy or params_to_keep.")
 
         self.forecaster_path = forecaster_path
         self.common_leadtime = _parse_duration(common_leadtime)
@@ -208,7 +210,9 @@ class CopyPrognosticFromForecaster(Filter):
         out = []
         copied = []
         leads_copied: set[timedelta] = set()
-        for field in data: # loop through each variable and look for prognostics to copy over.
+        for (
+            field
+        ) in data:  # loop through each variable and look for prognostics to copy over.
             name = field.metadata("param")
             lead = _leadtime(field)
             # Patch a field only if it is a requested prognostic AND sits at an

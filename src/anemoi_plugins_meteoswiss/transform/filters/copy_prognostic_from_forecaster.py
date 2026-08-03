@@ -51,16 +51,20 @@ LOG = logging.getLogger(__name__)
 def _parse_duration(value) -> timedelta:
     """Parse a duration like ``6h``, ``30m``/``30min``, ``1d`` into a timedelta."""
     s = str(value).strip().lower()
-    for suffix, unit in (
+
+    suffix_unit_mapping = (
         ("min", "minutes"),
         ("h", "hours"),
         ("m", "minutes"),
         ("d", "days"),
-    ):
+    )
+
+    for suffix, unit in suffix_unit_mapping:
         if s.endswith(suffix):
             return timedelta(**{unit: float(s[: -len(suffix)])})
     raise ValueError(
-        f"common_leadtime must be a duration with a unit (e.g. '6h', '30min', '1d'), got {value!r}"
+        f"common_leadtime must be a duration with a unit (e.g. '6h', '30min', '1d'), got {value!r}. "
+        f"Accepted suffixes are: {', '.join(suffix for suffix, _ in suffix_unit_mapping)}"
     )
 
 

@@ -26,11 +26,11 @@ in; other steps pass through untouched.
 Notes
 -----
 - ``forecaster_path`` is a plain glob resolved from the inference working
-  directory, exactly like the input source paths — the filter makes no
+  directory, exactly like the input source paths, the filter makes no
   assumption about any particular directory layout.
 - The value copy assumes the downscaler and forecaster share the same grid for a
-  given stream (true for a *temporal* downscaler); this is guarded per field by a
-  ``numberOfValues`` equality check.
+  given stream If this is failing, double check the level and position at which the postprocessor is applied 
+  (e.g in case of regriddings, make sure it's applied when the grids still align).
 """
 
 import fnmatch
@@ -50,9 +50,6 @@ LOG = logging.getLogger(__name__)
 
 def _parse_duration(value) -> timedelta:
     """Parse a duration like ``6h``, ``30m``/``30min``, ``1d`` into a timedelta.
-
-    A duration (not a bare number) is required so the overlap gating is
-    unambiguous regardless of the dataset's time resolution.
     """
     s = str(value).strip().lower()
     for suffix, unit in (("min", "minutes"), ("h", "hours"), ("m", "minutes"), ("d", "days")):
@@ -77,7 +74,8 @@ def _namer_map(namer: dict | None) -> dict[str, str]:
 
 
 def _anemoi_name(short_name: str, level: int, type_of_level: str, namer: dict) -> str:
-    """Map a forecaster GRIB field to its anemoi variable name.
+    """Map a forecaster GRIB field to its anemoi variable name. 
+    The anemoi variable is the variable "understood" by the model (usually IFS names, which can differ from the GRIB names).
 
     ICON names (LAM stream) go through the ``namer`` (``T`` -> ``t_{level}``,
     ``T_2M`` -> ``2t``, ...). IFS names (global stream) are not in the namer, so
@@ -111,7 +109,7 @@ def _leadtime(field: ekd.Field) -> timedelta | None:
 
 def _num_values(field: ekd.Field) -> int:
     """Number of grid points, via ``.shape`` — a base Field property present on
-    both field kinds. (The GRIB ``numberOfValues`` key exists only on the
+    both field kinds. (The GRIB ``numberOfValues`` key seem to exist only on the
     GRIB-backed forecaster fields, not the in-memory downscaler fields.)"""
     return int(math.prod(field.shape))
 
@@ -160,7 +158,7 @@ class CopyPrognosticFromForecaster(Filter):
         self.params_to_copy = list(params_to_copy) if params_to_copy else None
         self.params_to_keep = list(params_to_keep) if params_to_keep else None
         self._namer = _namer_map(namer)
-        LOG.warning(
+        LOG.info(
             "[copy-prognostic-from-forecaster] init: forecaster_path=%s "
             "common_leadtime=%s copy=%s keep=%s",
             self.forecaster_path,
@@ -199,7 +197,7 @@ class CopyPrognosticFromForecaster(Filter):
             lead = _leadtime(f)
             if lead is not None:
                 index[(name, lead)] = f
-        LOG.warning(
+        LOG.info(
             "[copy-prognostic-from-forecaster] indexed %d forecaster fields from %d file(s)",
             len(index),
             len(files),
@@ -229,7 +227,7 @@ class CopyPrognosticFromForecaster(Filter):
             if match is None:
                 LOG.warning(
                     "[copy-prognostic-from-forecaster] no forecaster field for %s "
-                    "at lead %s; keeping downscaler value",
+                    "at lead %s; keeping downscaler value.",
                     name,
                     lead,
                 )
@@ -243,13 +241,14 @@ class CopyPrognosticFromForecaster(Filter):
                     f"copy-prognostic-from-forecaster: grid mismatch for {name} "
                     f"at lead {lead} — downscaler has {n_ds} values, forecaster "
                     f"has {n_fc}. This filter assumes a shared grid (temporal downscaler)."
+                    f"Possible cause: the postprocessor is applied at a level where the incoming stream and the data in `forecaster_path` have different number of grid points."
                 )
             out.append(new_field_from_numpy(match.to_numpy(), template=field))
             copied.append(name)
             leads_copied.add(lead)
 
         if copied:
-            LOG.warning(
+            LOG.info(
                 "[copy-prognostic-from-forecaster] lead(s) %s: copied %d field(s): %s",
                 sorted(str(x) for x in leads_copied),
                 len(copied),

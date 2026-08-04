@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 from .clean_observation import CleanObservation
+=======
+from .copy_prognostic_from_forecaster import CopyPrognosticFromForecaster
+>>>>>>> main
 from .geopotential_from_height import GeopotentialFromHeight
 from .grid import AssignGrid
 from .iconremap import IconRemapToRegLatLon
@@ -12,6 +16,7 @@ __all__ = [
     "AverageFluxToCumulativeQuantity",
     "AssignGrid",
     "CleanObservation",
+    "CopyPrognosticFromForecaster",
     "ModelToPressureLevel",
     "GeopotentialFromHeight",
     "NudgeTowardObservation",

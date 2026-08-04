@@ -23,6 +23,8 @@ average-flux-to-cumulative-quantity = "anemoi_plugins_meteoswiss.transform.filte
 model-to-pressure-level = "anemoi_plugins_meteoswiss.transform.filters:ModelToPressureLevel"
 assign-grid = "anemoi_plugins_meteoswiss.transform.filters:AssignGrid"
 geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:GeopotentialFromHeight"
+copy-prognostic-from-forecaster = "anemoi_plugins_meteoswiss.transform.filters:CopyPrognosticFromForecaster"
+
 nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
 
 [project.entry-points."anemoi.transform.filters.fields"]

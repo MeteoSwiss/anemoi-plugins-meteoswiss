@@ -23,12 +23,8 @@ average-flux-to-cumulative-quantity = "anemoi_plugins_meteoswiss.transform.filte
 model-to-pressure-level = "anemoi_plugins_meteoswiss.transform.filters:ModelToPressureLevel"
 assign-grid = "anemoi_plugins_meteoswiss.transform.filters:AssignGrid"
 geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:GeopotentialFromHeight"
-<<<<<<< HEAD
 clean-observation = "anemoi_plugins_meteoswiss.transform.filters:CleanObservation"
-=======
 copy-prognostic-from-forecaster = "anemoi_plugins_meteoswiss.transform.filters:CopyPrognosticFromForecaster"
-
->>>>>>> main
 nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
 retrieve-observation = "anemoi_plugins_meteoswiss.transform.filters:RetrieveObservation"
 

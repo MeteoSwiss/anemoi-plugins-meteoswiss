@@ -150,6 +150,9 @@ class NudgeTowardObservation(Filter):
         max_dist: float = 0.5,
         nudge_variables: list = None,
         run_mode: str = "depl",
+        holdout_fraction: float = None,
+        holdout_seed: int = 42,
+        exclude_stations: list = None,
     ):
         """Initialise the nudging filter.
 
@@ -175,9 +178,27 @@ class NudgeTowardObservation(Filter):
         run_mode : str
             ``'depl'`` (default): ref_time = minimum valid_time across all
             fields. ``'devt'``: ref_time = valid_time of the first field.
+        holdout_fraction : float, optional
+            Fraction of stations to withhold from nudging (e.g. ``0.05`` withholds
+            5 %). Stations are drawn randomly using *holdout_seed*. Mutually
+            exclusive with *exclude_stations*.
+        holdout_seed : int
+            Random seed used when *holdout_fraction* is set. Defaults to 42 for
+            reproducibility.
+        exclude_stations : list of str, optional
+            Station identifiers (nat_abbr index values) to unconditionally exclude
+            from nudging. Mutually exclusive with *holdout_fraction*.
         """
         if run_mode not in ("devt", "depl"):
             raise ValueError(f"run_mode must be 'devt' or 'depl', got {run_mode!r}")
+        if holdout_fraction is not None and exclude_stations is not None:
+            raise ValueError(
+                "holdout_fraction and exclude_stations are mutually exclusive; provide at most one."
+            )
+        if holdout_fraction is not None and not (0.0 <= holdout_fraction <= 1.0):
+            raise ValueError(
+                f"holdout_fraction must be in [0, 1], got {holdout_fraction!r}"
+            )
 
         self.obs_path = Path(obs_path)
         self.icon_grid_dir = Path(icon_grid_dir)
@@ -185,6 +206,9 @@ class NudgeTowardObservation(Filter):
         self.power = power
         self.max_dist = max_dist
         self.run_mode = run_mode
+        self.holdout_fraction = holdout_fraction
+        self.holdout_seed = holdout_seed
+        self.exclude_stations = list(exclude_stations) if exclude_stations is not None else None
         self._nudging_done = False
 
         if nudge_variables is not None:
@@ -238,6 +262,8 @@ class NudgeTowardObservation(Filter):
 
         stations = self._load_stations()
         LOG.info("Stations loaded: %d", len(stations))
+        stations = self._apply_holdout(stations)
+        LOG.info("Stations after holdout: %d", len(stations))
 
         nudged = {}
         for field in data.sel(shortName=list(self.param_map.keys())):
@@ -285,6 +311,53 @@ class NudgeTowardObservation(Filter):
         self._nudging_done = True
         LOG.info("Nudging complete: %d/%d fields updated", len(nudged), len(result))
         return new_fieldlist_from_list(result)
+
+    def _apply_holdout(self, stations: pd.DataFrame) -> pd.DataFrame:
+        """Remove stations from the nudging set according to holdout configuration.
+
+        Parameters
+        ----------
+        stations : pd.DataFrame
+            Full station observations as loaded from the Parquet file.
+
+        Returns
+        -------
+        pd.DataFrame
+            Station observations with the holdout stations removed.
+        """
+        if self.exclude_stations is not None:
+            before = len(stations)
+            missing = [s for s in self.exclude_stations if s not in stations.index]
+            if missing:
+                LOG.warning("Excluded station IDs not found in observations: %s", missing)
+            stations = stations.drop(index=[s for s in self.exclude_stations if s in stations.index])
+            LOG.info(
+                "Excluded %d station(s) by ID: %s",
+                before - len(stations),
+                self.exclude_stations,
+            )
+
+        elif self.holdout_fraction is not None:
+            if self.holdout_fraction == 0.0:
+                LOG.info("holdout_fraction=0: all stations used.")
+            elif self.holdout_fraction == 1.0:
+                LOG.info("holdout_fraction=1: all stations withheld, nudging will have no effect.")
+                stations = stations.iloc[0:0]
+            else:
+                n_holdout = round(len(stations) * self.holdout_fraction)
+                rng = np.random.default_rng(self.holdout_seed)
+                held_out = rng.choice(stations.index, size=n_holdout, replace=False)
+                stations = stations.drop(index=held_out)
+                LOG.info(
+                    "Held out %d/%d station(s) (%.0f%%, seed=%d): %s",
+                    n_holdout,
+                    n_holdout + len(stations),
+                    self.holdout_fraction * 100,
+                    self.holdout_seed,
+                    list(held_out),
+                )
+
+        return stations
 
     def _load_stations(self) -> pd.DataFrame:
         """Read pre-fetched station observations from the configured Parquet file.

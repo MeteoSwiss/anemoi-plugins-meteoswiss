@@ -70,7 +70,9 @@ class CleanObservation(Filter):
         pd.DataFrame
             Cleaned observations (currently a no-op placeholder).
         """
-        
-        LOG.info("The data cleaning logic should be implemented here. Currently, this is a no-op placeholder.")
-        
+
+        LOG.info(
+            "The data cleaning logic should be implemented here. Currently, this is a no-op placeholder."
+        )
+
         return df

@@ -1,5 +1,6 @@
 import logging
 import sys
+from pathlib import Path
 
 import earthkit.data as ekd
 import numpy as np
@@ -173,5 +174,6 @@ class RetrieveObservation(Filter):
         ]
         df = df[result_cols].copy()
 
+        Path(self.obs_path).parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(self.obs_path)
         LOG.info("Saved %d stations to %s", len(df), self.obs_path)

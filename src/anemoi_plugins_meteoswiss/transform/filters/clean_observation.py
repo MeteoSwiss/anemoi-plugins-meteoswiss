@@ -50,6 +50,7 @@ class CleanObservation(Filter):
 
         df = self._clean(df)
 
+        self.obs_path_out.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(self.obs_path_out)
         LOG.info("Saved %d cleaned stations to %s", len(df), self.obs_path_out)
 

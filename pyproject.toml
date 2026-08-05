@@ -9,6 +9,8 @@ dependencies = [
     "anemoi-datasets",
     "anemoi-plugins==0.2.0",
     "anemoi-transform",
+    "anemoi-inference>=0.11",
+    "anemoi-plugins-ecmwf-inference[opendata]>=0.5.0",
     "earthkit-meteo==1.0.0",
     "peakweather==0.2.2",
     "earthkit-data==0.19.2",
@@ -35,6 +37,9 @@ icon-remap-to-reg-lat-lon = "anemoi_plugins_meteoswiss.transform.filters:IconRem
 [project.entry-points."anemoi.datasets.create.sources"]
 rea-l-ch1-precip = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1Precip"
 rea-l-ch1-wind-gust = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1WindGust"
+
+[project.entry-points."anemoi.inference.inputs"]
+resilient-opendata = "anemoi_plugins_meteoswiss.inference.inputs:ResilientOpenDataInput"
 
 [build-system]
 requires = ["hatchling"]

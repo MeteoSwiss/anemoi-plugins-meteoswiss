@@ -65,11 +65,10 @@ Optional dependency
 --------------------
 
 This module (and the ``anemoi-inference``/``anemoi-plugins-ecmwf-inference``
-packages it needs) is only pulled in via the ``oper-ecmwf-opendata`` extra
-(``pip install anemoi-plugins-meteoswiss[oper-ecmwf-opendata]``) — those
-bring in ``mir-python``/``eckit``/``atlas`` and are unnecessary for consumers
-that only use this package's ``anemoi-transform`` filters (e.g. dataset
-creation).
+packages it needs) is only pulled in via the ``oper-inference`` extra
+(``pip install anemoi-plugins-meteoswiss[oper-inference]``) — those bring in
+``mir-python``/``eckit``/``atlas`` and are unnecessary for consumers that
+only use this package's ``anemoi-transform`` filters (e.g. dataset creation).
 
 Usage
 -----
@@ -185,7 +184,14 @@ class OperEcmwfOpenDataInput(OpenDataInputPlugin):
         frequency_h : int
             Hours between ECMWF Open Data runs.
         step_h : int
-            Step granularity available in ECMWF Open Data.
+            Step granularity actually published by ECMWF Open Data (verified
+            against the real endpoint: for ``oper``/``0p25``, step 0h/3h/6h
+            exist, 1h/2h don't — confirmed with direct HEAD requests, not
+            documentation). A target that isn't an exact multiple of this
+            raises in ``_run_and_step`` rather than silently substituting the
+            nearest available step: ECMWF Open Data has no in-between data to
+            round to, so a "closest step" would just be a different, wrong
+            valid time presented as if it were the requested one.
         max_lead_time_h : int
             Maximum forecast step available in ECMWF Open Data.
         stored_runs : int
@@ -198,11 +204,13 @@ class OperEcmwfOpenDataInput(OpenDataInputPlugin):
         self.stored_runs = stored_runs
 
     def _run_and_step(self, target: datetime, latest_run: datetime) -> tuple[datetime, int]:
-        """Compute ``(run, step_h)`` so the forecast from ``run`` reaches ``target``.
+        """Compute ``(run, step_h)`` so the forecast from ``run`` reaches ``target`` exactly.
 
         Walks back through stored runs (``frequency_h`` apart, up to
-        ``stored_runs``) to find the most recent one whose lead time (rounded
-        to the nearest ``step_h`` boundary) covers ``target``.
+        ``stored_runs``) to find the most recent one whose lead time lands
+        exactly on ``target``. Raises if ``target`` isn't reachable at the
+        configured ``step_h`` granularity — see ``step_h``'s docstring for why
+        this doesn't fall back to an approximate/nearest step instead.
         """
         hours_ahead = round((latest_run - target).total_seconds() / 3600)
         n_back = math.ceil(max(hours_ahead, 0) / self.frequency_h)

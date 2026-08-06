@@ -57,7 +57,7 @@ def test_target_exactly_at_a_run_boundary_uses_step_zero():
     assert (run, step) == (datetime(2026, 8, 5, 6, 0), 0)
 
 
-def test_target_between_runs_uses_nearest_step_boundary():
+def test_target_exactly_three_hours_ahead_succeeds():
     d = _make_input()
     run, step = d._run_and_step(datetime(2026, 8, 5, 9, 0), datetime(2026, 8, 5, 6, 0))
     assert (run, step) == (datetime(2026, 8, 5, 6, 0), 3)
@@ -79,6 +79,11 @@ def test_step_exceeding_max_lead_time_raises():
     d = _make_input(frequency_h=12, max_lead_time_h=6, stored_runs=100)
     with pytest.raises(ValueError, match="exceeds open data max lead time"):
         d._run_and_step(datetime(2026, 8, 5, 9, 0), datetime(2026, 8, 5, 0, 0))  # 9h ahead of the 00:00 run
+
+def test_target_exactly_on_step_h_grid_succeeds():
+    d = _make_input()
+    run, step = d._run_and_step(datetime(2026, 8, 6, 9, 0), datetime(2026, 8, 6, 0, 0))
+    assert (run, step) == (datetime(2026, 8, 6, 0, 0), 9)
 
 
 def test_param_translation_strips_level_suffix_from_pressure_level_variables():

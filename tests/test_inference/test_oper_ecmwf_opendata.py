@@ -1,17 +1,26 @@
-"""Unit tests for ResilientOpenDataInput's run/step walk-back logic.
+"""Unit tests for OperEcmwfOpenDataInput's run/step walk-back logic.
 
-These need no network/FDB/HPC access — they exercise the pure date
-arithmetic and the request-building wiring with mocks, unlike the
-`hostname.startswith("balfrin")`-gated tests elsewhere in this suite.
+These need no network/FDB/HPC access — `ecmwf.opendata.Client.latest()` (the
+real, network-backed "which run is actually published" check) is mocked out
+everywhere here, unlike the `hostname.startswith("balfrin")`-gated tests
+elsewhere in this suite.
+
+The module under test lives behind the `oper-ecmwf-opendata` optional
+dependency group (anemoi-inference + anemoi-plugins-ecmwf-inference, which
+pull in mir/eckit/atlas) — skip this whole file cleanly if it isn't installed.
 """
 
+import os
 from datetime import datetime
 
 import pytest
 
-from anemoi_plugins_meteoswiss.inference.inputs.resilient_opendata import ResilientOpenDataInput
-from anemoi_plugins_meteoswiss.inference.inputs.resilient_opendata import _param_translation_from_variables_metadata
-from anemoi_plugins_meteoswiss.inference.inputs.resilient_opendata import _translate_params
+pytest.importorskip("anemoi.plugins.ecmwf.inference.opendata.opendata")
+
+from anemoi_plugins_meteoswiss.inference.inputs.oper_ecmwf_opendata import OperEcmwfOpenDataInput
+from anemoi_plugins_meteoswiss.inference.inputs.oper_ecmwf_opendata import _param_translation_from_variables_metadata
+from anemoi_plugins_meteoswiss.inference.inputs.oper_ecmwf_opendata import _translate_params
+from anemoi_plugins_meteoswiss.inference.inputs.oper_ecmwf_opendata import _without_eccodes_definition_path_override
 
 # Mirrors the shape of the real (patched) checkpoint variables_metadata:
 # mars.param is the KENDA/COSMO name, the variable's own key is the ECMWF one.
@@ -32,56 +41,44 @@ class _MetadataWithVariables:
 
 
 def _make_input(**overrides):
-    """A ResilientOpenDataInput with its attributes set directly, bypassing
+    """A OperEcmwfOpenDataInput with its attributes set directly, bypassing
     __init__ (which needs a real anemoi-inference Context/Metadata/checkpoint)."""
-    obj = object.__new__(ResilientOpenDataInput)
+    obj = object.__new__(OperEcmwfOpenDataInput)
     obj.frequency_h = overrides.get("frequency_h", 6)
     obj.step_h = overrides.get("step_h", 3)
     obj.max_lead_time_h = overrides.get("max_lead_time_h", 144)
     obj.stored_runs = overrides.get("stored_runs", 12)
-    obj.delivery_delay_h = overrides.get("delivery_delay_h", 7)
     return obj
-
-
-def test_guaranteed_run_rounds_down_to_frequency_boundary():
-    d = _make_input()
-    # 15:30 - 7h delay = 08:30, rounds down to the 6h boundary -> 06:00
-    assert d._guaranteed_run(datetime(2026, 8, 5, 15, 30)) == datetime(2026, 8, 5, 6, 0)
 
 
 def test_target_exactly_at_a_run_boundary_uses_step_zero():
     d = _make_input()
-    guaranteed = d._guaranteed_run(datetime(2026, 8, 5, 15, 30))
-    run, step = d._run_and_step(datetime(2026, 8, 5, 6, 0), guaranteed)
+    run, step = d._run_and_step(datetime(2026, 8, 5, 6, 0), datetime(2026, 8, 5, 6, 0))
     assert (run, step) == (datetime(2026, 8, 5, 6, 0), 0)
 
 
 def test_target_between_runs_uses_nearest_step_boundary():
     d = _make_input()
-    guaranteed = d._guaranteed_run(datetime(2026, 8, 5, 15, 30))
-    run, step = d._run_and_step(datetime(2026, 8, 5, 9, 0), guaranteed)
+    run, step = d._run_and_step(datetime(2026, 8, 5, 9, 0), datetime(2026, 8, 5, 6, 0))
     assert (run, step) == (datetime(2026, 8, 5, 6, 0), 3)
 
 
 def test_target_older_than_guaranteed_run_walks_back():
     d = _make_input()
-    guaranteed = d._guaranteed_run(datetime(2026, 8, 5, 15, 30))  # 2026-08-05 06:00
-    run, step = d._run_and_step(datetime(2026, 8, 4, 9, 0), guaranteed)
+    run, step = d._run_and_step(datetime(2026, 8, 4, 9, 0), datetime(2026, 8, 5, 6, 0))
     assert (run, step) == (datetime(2026, 8, 4, 6, 0), 3)
 
 
 def test_target_too_old_raises():
     d = _make_input()
-    guaranteed = d._guaranteed_run(datetime(2026, 8, 5, 15, 30))
     with pytest.raises(ValueError, match="stored open data runs"):
-        d._run_and_step(datetime(2026, 7, 1, 0, 0), guaranteed)
+        d._run_and_step(datetime(2026, 7, 1, 0, 0), datetime(2026, 8, 5, 6, 0))
 
 
 def test_step_exceeding_max_lead_time_raises():
     d = _make_input(frequency_h=12, max_lead_time_h=6, stored_runs=100)
-    guaranteed = d._guaranteed_run(datetime(2026, 8, 5, 15, 30))  # 2026-08-05 00:00
     with pytest.raises(ValueError, match="exceeds open data max lead time"):
-        d._run_and_step(datetime(2026, 8, 5, 9, 0), guaranteed)  # 9h ahead of the 00:00 run
+        d._run_and_step(datetime(2026, 8, 5, 9, 0), datetime(2026, 8, 5, 0, 0))  # 9h ahead of the 00:00 run
 
 
 def test_param_translation_strips_level_suffix_from_pressure_level_variables():
@@ -139,11 +136,12 @@ class _FakeMetadata:
 
 
 def test_retrieve_requests_one_run_per_target_date_with_patched_step_and_params(monkeypatch):
-    """retrieve() should call mars_requests once per target date, patching
+    """retrieve() should ask _latest_published_run() (not guess a delay) for
+    the starting point, call mars_requests once per target date patching
     `step` to the value _run_and_step computed for that date (not the
-    checkpoint's training-time step baked into variables_metadata) and
-    translating `param` from KENDA/COSMO names to ECMWF Open Data ones
-    derived from variables_metadata, not a hardcoded table."""
+    checkpoint's training-time step baked into variables_metadata), and
+    translate `param` from KENDA/COSMO names to ECMWF Open Data ones derived
+    from variables_metadata, not a hardcoded table."""
     obj = _make_input()
     obj.kwargs = {}
     obj.metadata = _FakeMetadata()
@@ -156,12 +154,13 @@ def test_retrieve_requests_one_run_per_target_date_with_patched_step_and_params(
         return requests  # stand-in FieldList: a plain list supports + for this test
 
     monkeypatch.setattr(
-        "anemoi_plugins_meteoswiss.inference.inputs.resilient_opendata._retrieve_opendata",
+        "anemoi_plugins_meteoswiss.inference.inputs.oper_ecmwf_opendata._retrieve_opendata",
         fake_retrieve_opendata,
     )
-
-    guaranteed = obj._guaranteed_run(datetime(2026, 8, 5, 15, 30))
-    monkeypatch.setattr(obj, "_guaranteed_run", lambda: guaranteed)
+    monkeypatch.setattr(
+        "anemoi_plugins_meteoswiss.inference.inputs.oper_ecmwf_opendata._latest_published_run",
+        lambda **params: datetime(2026, 8, 5, 6, 0),
+    )
 
     result = obj.retrieve(["t_500"], [datetime(2026, 8, 5, 6, 0), datetime(2026, 8, 4, 9, 0)])
 
@@ -170,3 +169,42 @@ def test_retrieve_requests_one_run_per_target_date_with_patched_step_and_params(
     assert captured_requests[1]["step"] == 3  # walked back a day, 3h off that run
     assert captured_requests[0]["param"] == ["t"]  # translated from KENDA "T"
     assert result == captured_requests  # concatenated in order
+
+
+def test_latest_published_run_calls_ecmwf_opendata_client(monkeypatch):
+    """_latest_published_run() should delegate straight to
+    ecmwf.opendata.Client().latest(), the real availability check, passing
+    through whatever params it's given."""
+    from anemoi_plugins_meteoswiss.inference.inputs import oper_ecmwf_opendata
+
+    captured = {}
+
+    class _FakeClient:
+        def latest(self, **params):
+            captured.update(params)
+            return datetime(2026, 8, 5, 18, 0)
+
+    monkeypatch.setattr(oper_ecmwf_opendata, "_EcmwfOpenDataClient", _FakeClient)
+
+    result = oper_ecmwf_opendata._latest_published_run(type="fc")
+
+    assert result == datetime(2026, 8, 5, 18, 0)
+    assert captured == {"type": "fc"}
+
+
+def test_without_eccodes_definition_path_override_clears_and_restores(monkeypatch):
+    monkeypatch.setenv("ECCODES_DEFINITION_PATH", "/some/cosmo/definitions")
+
+    with _without_eccodes_definition_path_override():
+        assert "ECCODES_DEFINITION_PATH" not in os.environ
+
+    assert os.environ["ECCODES_DEFINITION_PATH"] == "/some/cosmo/definitions"
+
+
+def test_without_eccodes_definition_path_override_is_a_no_op_when_unset(monkeypatch):
+    monkeypatch.delenv("ECCODES_DEFINITION_PATH", raising=False)
+
+    with _without_eccodes_definition_path_override():
+        assert "ECCODES_DEFINITION_PATH" not in os.environ
+
+    assert "ECCODES_DEFINITION_PATH" not in os.environ

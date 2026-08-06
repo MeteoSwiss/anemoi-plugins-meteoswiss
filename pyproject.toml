@@ -13,6 +13,7 @@ dependencies = [
     "peakweather==0.2.2",
     "earthkit-data==0.19.2",
     "earthkit-utils ==1.0.2",
+    "eccodes-cosmo-resources-python==2.38.3.1",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +32,7 @@ model-to-pressure-level = "anemoi_plugins_meteoswiss.transform.filters:ModelToPr
 assign-grid = "anemoi_plugins_meteoswiss.transform.filters:AssignGrid"
 geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:GeopotentialFromHeight"
 copy-prognostic-from-forecaster = "anemoi_plugins_meteoswiss.transform.filters:CopyPrognosticFromForecaster"
+keep = "anemoi_plugins_meteoswiss.transform.filters:Keep"
 
 nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
 

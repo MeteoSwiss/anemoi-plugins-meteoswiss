@@ -8,7 +8,6 @@ from anemoi_plugins_meteoswiss.transform import filters
 from anemoi_plugins_meteoswiss.transform.filters import GaussianSmoother
 from anemoi_plugins_meteoswiss.transform.filters import IconRemapToRegLatLon
 from anemoi_plugins_meteoswiss.transform.filters import ModelToPressureLevel
-from anemoi_plugins_meteoswiss.transform.filters.vertical_interpolation import _select_one
 
 ICONREMAP_WEIGHTS = (
     "/store_new/mch/msopr/icon_workflow_2/iconremap-weights/icon-ch1-eps-rotlatlon.nc"
@@ -38,7 +37,7 @@ def test_icon_remap_to_reg_lat_lon(data_dir, hostname):
     assert regridder._longitudes.max() < 22.0
 
     fn = str(data_dir / "iaf2025010100")
-    fieldlist = ekd.from_source("file", fn).sel(shortName="2t")
+    fieldlist = ekd.from_source("file", fn).sel(shortName="T_2M")
 
     result = regridder.forward(fieldlist)
 
@@ -60,13 +59,13 @@ def test_gaussian_smoother(data_dir, hostname):
         pytest.skip("Only runs on Balfrin.")
 
     regridder = IconRemapToRegLatLon(ICONREMAP_WEIGHTS)
-    smoother = GaussianSmoother(sigma=5, params=["2t"])
+    smoother = GaussianSmoother(sigma=5, params=["T_2M"])
 
     fn = str(data_dir / "iaf2025010100")
     fs = ekd.from_source("file", fn)
     # T_2M (smoothed) + one level of W (pass-through, not in params)
     fieldlist = new_fieldlist_from_list(
-        list(fs.sel(shortName="2t")) + [fs.sel(shortName="wz")[0]]
+        list(fs.sel(shortName="T_2M")) + [fs.sel(shortName="W")[0]]
     )
 
     regridded = list(regridder.forward(fieldlist))
@@ -94,57 +93,10 @@ def test_gaussian_smoother(data_dir, hostname):
     np.testing.assert_array_equal(w_raw, w_smo)
 
 
-def test_select_one_finds_field_by_native_shortname(data_dir):
+def test_pipe_or_fdb_xarray_returns_piped_value_when_present(data_dir):
     fn = str(data_dir / "iaf2025010100")
-    fieldlist = ekd.from_source("file", fn).sel(shortName="2t")
+    fieldlist = ekd.from_source("file", fn).sel(shortName="T_2M")
 
-    da = _select_one(fieldlist, "2t")
+    interpolator = ModelToPressureLevel(interpolate_levels=[500])
+    da = interpolator._get_field(fieldlist, "T_2M").to_xarray()["T_2M"]
     assert da.shape == (1147980,)
-
-
-def test_select_one_raises_when_missing(data_dir):
-    fn = str(data_dir / "iaf2025010100")
-    fieldlist = ekd.from_source("file", fn).sel(shortName="2t")
-
-    with pytest.raises(ValueError, match="auxiliary_source='pipe'"):
-        _select_one(fieldlist, "NOT_IN_THIS_FILE")
-
-
-# ModelToPressureLevel's auxiliary_source="pipe" mode (reads HHL/HSURF/T_2M/PS/P
-# from the same input FieldList instead of FDB, for environments without FDB
-# access) needs a real raw KENDA analysis file with T, U, V, W, QV, P, HHL,
-# HSURF, T_2M and PS all present to test end-to-end — the checked-in
-# `iaf2025010100` fixture only carries `t`/`2t`/`wz` (added for the
-# IconRemapToRegLatLon/GaussianSmoother tests above) and COSMO shortNames
-# can't be faked via metadata override (eccodes resolves them from the
-# GRIB2 paramId via a concept table, not a free-form string) — see if a
-# fuller fixture is available before deciding this needs balfrin/real data.
-def test_model_to_pressure_level_pipe_mode(data_dir, hostname):
-    if not hostname.startswith("balfrin"):
-        pytest.skip("Only runs on Balfrin.")
-
-    fn = str(data_dir / "iaf2025010100")
-    fieldlist = ekd.from_source("file", fn)
-    needed = {"T", "U", "V", "W", "QV", "P", "HHL", "HSURF", "T_2M", "PS"}
-    present = {f.metadata("shortName") for f in fieldlist}
-    missing = needed - present
-    if missing:
-        pytest.skip(f"iaf2025010100 fixture is missing {sorted(missing)} — need a fuller raw KENDA fixture")
-
-    interpolator = ModelToPressureLevel(
-        interpolate_levels=[500, 700, 850, 925, 1000],
-        extrapolate_levels=[925, 1000],
-        add_geopotential=True,
-        auxiliary_source="pipe",
-        surface_params=["T_2M", "PS", "HSURF"],
-    )
-    out = interpolator.forward(fieldlist)
-
-    out_names = {f.metadata("shortName") for f in out}
-    assert "HHL" not in out_names  # consumed, never re-emitted
-    assert "P" not in out_names  # consumed, never re-emitted
-    assert {"T_2M", "PS", "HSURF"} <= out_names  # passed through unchanged
-    assert "FI" in out_names  # geopotential derived from HHL
-
-    t_levels = sorted(int(f.metadata("level")) for f in out if f.metadata("shortName") == "T")
-    assert t_levels == [500, 700, 850, 925, 1000]

@@ -37,6 +37,21 @@ class ModelToPressureLevel(Filter):
         - HSURF: surface height
         - T_2M: 2-meter temperature
         - PS: surface pressure
+
+    By default (``auxiliary_source="fdb"``) these are fetched from FDB, once
+    at construction time for the constant ones (HHL/HSURF) and per timestep
+    for the others (T_2M/PS/P) — this is how the filter is used when
+    building the REA-L-CH1 training dataset.
+
+    ``auxiliary_source="pipe"`` is for environments with no FDB access
+    (e.g. operational inference straight off raw KENDA GRIB files): HHL,
+    HSURF, T_2M, PS and P are instead read from the *same* incoming
+    FieldList, per timestep. HHL and P are consumed internally and never
+    re-emitted (matching the FDB path, where they're never part of the
+    output either); ``surface_params`` lists any other 2D surface fields
+    present in the input (e.g. HSURF itself, plus PMSL, TD_2M, ...) that
+    should pass straight through unchanged rather than be (nonsensically)
+    vertically interpolated.
     """
 
     def __init__(
@@ -44,6 +59,8 @@ class ModelToPressureLevel(Filter):
         interpolate_levels: list[float],
         extrapolate_levels: list[float] = [],
         add_geopotential: bool = True,
+        auxiliary_source: Literal["fdb", "pipe"] = "fdb",
+        surface_params: list[str] | None = None,
     ):
         """Initialize the filter.
 
@@ -55,34 +72,47 @@ class ModelToPressureLevel(Filter):
             The pressure levels to extrapolate to below the surface, in hPa.
         add_geopotential : bool, optional
             Whether to add geopotential (FI) to the output FieldList.
+        auxiliary_source : {"fdb", "pipe"}, optional
+            Where HHL/HSURF/T_2M/PS/P come from: "fdb" (default) fetches them
+            from FDB; "pipe" reads them from the FieldList being filtered.
+        surface_params : list of str, optional
+            Only used when ``auxiliary_source="pipe"``: shortNames of 2D
+            surface fields in the input that should pass through unchanged
+            (not vertically interpolated). Should include HSURF, T_2M and PS
+            themselves if you want them to survive in the output alongside
+            whatever else is in the raw file (e.g. PMSL, TD_2M, U_10M...).
 
         """
 
         super().__init__()
 
+        if auxiliary_source not in ("fdb", "pipe"):
+            raise ValueError(f"auxiliary_source must be 'fdb' or 'pipe', got {auxiliary_source!r}")
+
         self.interpolate_levels = interpolate_levels
         self.extrapolate_levels = extrapolate_levels
         self.add_geopotential = add_geopotential
+        self.auxiliary_source = auxiliary_source
+        self.surface_params = set(surface_params or [])
 
-        # constant auxiliary variables
-        constant_time_keys = {"date": "20200101", "time": "0000", "step": "0"}
+        self.fi = None
+        self.hsurf = None
 
-        hhl_constant_keys = {
-            "param": "HHL",
-            "levtype": "ml",
-            "levelist": "1/to/81",
-        } | constant_time_keys
-        hhl = self.load_auxiliary(hhl_constant_keys).to_fieldlist()
-        _fi_values = (destagger_z(hhl.to_xarray()["HHL"]) * 9.80665).values
-        _fi_md = [
-            md.override(shortName="FI", typeOfLevel="generalVerticalLayer")
-            for md in hhl[:-1].metadata()
-        ]
-        self.fi = ekd.FieldList.from_array(_fi_values, _fi_md).to_xarray()["FI"]
+        if auxiliary_source == "fdb":
+            # constant auxiliary variables
+            constant_time_keys = {"date": "20200101", "time": "0000", "step": "0"}
 
-        # surface height (orography)
-        hsurf_constant_keys = {"param": "HSURF", "levtype": "sfc"} | constant_time_keys
-        self.hsurf = self.load_auxiliary(hsurf_constant_keys).to_xarray()["HSURF"]
+            hhl_constant_keys = {
+                "param": "HHL",
+                "levtype": "ml",
+                "levelist": "1/to/81",
+            } | constant_time_keys
+            hhl = self.load_auxiliary(hhl_constant_keys).to_fieldlist()
+            self.fi = _geopotential_from_hhl(hhl)
+
+            # surface height (orography)
+            hsurf_constant_keys = {"param": "HSURF", "levtype": "sfc"} | constant_time_keys
+            self.hsurf = self.load_auxiliary(hsurf_constant_keys).to_xarray()["HSURF"]
 
     def _construct_time_request(self, date: datetime | None):
         if date is None:
@@ -163,12 +193,44 @@ class ModelToPressureLevel(Filter):
         for time_group in data.group_by("validityTime"):
             valid_datetime = time_group[0].metadata("valid_datetime")
             valid_datetime = datetime.strptime(valid_datetime, "%Y-%m-%dT%H:%M:%S")
-            t2m = self.surface_temperature(valid_datetime)
-            ps = self.surface_pressure(valid_datetime)
-            p = self.pressure(valid_datetime)
+
+            if self.auxiliary_source == "fdb":
+                t2m = self.surface_temperature(valid_datetime)
+                ps = self.surface_pressure(valid_datetime)
+                p = self.pressure(valid_datetime)
+                drop_params: set[str] = set()
+            else:
+                # Read HHL/HSURF/T_2M/PS/P from this same timestep's fields
+                # rather than FDB (no FDB access in operations). HHL and P
+                # are internal-only, consumed here and never re-emitted,
+                # exactly like the "fdb" path (they're never part of `data`
+                # there in the first place); `self.hsurf` is recomputed per
+                # timestep instead of once at construction, but everything
+                # downstream (interpolate_extrapolate) reads it the same way.
+                t2m = _select_one(time_group, "T_2M")
+                ps = _select_one(time_group, "PS")
+                p = _select_one(time_group, "P")
+                p[{"level": 0}] = p[{"level": 0}].where(p[{"level": 0}] < 5000, 5000 - 1e-5)
+                self.hsurf = _select_one(time_group, "HSURF")
+                if self.add_geopotential:
+                    self.fi = _geopotential_from_hhl(time_group.sel(shortName="HHL"))
+                # FIS is dropped too (not just HHL/P): if the raw input also
+                # carries an archived FIS, it would collide with the one a
+                # downstream orog_to_z(HSURF->FIS) filter derives — matching
+                # the legacy preprocessor, which unconditionally overwrites
+                # any raw FIS with one derived from HSURF.
+                drop_params = {"HHL", "P", "FIS"}
+
             for param_group in time_group.group_by("shortName"):
                 template_field = param_group[0]
                 param = template_field.metadata("shortName")
+
+                if param in drop_params:
+                    continue
+                if self.auxiliary_source == "pipe" and param in self.surface_params:
+                    out += param_group  # 2D surface field: passthrough, not interpolated
+                    continue
+
                 da = param_group.to_xarray()[param]
 
                 if param == "W":
@@ -178,14 +240,41 @@ class ModelToPressureLevel(Filter):
                     da, p, t2m, ps, param
                 ).earthkit.to_fieldlist()
             if self.add_geopotential:
-                time_metadata = time_group[0].metadata(namespace="time")
-                _fi = _override_time_metadata_on_constant_auxiliary(
-                    self.fi, time_metadata
-                )
+                if self.auxiliary_source == "fdb":
+                    time_metadata = time_group[0].metadata(namespace="time")
+                    _fi = _override_time_metadata_on_constant_auxiliary(
+                        self.fi, time_metadata
+                    )
+                else:
+                    _fi = self.fi
                 out += self.interpolate_extrapolate(
                     _fi, p, t2m, ps, "FI"
                 ).earthkit.to_fieldlist()
         return _override_pressure_level_units(out)
+
+
+def _select_one(fieldlist: ekd.FieldList, shortname: str) -> xr.DataArray:
+    """The (single, 2D) field named ``shortname`` in ``fieldlist``, as an xarray DataArray.
+
+    Used by ``auxiliary_source="pipe"`` to pull T_2M/PS/P/HSURF out of the
+    same timestep's incoming fields instead of fetching them from FDB.
+    """
+    selected = fieldlist.sel(shortName=shortname)
+    if len(selected) == 0:
+        raise ValueError(
+            f"auxiliary_source='pipe' requires a {shortname!r} field in the input, none found"
+        )
+    return selected.to_xarray()[shortname]
+
+
+def _geopotential_from_hhl(hhl: ekd.FieldList) -> xr.DataArray:
+    """Geopotential (FI) from destaggered model-level heights (HHL)."""
+    fi_values = (destagger_z(hhl.to_xarray()["HHL"]) * 9.80665).values
+    fi_md = [
+        md.override(shortName="FI", typeOfLevel="generalVerticalLayer")
+        for md in hhl[:-1].metadata()
+    ]
+    return ekd.FieldList.from_array(fi_values, fi_md).to_xarray()["FI"]
 
 
 def _override_time_metadata_on_constant_auxiliary(

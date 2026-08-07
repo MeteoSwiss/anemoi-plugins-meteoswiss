@@ -113,6 +113,7 @@ class ModelToPressureLevel(Filter):
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
         out = ekd.FieldList()
+        passthrough = ekd.FieldList()
         for time_group in data.group_by("valid_datetime"):
             t2m = self._get_field(time_group, "T_2M").to_xarray()["T_2M"]
             ps = self._get_field(time_group, "PS").to_xarray()["PS"]
@@ -129,7 +130,7 @@ class ModelToPressureLevel(Filter):
                     continue
 
                 if template_field.metadata("typeOfLevel") in SFC_VCOORD_TYPES:
-                    out += param_group  # 2D surface field: passthrough, not interpolated
+                    passthrough += param_group  # 2D surface field: passthrough, not interpolated
                     continue
 
                 da = param_group.to_xarray()[param]
@@ -147,7 +148,9 @@ class ModelToPressureLevel(Filter):
                 out += interpolate_extrapolate(
                     fi, p, t2m, ps, hsurf, "FI", self.interpolate_levels, self.extrapolate_levels
                 ).earthkit.to_fieldlist()
-        return out
+
+        out = _override_pressure_level_units(out)
+        return out + passthrough
 
 
 def _geopotential_from_hhl(hhl: ekd.FieldList) -> xr.DataArray:

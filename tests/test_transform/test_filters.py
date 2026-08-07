@@ -3,10 +3,13 @@ import numpy as np
 import pytest
 from anemoi.transform.fields import new_field_from_numpy
 from anemoi.transform.fields import new_fieldlist_from_list
+from earthkit.data.core.metadata import RawMetadata
+from earthkit.data.sources.array_list import ArrayField
 
 from anemoi_plugins_meteoswiss.transform import filters
 from anemoi_plugins_meteoswiss.transform.filters import GaussianSmoother
 from anemoi_plugins_meteoswiss.transform.filters import IconRemapToRegLatLon
+from anemoi_plugins_meteoswiss.transform.filters import Keep
 from anemoi_plugins_meteoswiss.transform.filters import ModelToPressureLevel
 
 ICONREMAP_WEIGHTS = (
@@ -91,6 +94,19 @@ def test_gaussian_smoother(data_dir, hostname):
 
     # W was not in params — must be bit-for-bit identical
     np.testing.assert_array_equal(w_raw, w_smo)
+
+
+def test_keep(caplog):
+    fieldlist = new_fieldlist_from_list(
+        [ArrayField(np.zeros(4), RawMetadata({"param": p})) for p in ["t", "q", "z"]]
+    )
+
+    kept = Keep(param=["t", "z"]).forward(fieldlist)
+    assert [f.metadata("param") for f in kept] == ["t", "z"]
+
+    with caplog.at_level("WARNING"):
+        Keep(param=["t", "missing"]).forward(fieldlist)
+    assert "missing" in caplog.text
 
 
 def test_pipe_or_fdb_xarray_returns_piped_value_when_present(data_dir):

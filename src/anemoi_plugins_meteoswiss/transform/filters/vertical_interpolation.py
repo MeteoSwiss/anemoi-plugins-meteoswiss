@@ -147,7 +147,7 @@ class ModelToPressureLevel(Filter):
                 out += interpolate_extrapolate(
                     fi, p, t2m, ps, hsurf, "FI", self.interpolate_levels, self.extrapolate_levels
                 ).earthkit.to_fieldlist()
-        return _override_pressure_level_units(out)
+        return out
 
 
 def _geopotential_from_hhl(hhl: ekd.FieldList) -> xr.DataArray:
@@ -173,12 +173,10 @@ def _override_pressure_level_units(fields):
     out = ekd.SimpleFieldList()
     for field in fields:
         level_hpa = int(int(field.metadata("level")) / 100)
-        overrides = {
-            "typeOfLevel": "isobaricInhPa",
-            "level": level_hpa,
-            "levelist": level_hpa,
-        }
-        out.append(field.clone(**overrides))
+        field = field.clone(metadata=field.metadata().override(typeOfLevel="isobaricInhPa"))
+        field = field.clone(metadata=field.metadata().override(level=level_hpa))
+        field = field.clone(metadata=field.metadata().override(levelist=level_hpa))
+        out.append(field)
     return out
 
 

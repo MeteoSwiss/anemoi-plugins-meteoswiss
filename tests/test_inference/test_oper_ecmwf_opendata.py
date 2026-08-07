@@ -140,6 +140,14 @@ class _FakeMetadata:
         return [patch_request(base)]
 
 
+class _FakeRetrievedField:
+    def __init__(self, request):
+        self.request = request
+
+    def metadata(self, key, default=None):
+        return default
+
+
 def test_retrieve_requests_one_run_per_target_date_with_patched_step_and_params(monkeypatch):
     """retrieve() should ask _latest_published_run() (not guess a delay) for
     the starting point, call mars_requests once per target date patching
@@ -156,7 +164,7 @@ def test_retrieve_requests_one_run_per_target_date_with_patched_step_and_params(
 
     def fake_retrieve_opendata(requests, *, patch, **kwargs):
         captured_requests.extend(requests)
-        return requests  # stand-in FieldList: a plain list supports + for this test
+        return [_FakeRetrievedField(r) for r in requests]
 
     monkeypatch.setattr(
         "anemoi_plugins_meteoswiss.inference.inputs.oper_ecmwf_opendata._retrieve_opendata",
@@ -173,7 +181,7 @@ def test_retrieve_requests_one_run_per_target_date_with_patched_step_and_params(
     assert captured_requests[0]["step"] == 0  # exact run boundary
     assert captured_requests[1]["step"] == 3  # walked back a day, 3h off that run
     assert captured_requests[0]["param"] == ["t"]  # translated from KENDA "T"
-    assert result == captured_requests  # concatenated in order
+    assert [f.request for f in result] == captured_requests  # concatenated in order
 
 
 def test_latest_published_run_calls_ecmwf_opendata_client(monkeypatch):

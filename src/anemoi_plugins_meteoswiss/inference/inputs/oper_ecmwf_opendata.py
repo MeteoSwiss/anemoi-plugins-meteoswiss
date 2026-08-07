@@ -94,11 +94,13 @@ from datetime import datetime
 from datetime import timedelta
 from typing import Any
 
+import earthkit.data as ekd
 from anemoi.inference.inputs import input_registry
 from anemoi.inference.metadata import Metadata
 from anemoi.inference.types import Date
 from anemoi.plugins.ecmwf.inference.opendata.opendata import OpenDataInputPlugin
 from anemoi.plugins.ecmwf.inference.opendata.opendata import retrieve as _retrieve_opendata
+from anemoi.transform.fields import NewMetadataField
 from ecmwf.opendata import Client as _EcmwfOpenDataClient
 
 LOG = logging.getLogger(__name__)
@@ -160,6 +162,46 @@ def _translate_params(request: dict, param_translation: dict[str, str]) -> dict:
     else:
         request["param"] = param_translation.get(param, param)
     return request
+
+
+# InferenceOrography.patch_data_request swaps the outgoing pressure-level request's "z"/"FI"
+# for "gh" (see module docstring), so what comes back decodes with the KENDA/COSMO name for
+# *geopotential height*, not geopotential -- unlike the rest of param_translation, this isn't
+# derivable from variables_metadata (whose mars.param for z_* variables is "FI").
+_GEOPOTENTIAL_HEIGHT_PL_COSMO_NAME = "GH"
+
+
+def _fix_corrupted_param_names(fields: ekd.FieldList, param_translation: dict[str, str]) -> ekd.FieldList:
+    """Correct ``param`` for fields decoded under the operational KENDA/COSMO eccodes override.
+
+    See the module docstring's ``ECCODES_DEFINITION_PATH`` section: every field's ``param``
+    decodes as its KENDA/COSMO name (e.g. ``T``) rather than its real ECMWF Open Data one
+    (``t``), regardless of ``_without_eccodes_definition_path_override``. Since the corruption
+    is a consistent function of the true parameter, ``param_translation`` (COSMO name -> ECMWF
+    name) doubles as the fix.
+
+    This wraps with ``anemoi.transform.fields.NewMetadataField`` rather than earthkit-data's own
+    ``field.clone(param=...)`` -- confirmed necessary, not just stylistic: ``field.clone()``
+    stores the override in an earthkit-data ``WrappedMetadata``, and ``WrappedMetadata.__init__``
+    "merges" (collapses) a nested ``WrappedMetadata`` into the *underlying, uncorrected* one the
+    moment anything clones the clone again -- which ``EkdInput._filter_and_sort`` does, to attach
+    a computed name. The override still answers direct ``field.metadata("param")`` calls
+    correctly after that (it stays in ``extra``), but the *namer* reads the third
+    (``original_metadata``) argument its naming callable receives, and that argument is exactly
+    the collapsed, uncorrected metadata -- so the namer silently sees ``T`` again, not ``t``.
+    ``NewMetadataField`` overrides ``.metadata()`` as a plain method delegating to the wrapped
+    field rather than merging metadata objects, so it has no such collapse and survives further
+    ``.clone()`` calls correctly (this is also how ``Orography.forward_transform`` builds ``z``
+    from ``gh``, which is why that one path worked before this fix existed).
+    """
+    translation = {**param_translation, _GEOPOTENTIAL_HEIGHT_PL_COSMO_NAME: "gh"}
+    return ekd.SimpleFieldList(
+        [
+            field if (true_param := translation.get(field.metadata("param", default=None))) is None
+            else NewMetadataField(field, param=true_param)
+            for field in fields
+        ]
+    )
 
 
 @input_registry.register("oper-ecmwf-opendata")
@@ -250,6 +292,7 @@ class OperEcmwfOpenDataInput(OpenDataInputPlugin):
 
             with _without_eccodes_definition_path_override():
                 batch = _retrieve_opendata(requests, patch=self.patch_data_request, **kwargs)
+            batch = _fix_corrupted_param_names(batch, param_translation)
             result = batch if result is None else result + batch
 
         return result

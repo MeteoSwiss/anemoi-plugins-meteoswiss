@@ -46,9 +46,15 @@ class RetrieveObservation(Filter):
         Path where the output Parquet file will be written.
     jretrieve_src_path : str
         Directory containing ``jretrieve.py``.
+    group : str, optional
+        DWH station group IDs (comma-separated) passed to jretrieve
+        ``-a stn_group_id``. Mutually exclusive with ``bbox``.
+        Use this to match the truth data station selector exactly.
     bbox : list, optional
         Bounding box ``[minlat, maxlat, minlon, maxlon]`` for station
-        selection.  Defaults to ``[40.5, 53.0, 0.0, 17.5]``.
+        selection. Mutually exclusive with ``group``.
+        Defaults to ``[40.5, 53.0, 0.0, 17.5]`` when neither group nor
+        bbox is specified.
     variables : list of str, optional
         GRIB shortNames to fetch (must be keys of ``_PARAM_TO_COL``).
         Defaults to all available variables.
@@ -64,6 +70,7 @@ class RetrieveObservation(Filter):
         self,
         obs_path: str,
         jretrieve_src_path: str,
+        group: str = None,
         bbox: list = None,
         variables: list = None,
         use_limitation: int = None,
@@ -71,10 +78,15 @@ class RetrieveObservation(Filter):
     ):
         if run_mode not in ("devt", "depl"):
             raise ValueError(f"run_mode must be 'devt' or 'depl', got {run_mode!r}")
+        if group is not None and bbox is not None:
+            raise ValueError("Specify at most one of 'group' or 'bbox', not both.")
 
         self.obs_path = obs_path
         self.jretrieve_src_path = str(jretrieve_src_path)
-        self.bbox = bbox if bbox is not None else [40.5, 53.0, 0.0, 17.5]
+        self.group = group
+        self.bbox = (
+            bbox if (bbox is not None or group is not None) else [40.5, 53.0, 0.0, 17.5]
+        )
         self.use_limitation = use_limitation
         self.run_mode = run_mode
 
@@ -127,7 +139,9 @@ class RetrieveObservation(Filter):
 
         jr.check_prerequisites()
 
-        stations_sel = {"bbox": self.bbox}
+        stations_sel = (
+            {"group": self.group} if self.group is not None else {"bbox": self.bbox}
+        )
         meta = jr.fetch_meta(stations=stations_sel, params=jr_params)
         catalog = jr.StationCatalog.from_meta(meta)
         LOG.info("Station catalog: %d stations", catalog.n)
@@ -139,6 +153,7 @@ class RetrieveObservation(Filter):
             end=ref_time,
             increment_minutes=60,
             use_limitation=self.use_limitation,
+            stage="prod",
         )
 
         df["nat_abbr"] = df["station"].map(

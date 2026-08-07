@@ -12,6 +12,9 @@ from scipy.spatial import cKDTree
 
 LOG = logging.getLogger(__name__)
 
+# Variables that are fetched for reference/comparison but must never be nudged.
+_NO_NUDGE = frozenset({"TOT_PREC"})
+
 # Maps GRIB shortName -> (station DataFrame column, unit offset applied to obs before nudging).
 # Uses COSMO/ICON shortNames as output by the LAM forecaster.
 PARAM_MAP = {
@@ -221,7 +224,8 @@ class NudgeTowardObservation(Filter):
                 )
             self.param_map = {k: PARAM_MAP[k] for k in nudge_variables}
         else:
-            self.param_map = PARAM_MAP
+            self.param_map = dict(PARAM_MAP)
+        self.param_map = {k: v for k, v in self.param_map.items() if k not in _NO_NUDGE}
 
         LOG.info(
             "Nudging filter initialised: variables=%s, k=%d, power=%.1f, max_dist=%.2f",

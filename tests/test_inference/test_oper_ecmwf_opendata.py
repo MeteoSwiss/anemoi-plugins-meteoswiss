@@ -60,7 +60,7 @@ def test_retrieve_fetches_real_fields_from_ecmwf_open_data():
     ``mars`` metadata actually carries (see ``forecaster.yaml``'s namer): eccodes is COSMO-locked
     process-wide (see ``anemoi_plugins_meteoswiss._use_cosmo_grib_definitions``), so the fields
     ECMWF Open Data returns decode with these COSMO ``shortName``s, not the ECMWF ones. The
-    ``param`` metadata key is what ``_fix_corrupted_param_names`` actually guarantees is correct
+    ``param`` metadata key is what ``_cosmo_to_ecmwf_field_param`` actually guarantees is correct
     (translated back via ``_param_translation_from_variables_metadata``) -- ``shortName`` itself
     stays COSMO-flavored and is not something this input promises to fix.
     """

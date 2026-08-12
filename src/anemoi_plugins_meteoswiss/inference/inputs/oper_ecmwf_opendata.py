@@ -26,6 +26,7 @@ Usage
         - global:
             oper-ecmwf-opendata:
               allow_forecast_fallback: false   # optional, default shown here
+              constant: false                  # optional, default shown here -- set for orography/lsm/... sources
               cache_dir: /path/to/cache        # optional, default: none (always re-download)
 """
 
@@ -75,7 +76,13 @@ def _with_cache_dir(cache_dir: str | None):
     if not cache_dir:
         yield
         return
-    with ekd.config.temporary({"cache-policy": "user", "user-cache-directory": cache_dir}):
+    with ekd.config.temporary(
+        {
+            "cache-policy": "user",
+            "user-cache-directory": cache_dir,
+            "maximum-cache-disk-usage": "98%",
+        }
+    ):
         yield
 
 
@@ -112,21 +119,22 @@ def _drop_null_levelist(request: dict) -> dict:
     return request
 
 
-def _translate_params(request: dict, param_translation: dict[str, str]) -> dict:
-    """Map ``request["param"]`` from KENDA/COSMO names to ECMWF Open Data ones."""
+def _cosmo_to_ecmwf_request_param(request: dict, cosmo_to_ecmwf: dict[str, str]) -> dict:
+    """Translate the outgoing MARS request's ``param`` from COSMO names to ECMWF ones."""
     param = request.get("param")
     if param is None:
         return request
     if isinstance(param, (list, tuple, set)):
-        request["param"] = [param_translation.get(p, p) for p in param]
+        request["param"] = [cosmo_to_ecmwf.get(p, p) for p in param]
     else:
-        request["param"] = param_translation.get(param, param)
+        request["param"] = cosmo_to_ecmwf.get(param, param)
     return request
 
 
-def _fix_corrupted_param_names(fields: ekd.FieldList, param_translation: dict[str, str]) -> ekd.FieldList:
-    """Re-apply ``param_translation`` (plus ``GH`` -> ``gh``) to fields still carrying the untranslated name."""
-    translation = {**param_translation, "GH": "gh"}
+def _cosmo_to_ecmwf_field_param(fields: ekd.FieldList, cosmo_to_ecmwf: dict[str, str]) -> ekd.FieldList:
+    """Same COSMO -> ECMWF mapping, applied to retrieved fields whose ``param`` still decoded
+    as the COSMO name (plus ``GH`` -> ``gh``)."""
+    translation = {**cosmo_to_ecmwf, "GH": "gh"}
     return ekd.SimpleFieldList(
         [
             field if (true_param := translation.get(field.metadata("param", default=None))) is None
@@ -146,15 +154,19 @@ class OperEcmwfOpenDataInput(OpenDataInputPlugin):
         metadata,
         *,
         allow_forecast_fallback: bool = False,
+        constant: bool = False,
         cache_dir: str | None = None,
         **kwargs: Any,
     ) -> None:
         """If ``allow_forecast_fallback`` is ``False`` (default), only step-0 fields are requested; an off-grid target raises.
 
+        ``constant``, if ``True``, always fetches step-0 fields from the latest published run
+
         ``cache_dir``, if set, persists downloaded ECMWF Open Data fields to disk (via earthkit-data's
         own cache) so later runs don't re-download them."""
         super().__init__(context, metadata, **kwargs)
         self.allow_forecast_fallback = allow_forecast_fallback
+        self.constant = constant
         self.cache_dir = cache_dir
 
     def _resolve_init_time_and_lead_hours(self, target: datetime, latest_init_time: datetime) -> tuple[datetime, int]:
@@ -188,7 +200,7 @@ class OperEcmwfOpenDataInput(OpenDataInputPlugin):
     def retrieve(self, variables: list[str], dates: list[Date]) -> Any:
         """Retrieve data for the given variables at the given target valid times."""
         guaranteed_init_time = _latest_published_run(type="fc")
-        param_translation = _param_translation_from_variables_metadata(self.metadata, variables)
+        cosmo_to_ecmwf = _param_translation_from_variables_metadata(self.metadata, variables)
 
         kwargs = self.kwargs.copy()
         kwargs.setdefault("grid", self.metadata.grid)
@@ -196,7 +208,10 @@ class OperEcmwfOpenDataInput(OpenDataInputPlugin):
 
         result = ekd.FieldList()
         for target in dates:
-            init_time, lead_hours = self._resolve_init_time_and_lead_hours(target, guaranteed_init_time)
+            if self.constant:
+                init_time, lead_hours = guaranteed_init_time, 0
+            else:
+                init_time, lead_hours = self._resolve_init_time_and_lead_hours(target, guaranteed_init_time)
             LOG.info("oper-ecmwf-opendata: %s -> run %s step %dh", target, init_time, lead_hours)
 
             requests = self.metadata.mars_requests(
@@ -204,8 +219,8 @@ class OperEcmwfOpenDataInput(OpenDataInputPlugin):
                 dates=[init_time],
                 use_grib_paramid=False,
                 type="fc",
-                patch_request=lambda r, lead_hours=lead_hours: _translate_params(
-                    _drop_null_levelist({**r, "step": lead_hours}), param_translation
+                patch_request=lambda r, lead_hours=lead_hours: _cosmo_to_ecmwf_request_param(
+                    _drop_null_levelist({**r, "step": lead_hours}), cosmo_to_ecmwf
                 ),
             )
             if not requests:
@@ -213,7 +228,13 @@ class OperEcmwfOpenDataInput(OpenDataInputPlugin):
 
             with _without_eccodes_definition_path_override(), _with_cache_dir(self.cache_dir):
                 batch = _retrieve_opendata(requests, patch=self.patch_data_request, **kwargs)
-            batch = _fix_corrupted_param_names(batch, param_translation)
+
+            if self.constant:
+                overrides = {"date": int(target.strftime("%Y%m%d")), "time": int(target.strftime("%H%M")), "step": 0}
+                batch = ekd.SimpleFieldList(
+                    [field.clone(metadata=field.metadata().override(**overrides)) for field in batch]
+                )
+
             result += batch
 
-        return result
+        return _cosmo_to_ecmwf_field_param(result, cosmo_to_ecmwf)

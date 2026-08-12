@@ -1,74 +1,20 @@
 """anemoi-inference input: ECMWF Open Data with run-availability resilience.
 
-``anemoi-plugins-ecmwf-inference``'s built-in ``opendata`` input requests
-data at the exact target valid time using whatever ``step``/``time`` the
-checkpoint's training-time MARS provenance (``variables_metadata``) happens
-to carry — which, for a model trained on an FDB-archived reanalysis product,
-is an artifact of that archive's own ``(date, time, step)`` storage
-convention, not a real forecast lead time. Used verbatim against ECMWF Open
-Data (which *does* interpret ``step`` as forecast lead time), that would
-request a value hours away from the intended one, and has no fallback if the
-run exactly at the target time isn't published yet.
+The built-in ``opendata`` input uses the checkpoint's training-time MARS
+step/time verbatim — an archive storage artifact, not a real forecast lead
+time — which is wrong against ECMWF Open Data and has no fallback if a run
+isn't published yet. This input treats every date as a target valid time,
+finds the latest published run via ``ecmwf.opendata.Client.latest()``, and
+walks back up to ``STORED_RUNS`` runs to hit it exactly.
 
-This input corrects both: every requested date is treated as a *target valid
-time*, and the ``(run, step)`` pair actually requested is computed by
-starting from the most recent run confirmed published — via
-``ecmwf.opendata.Client.latest()``, which HEAD-checks the real file index
-rather than assuming a fixed publication delay — and walking back through up
-to ``stored_runs`` older runs if needed to reach the target. Regridding and
-the gh<->z geopotential swap are inherited unchanged from
-``OpenDataInputPlugin``.
+It also translates the checkpoint's KENDA/COSMO parameter names (``T``,
+``U``, ...) to ECMWF's own (``t``, ``u``, ...) per variable, since requesting
+COSMO names against ECMWF Open Data fails outright. And it clears
+``ECCODES_DEFINITION_PATH`` for the retrieve+regrid call only, so the
+operational image's COSMO eccodes override doesn't crash MIR on genuine
+ECMWF GRIB2 (see ``_without_eccodes_definition_path_override``).
 
-The checkpoint's ``variables_metadata`` also carries KENDA/COSMO parameter
-names (``T``, ``U``, ``QV``, ``FI``, ``OMEGA``, ...) rather than ECMWF Open
-Data's own (``t``, ``u``, ``q``, ``z``/``gh``, ``w``) — requesting those
-verbatim gets rejected outright (``Cannot find index entries matching ...
-'param': ['FI', 'QV', 'T', 'U', 'V']``). This is deliberate on the checkpoint
-side: the *same* ``variables_metadata.mars`` also drives GRIB output encoding
-(``variable.grib_keys`` in ``anemoi-inference``/``anemoi-transform`` reads it
-directly), and the operational output templates
-(``templates_index_icon.yaml`` etc.) are keyed by these same COSMO/KENDA
-names — so ``patch_metadata`` must keep patching them in, for output's sake,
-even though that's the wrong convention for this input's own retrieval.
-
-This input fixes that on its own side without any extra config: for each
-requested variable (e.g. ``t_500``), it already knows two things —
-``variables_metadata[variable]["mars"]["param"]`` (the COSMO name, ``T``) and
-the variable's own name (``t_500``, which *is* the ECMWF-side name, by the
-same convention the checkpoint's variable schema uses everywhere) — so it
-pairs the two directly, per retrieval, with nothing to configure or keep in
-sync.
-
-``ECCODES_DEFINITION_PATH``
----------------------------
-
-The operational image sets ``ECCODES_DEFINITION_PATH`` to MeteoSwiss's COSMO
-resources so the KENDA/``lam_0`` side decodes GRIB1 COSMO fields correctly.
-That override replaces the *core* ``grib2/section.1.def`` (parsed for every
-GRIB2 message, not just COSMO-specific ones) to hardcode
-``tablesVersion = 33`` (a hidden ``tablesVersionMTG2Switch`` constant)
-instead of reading it from the message. Applied to genuine ECMWF Open Data
-GRIB2 messages, that desyncs downstream template/table resolution and MIR's
-own bundled eccodes (a separate native library from the one used for KENDA
-reading) crashes with an unrecoverable C++ abort (``eckit::SeriousBug``,
-``codes_get_long(... "7777" ...)`` — a corrupted-looking message, really a
-symptom of the wrong tables version cascading into unrelated template
-concepts) instead of a catchable Python exception.
-
-This input clears ``ECCODES_DEFINITION_PATH`` for the duration of the
-retrieve+regrid call only (see ``_without_eccodes_definition_path_override``)
-so MIR's own eccodes falls back to its bundled standard definitions, while
-KENDA-side reading (elsewhere in the same run, through the *other* eccodes
-library) is unaffected.
-
-Optional dependency
---------------------
-
-This module (and the ``anemoi-inference``/``anemoi-plugins-ecmwf-inference``
-packages it needs) is only pulled in via the ``oper-inference`` extra
-(``pip install anemoi-plugins-meteoswiss[oper-inference]``) — those bring in
-``mir-python``/``eckit``/``atlas`` and are unnecessary for consumers that
-only use this package's ``anemoi-transform`` filters (e.g. dataset creation).
+Only pulled in via the ``oper-inference`` extra.
 
 Usage
 -----
@@ -79,14 +25,11 @@ Usage
       cutout:
         - global:
             oper-ecmwf-opendata:
-              frequency_h: 6        # optional, defaults shown here
-              step_h: 3
-              max_lead_time_h: 144
-              stored_runs: 12
+              allow_forecast_fallback: false   # optional, default shown here
+              cache_dir: /path/to/cache        # optional, default: none (always re-download)
 """
 
 import logging
-import math
 import os
 import re
 from contextlib import contextmanager
@@ -105,15 +48,17 @@ from ecmwf.opendata import Client as _EcmwfOpenDataClient
 
 LOG = logging.getLogger(__name__)
 
+# ECMWF Open Data facts, not deployment config -- a wrong override would
+# silently compute a different, wrong valid time in `_resolve_init_time_and_lead_hours`.
+FREQUENCY_H = 6  # hours between runs
+STEP_H = 3  # step granularity; 0/3/6h exist, 1/2h don't (verified via HEAD requests)
+MAX_LEAD_TIME_H = 144  # max published forecast step
+STORED_RUNS = 12  # runs to walk back through before giving up
+
 
 @contextmanager
 def _without_eccodes_definition_path_override():
-    """Temporarily clear ``ECCODES_DEFINITION_PATH`` (see module docstring).
-
-    MIR's own bundled eccodes is a separate native library from the one used
-    for KENDA/GRIB1 reading elsewhere in the same process, so this only
-    affects the call it wraps — not unrelated eccodes usage in the same run.
-    """
+    """Temporarily clear ``ECCODES_DEFINITION_PATH`` so MIR's own eccodes is unaffected (see module docstring)."""
     original = os.environ.pop("ECCODES_DEFINITION_PATH", None)
     try:
         yield
@@ -122,24 +67,25 @@ def _without_eccodes_definition_path_override():
             os.environ["ECCODES_DEFINITION_PATH"] = original
 
 
-def _latest_published_run(**params: Any) -> datetime:
-    """Ask the real ECMWF Open Data catalog for the most recent published run.
+@contextmanager
+def _with_cache_dir(cache_dir: str | None):
+    """Persist ``ekd.from_source("ecmwf-open-data", ...)`` downloads under ``cache_dir`` for the
+    duration of the wrapped call, restoring earthkit-data's ambient cache config on exit. A no-op
+    if ``cache_dir`` is unset -- downloads then go through earthkit-data's default (uncached) policy."""
+    if not cache_dir:
+        yield
+        return
+    with ekd.config.temporary({"cache-policy": "user", "user-cache-directory": cache_dir}):
+        yield
 
-    ``Client.latest()`` HEAD-checks the actual file index (walking back in
-    6-hourly steps, up to 2 days) rather than assuming a fixed publication
-    delay — ``source``/``model`` default to ``"ecmwf"``/``"ifs"``, matching
-    what ``OpenDataInputPlugin`` itself retrieves from.
-    """
+
+def _latest_published_run(**params: Any) -> datetime:
+    """Return the most recent published run, HEAD-checked via ``Client.latest()``."""
     return _EcmwfOpenDataClient().latest(**params)
 
 
 def _param_translation_from_variables_metadata(metadata: Metadata, variables: list[str]) -> dict[str, str]:
-    """Build a KENDA/COSMO-name -> ECMWF-name table for the given variables.
-
-    For each variable, ``variables_metadata[variable]["mars"]["param"]`` is
-    the KENDA/COSMO name (e.g. ``T``); the variable's own name with its level
-    suffix stripped (e.g. ``t_500`` -> ``t``) is the ECMWF Open Data one.
-    """
+    """Map each variable's COSMO ``mars`` param (e.g. ``T``) to its ECMWF name (e.g. ``t``)."""
     mapping = {}
     for variable in variables:
         mars = metadata.variables_metadata.get(variable, {}).get("mars", {})
@@ -150,6 +96,20 @@ def _param_translation_from_variables_metadata(metadata: Metadata, variables: li
         # single-level ones (msl, 2t, 10u, ...) have no such suffix.
         mapping[cosmo_name] = re.compile(r"_\d+$").sub("", variable)
     return mapping
+
+
+def _drop_null_levelist(request: dict) -> dict:
+    """Remove a ``levelist`` key that's ``None`` (surface fields have none).
+
+    ``ecmwf.opendata.Client`` stringifies every request value via ``str(x)`` before matching
+    it against the remote index, turning a Python ``None`` into the literal ``"None"``; the
+    index has no ``levelist`` entry at all for surface fields, so nothing matches and the
+    request fails with "Cannot find index entries".
+    """
+    levelist = request.get("levelist")
+    if levelist is None or (isinstance(levelist, (list, tuple, set)) and all(v is None for v in levelist)):
+        request = {k: v for k, v in request.items() if k != "levelist"}
+    return request
 
 
 def _translate_params(request: dict, param_translation: dict[str, str]) -> dict:
@@ -164,37 +124,9 @@ def _translate_params(request: dict, param_translation: dict[str, str]) -> dict:
     return request
 
 
-# InferenceOrography.patch_data_request swaps the outgoing pressure-level request's "z"/"FI"
-# for "gh" (see module docstring), so what comes back decodes with the KENDA/COSMO name for
-# *geopotential height*, not geopotential -- unlike the rest of param_translation, this isn't
-# derivable from variables_metadata (whose mars.param for z_* variables is "FI").
-_GEOPOTENTIAL_HEIGHT_PL_COSMO_NAME = "GH"
-
-
 def _fix_corrupted_param_names(fields: ekd.FieldList, param_translation: dict[str, str]) -> ekd.FieldList:
-    """Correct ``param`` for fields decoded under the operational KENDA/COSMO eccodes override.
-
-    See the module docstring's ``ECCODES_DEFINITION_PATH`` section: every field's ``param``
-    decodes as its KENDA/COSMO name (e.g. ``T``) rather than its real ECMWF Open Data one
-    (``t``), regardless of ``_without_eccodes_definition_path_override``. Since the corruption
-    is a consistent function of the true parameter, ``param_translation`` (COSMO name -> ECMWF
-    name) doubles as the fix.
-
-    This wraps with ``anemoi.transform.fields.NewMetadataField`` rather than earthkit-data's own
-    ``field.clone(param=...)`` -- confirmed necessary, not just stylistic: ``field.clone()``
-    stores the override in an earthkit-data ``WrappedMetadata``, and ``WrappedMetadata.__init__``
-    "merges" (collapses) a nested ``WrappedMetadata`` into the *underlying, uncorrected* one the
-    moment anything clones the clone again -- which ``EkdInput._filter_and_sort`` does, to attach
-    a computed name. The override still answers direct ``field.metadata("param")`` calls
-    correctly after that (it stays in ``extra``), but the *namer* reads the third
-    (``original_metadata``) argument its naming callable receives, and that argument is exactly
-    the collapsed, uncorrected metadata -- so the namer silently sees ``T`` again, not ``t``.
-    ``NewMetadataField`` overrides ``.metadata()`` as a plain method delegating to the wrapped
-    field rather than merging metadata objects, so it has no such collapse and survives further
-    ``.clone()`` calls correctly (this is also how ``Orography.forward_transform`` builds ``z``
-    from ``gh``, which is why that one path worked before this fix existed).
-    """
-    translation = {**param_translation, _GEOPOTENTIAL_HEIGHT_PL_COSMO_NAME: "gh"}
+    """Re-apply ``param_translation`` (plus ``GH`` -> ``gh``) to fields still carrying the untranslated name."""
+    translation = {**param_translation, "GH": "gh"}
     return ekd.SimpleFieldList(
         [
             field if (true_param := translation.get(field.metadata("param", default=None))) is None
@@ -206,93 +138,82 @@ def _fix_corrupted_param_names(fields: ekd.FieldList, param_translation: dict[st
 
 @input_registry.register("oper-ecmwf-opendata")
 class OperEcmwfOpenDataInput(OpenDataInputPlugin):
-    """ECMWF Open Data input with run-availability fallback."""
+    """ECMWF Open Data input with run-availability fallback; no analysis product, so step 0 is the closest equivalent."""
 
     def __init__(
         self,
         context,
         metadata,
         *,
-        frequency_h: int = 6,
-        step_h: int = 3,
-        max_lead_time_h: int = 144,
-        stored_runs: int = 12,
+        allow_forecast_fallback: bool = False,
+        cache_dir: str | None = None,
         **kwargs: Any,
     ) -> None:
-        """Initialise the OperEcmwfOpenDataInput.
+        """If ``allow_forecast_fallback`` is ``False`` (default), only step-0 fields are requested; an off-grid target raises.
 
-        Parameters
-        ----------
-        frequency_h : int
-            Hours between ECMWF Open Data runs.
-        step_h : int
-            Step granularity actually published by ECMWF Open Data (verified
-            against the real endpoint: for ``oper``/``0p25``, step 0h/3h/6h
-            exist, 1h/2h don't — confirmed with direct HEAD requests, not
-            documentation). A target that isn't an exact multiple of this
-            raises in ``_run_and_step`` rather than silently substituting the
-            nearest available step: ECMWF Open Data has no in-between data to
-            round to, so a "closest step" would just be a different, wrong
-            valid time presented as if it were the requested one.
-        max_lead_time_h : int
-            Maximum forecast step available in ECMWF Open Data.
-        stored_runs : int
-            Number of past runs to try walking back through before giving up.
-        """
+        ``cache_dir``, if set, persists downloaded ECMWF Open Data fields to disk (via earthkit-data's
+        own cache) so later runs don't re-download them."""
         super().__init__(context, metadata, **kwargs)
-        self.frequency_h = frequency_h
-        self.step_h = step_h
-        self.max_lead_time_h = max_lead_time_h
-        self.stored_runs = stored_runs
+        self.allow_forecast_fallback = allow_forecast_fallback
+        self.cache_dir = cache_dir
 
-    def _run_and_step(self, target: datetime, latest_run: datetime) -> tuple[datetime, int]:
-        """Compute ``(run, step_h)`` so the forecast from ``run`` reaches ``target`` exactly.
-
-        Walks back through stored runs (``frequency_h`` apart, up to
-        ``stored_runs``) to find the most recent one whose lead time lands
-        exactly on ``target``. Raises if ``target`` isn't reachable at the
-        configured ``step_h`` granularity — see ``step_h``'s docstring for why
-        this doesn't fall back to an approximate/nearest step instead.
-        """
-        hours_ahead = round((latest_run - target).total_seconds() / 3600)
-        n_back = math.ceil(max(hours_ahead, 0) / self.frequency_h)
-        if n_back > self.stored_runs:
-            raise ValueError(f"{target} is older than the {self.stored_runs} stored open data runs")
-        run = latest_run - timedelta(hours=self.frequency_h * n_back)
-        step = round((target - run).total_seconds() / 3600 / self.step_h) * self.step_h
-        if step > self.max_lead_time_h:
-            raise ValueError(f"step {step}h exceeds open data max lead time for {target}")
-        if step < 0:
-            raise ValueError(f"computed a negative step ({step}h) for {target} against run {run}")
-        return run, step
+    def _resolve_init_time_and_lead_hours(self, target: datetime, latest_init_time: datetime) -> tuple[datetime, int]:
+        """Compute ``(init_time, lead_hours)`` reaching ``target`` exactly; raises rather than rounding when off-grid."""
+        hour = timedelta(hours=1)
+        offset = latest_init_time - target
+        if offset % hour:
+            raise ValueError(f"{target} is not hour-aligned; ECMWF Open Data only publishes on whole hours")
+        hours_ahead = offset // hour
+        n_back = -(-max(hours_ahead, 0) // FREQUENCY_H)  # ceiling division
+        if n_back > STORED_RUNS:
+            raise ValueError(f"{target} is older than the {STORED_RUNS} stored ECMWF Open Data runs")
+        init_time = latest_init_time - timedelta(hours=FREQUENCY_H * n_back)
+        lead_hours = (target - init_time) // hour
+        if lead_hours < 0:
+            raise ValueError(f"{target} is more recent than the latest published run {latest_init_time}")
+        if lead_hours % STEP_H != 0:
+            raise ValueError(
+                f"{target} is {lead_hours}h after run {init_time}, not a multiple of the {STEP_H}h step "
+                "ECMWF Open Data publishes"
+            )
+        if lead_hours > MAX_LEAD_TIME_H:
+            raise ValueError(f"step {lead_hours}h for {target} exceeds ECMWF Open Data's {MAX_LEAD_TIME_H}h max lead time")
+        if lead_hours != 0 and not self.allow_forecast_fallback:
+            raise ValueError(
+                f"{target} requires a {lead_hours}h forecast step from run {init_time}, but "
+                "allow_forecast_fallback=False restricts this input to step-0 (analysis-equivalent) fields"
+            )
+        return init_time, lead_hours
 
     def retrieve(self, variables: list[str], dates: list[Date]) -> Any:
         """Retrieve data for the given variables at the given target valid times."""
-        guaranteed_run = _latest_published_run(type="fc")
+        guaranteed_init_time = _latest_published_run(type="fc")
         param_translation = _param_translation_from_variables_metadata(self.metadata, variables)
 
         kwargs = self.kwargs.copy()
         kwargs.setdefault("grid", self.metadata.grid)
         kwargs.setdefault("area", self.metadata.area)
 
-        result = None
+        result = ekd.FieldList()
         for target in dates:
-            run, step = self._run_and_step(target, guaranteed_run)
-            LOG.info("oper-ecmwf-opendata: %s -> run %s step %dh", target, run, step)
+            init_time, lead_hours = self._resolve_init_time_and_lead_hours(target, guaranteed_init_time)
+            LOG.info("oper-ecmwf-opendata: %s -> run %s step %dh", target, init_time, lead_hours)
 
             requests = self.metadata.mars_requests(
                 variables=variables,
-                dates=[run],
+                dates=[init_time],
                 use_grib_paramid=False,
                 type="fc",
-                patch_request=lambda r, step=step: _translate_params({**r, "step": step}, param_translation),
+                patch_request=lambda r, lead_hours=lead_hours: _translate_params(
+                    _drop_null_levelist({**r, "step": lead_hours}), param_translation
+                ),
             )
             if not requests:
                 raise ValueError(f"No requests for {variables} ({target})")
 
-            with _without_eccodes_definition_path_override():
+            with _without_eccodes_definition_path_override(), _with_cache_dir(self.cache_dir):
                 batch = _retrieve_opendata(requests, patch=self.patch_data_request, **kwargs)
             batch = _fix_corrupted_param_names(batch, param_translation)
-            result = batch if result is None else result + batch
+            result += batch
 
         return result

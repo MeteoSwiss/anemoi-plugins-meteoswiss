@@ -21,6 +21,7 @@ oper-inference = [
     "anemoi-inference>=0.11",
     "anemoi-plugins-ecmwf-inference[opendata]>=0.5.0",
     "ecmwf-opendata",
+    "requests",
 ]
 
 [project.scripts]
@@ -47,6 +48,7 @@ rea-l-ch1-wind-gust = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1WindGu
 
 [project.entry-points."anemoi.inference.inputs"]
 oper-ecmwf-opendata = "anemoi_plugins_meteoswiss.inference.inputs:OperEcmwfOpenDataInput"
+oper-kenda-opendata = "anemoi_plugins_meteoswiss.inference.inputs:OperKendaOpenDataInput"
 
 [build-system]
 requires = ["hatchling"]
@@ -54,6 +56,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: hits real external services (ECMWF Open Data, MeteoSwiss STAC); opt in with RUN_INTEGRATION_TESTS=1",
+]
 
 [dependency-groups]
 dev = [

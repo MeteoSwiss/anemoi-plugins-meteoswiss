@@ -9,12 +9,6 @@ from anemoi.transform.filter import Filter
 
 LOG = logging.getLogger(__name__)
 
-SFC_VCOORD_TYPES = [
-    "surface",
-    "heightAboveGround",
-    "meanSea",
-]
-
 BASE_REQUEST = {
     "stream": "reanl",
     "class": "rd",
@@ -88,7 +82,7 @@ class ModelToPressureLevel(Filter):
             if shortname not in self._fdb_cache:
                 self._fdb_cache[shortname] = self._request_fdb(shortname, spec, CONSTANT_TIME_KEYS)
             time_metadata = time_group[0].metadata(namespace="time")
-            return _restamp_time(self._fdb_cache[shortname], time_metadata)
+            return _override_time_metadata_on_constant_auxiliary(self._fdb_cache[shortname], time_metadata)
 
         date = datetime.strptime(time_group[0].metadata("valid_datetime"), "%Y-%m-%dT%H:%M:%S")
         return self._request_fdb(shortname, spec, self._construct_time_request(date))
@@ -129,7 +123,7 @@ class ModelToPressureLevel(Filter):
                 if param in ["P", "HHL"]:
                     continue
 
-                if template_field.metadata("typeOfLevel") in SFC_VCOORD_TYPES:
+                if template_field.metadata("typeOfLevel") != "generalVerticalLayer":
                     passthrough += param_group  # 2D surface field: passthrough, not interpolated
                     continue
 
@@ -163,13 +157,15 @@ def _geopotential_from_hhl(hhl: ekd.FieldList) -> xr.DataArray:
     return ekd.FieldList.from_array(fi_values, fi_md).to_xarray()["FI"]
 
 
-def _restamp_time(fields: ekd.FieldList, time_metadata: dict) -> ekd.FieldList:
-    """Restamp a cached constant auxiliary FieldList (fetched once, for a fixed
-    reference date) with the current timestep's own time metadata."""
-    time_metadata = dict(time_metadata)
+def _override_time_metadata_on_constant_auxiliary(
+    da: xr.DataArray, time_metadata: dict
+) -> xr.DataArray:
+    """Metadata override for constant auxiliary fields."""
     del time_metadata["validityDate"]  # read-only
     del time_metadata["validityTime"]  # read-only
-    return ekd.SimpleFieldList([field.clone(**time_metadata) for field in fields])
+    md = da.earthkit.metadata.override(**time_metadata)
+    da.attrs["_earthkit"]["message"] = md._handle.get_buffer()
+    return da
 
 
 def _override_pressure_level_units(fields):

@@ -165,6 +165,9 @@ class RetrieveObservation(Filter):
         df["longitude"] = df["station"].map(
             dict(zip(catalog.station_id, catalog.longitude))
         )
+        df["elevation"] = df["station"].map(
+            dict(zip(catalog.station_id, catalog.elevation))
+        )
         df = df.dropna(subset=["nat_abbr"]).set_index("nat_abbr")
         df.index.name = "station"
 
@@ -186,6 +189,7 @@ class RetrieveObservation(Filter):
         result_cols = [c for c in self.cols if c in df.columns] + [
             "latitude",
             "longitude",
+            "elevation",
         ]
         df = df[result_cols].copy()
 

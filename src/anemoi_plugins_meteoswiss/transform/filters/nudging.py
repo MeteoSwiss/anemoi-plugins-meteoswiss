@@ -200,9 +200,7 @@ class NudgeTowardObservation(Filter):
         self.k = k
         self.power = power
         self.max_dist = max_dist
-        self.jretrieve_bbox = (
-            jretrieve_bbox if jretrieve_bbox is not None else [40.5, 53.0, 0.0, 17.5]
-        )
+        self.jretrieve_bbox = jretrieve_bbox if jretrieve_bbox is not None else [40.5, 53.0, 0.0, 17.5]
         self.jretrieve_src_path = jretrieve_src_path
         self.use_limitation = use_limitation
         self.run_mode = run_mode
@@ -211,9 +209,7 @@ class NudgeTowardObservation(Filter):
         if nudge_variables is not None:
             unknown = set(nudge_variables) - PARAM_MAP.keys()
             if unknown:
-                raise ValueError(
-                    f"Unknown nudge variables: {unknown}. Valid: {list(PARAM_MAP)}"
-                )
+                raise ValueError(f"Unknown nudge variables: {unknown}. Valid: {list(PARAM_MAP)}")
             self.param_map = {k: PARAM_MAP[k] for k in nudge_variables}
         else:
             self.param_map = PARAM_MAP
@@ -297,12 +293,7 @@ class NudgeTowardObservation(Filter):
             )
             LOG.info("Nudged '%s' using %d stations", shortname, int(valid.sum()))
 
-        result = [
-            nudged.get(f.metadata("shortName"), f)
-            if f.datetime()["valid_time"] == ref_time
-            else f
-            for f in data
-        ]
+        result = [nudged.get(f.metadata("shortName"), f) if f.datetime()["valid_time"] == ref_time else f for f in data]
         self._nudging_done = True
         LOG.info("Nudging complete: %d/%d fields updated", len(nudged), len(result))
         return new_fieldlist_from_list(result)
@@ -332,15 +323,9 @@ class NudgeTowardObservation(Filter):
         import jretrieve as jr
 
         needed_cols = {col for col, _ in self.param_map.values()}
-        jr_params = list(
-            dict.fromkeys(
-                p for col in needed_cols for p in _STATION_COL_TO_JR_PARAMS.get(col, [])
-            )
-        )
+        jr_params = list(dict.fromkeys(p for col in needed_cols for p in _STATION_COL_TO_JR_PARAMS.get(col, [])))
         if not jr_params:
-            raise ValueError(
-                f"No jretrieve parameters found for station columns: {needed_cols}"
-            )
+            raise ValueError(f"No jretrieve parameters found for station columns: {needed_cols}")
 
         jr.check_prerequisites()
 
@@ -358,15 +343,9 @@ class NudgeTowardObservation(Filter):
             use_limitation=self.use_limitation,
         )
 
-        df["nat_abbr"] = df["station"].map(
-            dict(zip(catalog.station_id, catalog.nat_abbr))
-        )
-        df["latitude"] = df["station"].map(
-            dict(zip(catalog.station_id, catalog.latitude))
-        )
-        df["longitude"] = df["station"].map(
-            dict(zip(catalog.station_id, catalog.longitude))
-        )
+        df["nat_abbr"] = df["station"].map(dict(zip(catalog.station_id, catalog.nat_abbr)))
+        df["latitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.latitude)))
+        df["longitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.longitude)))
         df = df.dropna(subset=["nat_abbr"]).set_index("nat_abbr")
         df.index.name = "station"
 

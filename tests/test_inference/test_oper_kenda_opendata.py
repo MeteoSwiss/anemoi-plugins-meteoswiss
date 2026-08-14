@@ -47,10 +47,7 @@ def _fake_metadata(variables_to_mars: dict) -> Metadata:
     return Metadata(
         {
             "dataset": {
-                "variables_metadata": {
-                    variable: {"mars": mars}
-                    for variable, mars in variables_to_mars.items()
-                },
+                "variables_metadata": {variable: {"mars": mars} for variable, mars in variables_to_mars.items()},
                 "variables": list(variables_to_mars),
                 "data_request": {},
             }
@@ -61,9 +58,7 @@ def _fake_metadata(variables_to_mars: dict) -> Metadata:
 def test_retrieve_resolves_each_variable_from_exactly_one_source():
     """``t2m`` only exists in the hourly STAC items; ``hsurf`` only exists in the static grid
     constants -- checks both sources are actually reachable and correctly routed to."""
-    valid_time = datetime.now(timezone.utc).replace(
-        minute=0, second=0, microsecond=0
-    ) - timedelta(hours=3)
+    valid_time = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(hours=3)
     metadata = _fake_metadata({"t2m": {"param": "T_2M"}, "hsurf": {"param": "HSURF"}})
     input_ = OperKendaOpenDataInput(_FakeContext(valid_time), metadata, variables=[])
 

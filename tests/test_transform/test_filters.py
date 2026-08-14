@@ -12,9 +12,7 @@ from anemoi_plugins_meteoswiss.transform.filters import IconRemapToRegLatLon
 from anemoi_plugins_meteoswiss.transform.filters import Keep
 from anemoi_plugins_meteoswiss.transform.filters import ModelToPressureLevel
 
-ICONREMAP_WEIGHTS = (
-    "/store_new/mch/msopr/icon_workflow_2/iconremap-weights/icon-ch1-eps-rotlatlon.nc"
-)
+ICONREMAP_WEIGHTS = "/store_new/mch/msopr/icon_workflow_2/iconremap-weights/icon-ch1-eps-rotlatlon.nc"
 
 
 def test_filter_imports():
@@ -67,9 +65,7 @@ def test_gaussian_smoother(data_dir, hostname):
     fn = str(data_dir / "iaf2025010100")
     fs = ekd.from_source("file", fn)
     # T_2M (smoothed) + one level of W (pass-through, not in params)
-    fieldlist = new_fieldlist_from_list(
-        list(fs.sel(shortName="T_2M")) + [fs.sel(shortName="W")[0]]
-    )
+    fieldlist = new_fieldlist_from_list(list(fs.sel(shortName="T_2M")) + [fs.sel(shortName="W")[0]])
 
     regridded = list(regridder.forward(fieldlist))
     synthetic = np.zeros((regridder.ny, regridder.nx))
@@ -97,9 +93,7 @@ def test_gaussian_smoother(data_dir, hostname):
 
 
 def test_keep(caplog):
-    fieldlist = new_fieldlist_from_list(
-        [ArrayField(np.zeros(4), RawMetadata({"param": p})) for p in ["t", "q", "z"]]
-    )
+    fieldlist = new_fieldlist_from_list([ArrayField(np.zeros(4), RawMetadata({"param": p})) for p in ["t", "q", "z"]])
 
     kept = Keep(param=["t", "z"]).forward(fieldlist)
     assert [f.metadata("param") for f in kept] == ["t", "z"]

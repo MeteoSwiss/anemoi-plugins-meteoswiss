@@ -26,6 +26,4 @@ class AssignGrid(Filter):
         super().__init__()
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
-        return new_fieldlist_from_list(
-            [new_field_from_grid(field, self.grid) for field in data]
-        )
+        return new_fieldlist_from_list([new_field_from_grid(field, self.grid) for field in data])

@@ -57,6 +57,9 @@ build-backend = "hatchling.build"
 [tool.hatch.metadata]
 allow-direct-references = true
 
+[tool.ruff]
+line-length = 120
+
 [tool.pytest.ini_options]
 markers = [
     "integration: hits real external services (ECMWF Open Data, MeteoSwiss STAC); opt in with RUN_INTEGRATION_TESTS=1",

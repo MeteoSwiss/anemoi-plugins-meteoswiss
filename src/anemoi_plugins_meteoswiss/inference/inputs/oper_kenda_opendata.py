@@ -36,9 +36,7 @@ STAC_COLLECTION_ID_ICON = "ch.meteoschweiz.ogd-forecasting-icon-ch1"
 STAC_PAGE_LIMIT = 100
 
 
-def _stac_items(
-    valid_time: datetime, *, limit: int = STAC_PAGE_LIMIT
-) -> Iterator[dict]:
+def _stac_items(valid_time: datetime, *, limit: int = STAC_PAGE_LIMIT) -> Iterator[dict]:
     """Yield every STAC item for the KENDA-CH1 collection valid at ``valid_time``, following pagination."""
     url = f"{STAC_BASE_URL}/collections/{STAC_COLLECTION_ID_KENDA}/items"
     params = {"datetime": valid_time.strftime("%Y-%m-%dT%H:%M:%SZ"), "limit": limit}
@@ -47,9 +45,7 @@ def _stac_items(
         response.raise_for_status()
         page = response.json()
         yield from page.get("features", [])
-        next_hrefs = [
-            link["href"] for link in page.get("links", []) if link.get("rel") == "next"
-        ]
+        next_hrefs = [link["href"] for link in page.get("links", []) if link.get("rel") == "next"]
         url, params = (next_hrefs[0], None) if next_hrefs else (None, None)
 
 
@@ -57,17 +53,13 @@ def _asset_href(item: dict) -> str:
     """Return a STAC item's sole asset href; raises if that invariant doesn't hold."""
     assets = list(item.get("assets", {}).values())
     if len(assets) != 1:
-        raise ValueError(
-            f"Expected exactly one asset on KENDA-CH1 item {item.get('id')!r}, got {len(assets)}"
-        )
+        raise ValueError(f"Expected exactly one asset on KENDA-CH1 item {item.get('id')!r}, got {len(assets)}")
     return assets[0]["href"]
 
 
 def _hrefs_by_variable(items: Iterable[dict]) -> dict[str, str]:
     """Map each item's ``forecast:variable`` to its asset href."""
-    return {
-        item["properties"]["forecast:variable"]: _asset_href(item) for item in items
-    }
+    return {item["properties"]["forecast:variable"]: _asset_href(item) for item in items}
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -81,9 +73,7 @@ def _collection_static_assets() -> dict[str, str]:
     These are collection-level assets (grid constants), not hourly items --
     fetched from the collection endpoint, not ``/items``.
     """
-    response = requests.get(
-        f"{STAC_BASE_URL}/collections/{STAC_COLLECTION_ID_ICON}", timeout=30
-    )
+    response = requests.get(f"{STAC_BASE_URL}/collections/{STAC_COLLECTION_ID_ICON}", timeout=30)
     response.raise_for_status()
     return {
         name: asset["href"]
@@ -103,9 +93,7 @@ def _download_to_path(href: str, path: str) -> None:
     os.replace(tmp_path, path)
 
 
-def _cached_fields(
-    cache_dir: str | None, subdir: str, hrefs_by_filename: dict[str, str]
-) -> ekd.FieldList:
+def _cached_fields(cache_dir: str | None, subdir: str, hrefs_by_filename: dict[str, str]) -> ekd.FieldList:
     """Fetch ``hrefs_by_filename``'s assets, reusing whatever's already at ``cache_dir/subdir`` and
     persisting the rest there; downloads straight to memory without touching disk if ``cache_dir`` is unset."""
     if not cache_dir:
@@ -197,17 +185,13 @@ class OperKendaOpenDataInput(MarsInput):
             )
             if not requests_:
                 raise ValueError(f"No requests for {variables} ({date})")
-            requested_variables = {
-                p for r in requests_ for p in _as_list(r.get("param", []))
-            }
+            requested_variables = {p for r in requests_ for p in _as_list(r.get("param", []))}
             if requested_variables & self.skip_variables:
                 LOG.info(
                     "oper-kenda-opendata: skipping the following variables(s): %s",
                     sorted(requested_variables & self.skip_variables),
                 )
-            variables_to_provide = (
-                requested_variables | self.extra_variables
-            ) - self.skip_variables
+            variables_to_provide = (requested_variables | self.extra_variables) - self.skip_variables
 
             constants_to_fetch = sorted(variables_to_provide & constant_variable_names)
             variables_to_fetch = sorted(variables_to_provide - constant_variable_names)

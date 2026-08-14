@@ -165,8 +165,7 @@ class CopyPrognosticFromForecaster(Filter):
         self.params_to_keep = list(params_to_keep) if params_to_keep else None
         self._namer = _namer_map(namer)
         LOG.info(
-            "[copy-prognostic-from-forecaster] init: forecaster_path=%s "
-            "common_leadtime=%s copy=%s keep=%s",
+            "[copy-prognostic-from-forecaster] init: forecaster_path=%s common_leadtime=%s copy=%s keep=%s",
             self.forecaster_path,
             self.common_leadtime,
             self.params_to_copy,
@@ -214,9 +213,7 @@ class CopyPrognosticFromForecaster(Filter):
         out = []
         copied = []
         leads_copied: set[timedelta] = set()
-        for (
-            field
-        ) in data:  # loop through each variable and look for prognostics to copy over.
+        for field in data:  # loop through each variable and look for prognostics to copy over.
             name = field.metadata("param")
             lead = _leadtime(field)
             # Patch a field only if it is a requested prognostic AND sits at an

@@ -25,9 +25,7 @@ def _rot_to_geo(
     rlon = np.radians(rlon_deg)
     rlat = np.radians(rlat_deg)
 
-    sin_lat = np.sin(pollat) * np.sin(rlat) + np.cos(pollat) * np.cos(rlat) * np.cos(
-        rlon
-    )
+    sin_lat = np.sin(pollat) * np.sin(rlat) + np.cos(pollat) * np.cos(rlat) * np.cos(rlon)
     lat = np.degrees(np.arcsin(np.clip(sin_lat, -1.0, 1.0)))
 
     dlon_rad = np.arctan2(
@@ -81,9 +79,7 @@ class IconRemapToRegLatLon(Filter):
         rlat = ymin + np.arange(self.ny) * dy
         rlon_2d, rlat_2d = np.meshgrid(rlon, rlat)  # (ny, nx) row-major
 
-        self._latitudes, self._longitudes = _rot_to_geo(
-            rlon_2d.ravel(), rlat_2d.ravel(), np_lon, np_lat
-        )
+        self._latitudes, self._longitudes = _rot_to_geo(rlon_2d.ravel(), rlat_2d.ravel(), np_lon, np_lat)
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
         result = []
@@ -97,9 +93,7 @@ class IconRemapToRegLatLon(Filter):
             regridded[~self.valid_mask] = np.nan
             result.append(
                 new_field_from_latitudes_longitudes(
-                    new_field_from_numpy(
-                        regridded.reshape(self.ny, self.nx), template=field
-                    ),
+                    new_field_from_numpy(regridded.reshape(self.ny, self.nx), template=field),
                     latitudes=self._latitudes,
                     longitudes=self._longitudes,
                 )

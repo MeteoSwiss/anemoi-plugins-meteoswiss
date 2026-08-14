@@ -85,9 +85,7 @@ def _as_fct_time_request(dt: datetime) -> str:
     return out
 
 
-def _prepare_dates(
-    dates: list[datetime], accumulation_period_hours: int
-) -> list[datetime]:
+def _prepare_dates(dates: list[datetime], accumulation_period_hours: int) -> list[datetime]:
     """Ensure unique and sorted dates."""
     if len(set(dates)) != len((dates := sorted(dates))):
         raise ValueError("dates must be unique and sorted.")
@@ -117,9 +115,7 @@ def _get_data_from_fdb(request: dict[str, Any], dates: list[datetime]):
     return fl
 
 
-def _accumulation_logic(
-    fl: ekd.FieldList, accumulation_period_hours: int
-) -> ekd.FieldList:
+def _accumulation_logic(fl: ekd.FieldList, accumulation_period_hours: int) -> ekd.FieldList:
     """Compute accumulation for the requested dates."""
 
     previous_day_accum = fl.sel(step=24) or None
@@ -132,12 +128,8 @@ def _accumulation_logic(
         # the previous day 24h accumulation and the previous field value
         if previous_field.metadata("date") < field.metadata("date"):
             if previous_day_accum is None:
-                raise ValueError(
-                    "Cannot compute accumulation, missing previous day 24h accumulation."
-                )
-            accum_field = field.values + (
-                previous_day_accum.values - previous_field.values
-            )
+                raise ValueError("Cannot compute accumulation, missing previous day 24h accumulation.")
+            accum_field = field.values + (previous_day_accum.values - previous_field.values)
             start_step = previous_field.metadata("endStep") - 24
             md = field.metadata().override(startStep=start_step)
             accum_fl.append(field.copy(values=accum_field, metadata=md))

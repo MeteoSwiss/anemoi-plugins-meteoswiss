@@ -91,9 +91,7 @@ def _latest_published_run(**params: Any) -> datetime:
     return _EcmwfOpenDataClient().latest(**params)
 
 
-def _param_translation_from_variables_metadata(
-    metadata: Metadata, variables: list[str]
-) -> dict[str, str]:
+def _param_translation_from_variables_metadata(metadata: Metadata, variables: list[str]) -> dict[str, str]:
     """Map each variable's COSMO ``mars`` param (e.g. ``T``) to its ECMWF name (e.g. ``t``)."""
     mapping = {}
     for variable in variables:
@@ -116,16 +114,12 @@ def _drop_null_levelist(request: dict) -> dict:
     request fails with "Cannot find index entries".
     """
     levelist = request.get("levelist")
-    if levelist is None or (
-        isinstance(levelist, (list, tuple, set)) and all(v is None for v in levelist)
-    ):
+    if levelist is None or (isinstance(levelist, (list, tuple, set)) and all(v is None for v in levelist)):
         request = {k: v for k, v in request.items() if k != "levelist"}
     return request
 
 
-def _cosmo_to_ecmwf_request_param(
-    request: dict, cosmo_to_ecmwf: dict[str, str]
-) -> dict:
+def _cosmo_to_ecmwf_request_param(request: dict, cosmo_to_ecmwf: dict[str, str]) -> dict:
     """Translate the outgoing MARS request's ``param`` from COSMO names to ECMWF ones."""
     param = request.get("param")
     if param is None:
@@ -137,17 +131,14 @@ def _cosmo_to_ecmwf_request_param(
     return request
 
 
-def _cosmo_to_ecmwf_field_param(
-    fields: ekd.FieldList, cosmo_to_ecmwf: dict[str, str]
-) -> ekd.FieldList:
+def _cosmo_to_ecmwf_field_param(fields: ekd.FieldList, cosmo_to_ecmwf: dict[str, str]) -> ekd.FieldList:
     """Same COSMO -> ECMWF mapping, applied to retrieved fields whose ``param`` still decoded
     as the COSMO name (plus ``GH`` -> ``gh``)."""
     translation = {**cosmo_to_ecmwf, "GH": "gh"}
     return ekd.SimpleFieldList(
         [
             field
-            if (true_param := translation.get(field.metadata("param", default=None)))
-            is None
+            if (true_param := translation.get(field.metadata("param", default=None))) is None
             else NewMetadataField(field, param=true_param)
             for field in fields
         ]
@@ -179,28 +170,20 @@ class OperEcmwfOpenDataInput(OpenDataInputPlugin):
         self.constant = constant
         self.cache_dir = cache_dir
 
-    def _resolve_init_time_and_lead_hours(
-        self, target: datetime, latest_init_time: datetime
-    ) -> tuple[datetime, int]:
+    def _resolve_init_time_and_lead_hours(self, target: datetime, latest_init_time: datetime) -> tuple[datetime, int]:
         """Compute ``(init_time, lead_hours)`` reaching ``target`` exactly; raises rather than rounding when off-grid."""
         hour = timedelta(hours=1)
         offset = latest_init_time - target
         if offset % hour:
-            raise ValueError(
-                f"{target} is not hour-aligned; ECMWF Open Data only publishes on whole hours"
-            )
+            raise ValueError(f"{target} is not hour-aligned; ECMWF Open Data only publishes on whole hours")
         hours_ahead = offset // hour
         n_back = -(-max(hours_ahead, 0) // FREQUENCY_H)  # ceiling division
         if n_back > STORED_RUNS:
-            raise ValueError(
-                f"{target} is older than the {STORED_RUNS} stored ECMWF Open Data runs"
-            )
+            raise ValueError(f"{target} is older than the {STORED_RUNS} stored ECMWF Open Data runs")
         init_time = latest_init_time - timedelta(hours=FREQUENCY_H * n_back)
         lead_hours = (target - init_time) // hour
         if lead_hours < 0:
-            raise ValueError(
-                f"{target} is more recent than the latest published run {latest_init_time}"
-            )
+            raise ValueError(f"{target} is more recent than the latest published run {latest_init_time}")
         if lead_hours % STEP_H != 0:
             raise ValueError(
                 f"{target} is {lead_hours}h after run {init_time}, not a multiple of the {STEP_H}h step "
@@ -220,9 +203,7 @@ class OperEcmwfOpenDataInput(OpenDataInputPlugin):
     def retrieve(self, variables: list[str], dates: list[Date]) -> Any:
         """Retrieve data for the given variables at the given target valid times."""
         guaranteed_init_time = _latest_published_run(type="fc")
-        cosmo_to_ecmwf = _param_translation_from_variables_metadata(
-            self.metadata, variables
-        )
+        cosmo_to_ecmwf = _param_translation_from_variables_metadata(self.metadata, variables)
 
         kwargs = self.kwargs.copy()
         kwargs.setdefault("grid", self.metadata.grid)
@@ -233,9 +214,7 @@ class OperEcmwfOpenDataInput(OpenDataInputPlugin):
             if self.constant:
                 init_time, lead_hours = guaranteed_init_time, 0
             else:
-                init_time, lead_hours = self._resolve_init_time_and_lead_hours(
-                    target, guaranteed_init_time
-                )
+                init_time, lead_hours = self._resolve_init_time_and_lead_hours(target, guaranteed_init_time)
             LOG.info(
                 "oper-ecmwf-opendata: %s -> run %s step %dh",
                 target,
@@ -248,8 +227,7 @@ class OperEcmwfOpenDataInput(OpenDataInputPlugin):
                 dates=[init_time],
                 use_grib_paramid=False,
                 type="fc",
-                patch_request=lambda r,
-                lead_hours=lead_hours: _cosmo_to_ecmwf_request_param(
+                patch_request=lambda r, lead_hours=lead_hours: _cosmo_to_ecmwf_request_param(
                     _drop_null_levelist({**r, "step": lead_hours}), cosmo_to_ecmwf
                 ),
             )
@@ -260,9 +238,7 @@ class OperEcmwfOpenDataInput(OpenDataInputPlugin):
                 _without_eccodes_definition_path_override(),
                 _with_cache_dir(self.cache_dir),
             ):
-                batch = _retrieve_opendata(
-                    requests, patch=self.patch_data_request, **kwargs
-                )
+                batch = _retrieve_opendata(requests, patch=self.patch_data_request, **kwargs)
 
             if self.constant:
                 overrides = {
@@ -271,10 +247,7 @@ class OperEcmwfOpenDataInput(OpenDataInputPlugin):
                     "step": 0,
                 }
                 batch = ekd.SimpleFieldList(
-                    [
-                        field.clone(metadata=field.metadata().override(**overrides))
-                        for field in batch
-                    ]
+                    [field.clone(metadata=field.metadata().override(**overrides)) for field in batch]
                 )
 
             result += batch

@@ -26,9 +26,7 @@ class Keep(Filter):
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
         kept = [f for f in data if f.metadata("param") in self.param]
 
-        dropped_params = sorted(
-            {f.metadata("param") for f in data if f.metadata("param") not in self.param}
-        )
+        dropped_params = sorted({f.metadata("param") for f in data if f.metadata("param") not in self.param})
         LOG.info("Dropping %d fields, param=%s", len(dropped_params), dropped_params)
 
         missing_params = sorted(set(self.param) - {f.metadata("param") for f in data})

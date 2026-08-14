@@ -69,7 +69,9 @@ class ModelToPressureLevel(Filter):
 
         self._fdb_cache: dict[str, ekd.FieldList] = {}
 
-    def _fetch_from_fdb(self, shortname: str, time_group: ekd.FieldList) -> ekd.FieldList:
+    def _fetch_from_fdb(
+        self, shortname: str, time_group: ekd.FieldList
+    ) -> ekd.FieldList:
         """Fetch ``shortname`` from FDB per its ``AUXILIARY_VARIABLES`` spec, for the
         timestep ``time_group`` belongs to.
 
@@ -80,14 +82,22 @@ class ModelToPressureLevel(Filter):
         spec = AUXILIARY_VARIABLES[shortname]
         if spec.get("constant"):
             if shortname not in self._fdb_cache:
-                self._fdb_cache[shortname] = self._request_fdb(shortname, spec, CONSTANT_TIME_KEYS)
+                self._fdb_cache[shortname] = self._request_fdb(
+                    shortname, spec, CONSTANT_TIME_KEYS
+                )
             time_metadata = time_group[0].metadata(namespace="time")
-            return _override_time_metadata_on_constant_auxiliary(self._fdb_cache[shortname], time_metadata)
+            return _override_time_metadata_on_constant_auxiliary(
+                self._fdb_cache[shortname], time_metadata
+            )
 
-        date = datetime.strptime(time_group[0].metadata("valid_datetime"), "%Y-%m-%dT%H:%M:%S")
+        date = datetime.strptime(
+            time_group[0].metadata("valid_datetime"), "%Y-%m-%dT%H:%M:%S"
+        )
         return self._request_fdb(shortname, spec, self._construct_time_request(date))
 
-    def _request_fdb(self, shortname: str, spec: dict, time_keys: dict) -> ekd.FieldList:
+    def _request_fdb(
+        self, shortname: str, spec: dict, time_keys: dict
+    ) -> ekd.FieldList:
         extra_keys = {"param": shortname, "levtype": spec["levtype"]}
         if "levelist" in spec:
             extra_keys["levelist"] = spec["levelist"]
@@ -124,7 +134,9 @@ class ModelToPressureLevel(Filter):
                     continue
 
                 if template_field.metadata("typeOfLevel") != "generalVerticalLayer":
-                    passthrough += param_group  # 2D surface field: passthrough, not interpolated
+                    passthrough += (
+                        param_group  # 2D surface field: passthrough, not interpolated
+                    )
                     continue
 
                 da = param_group.to_xarray()[param]
@@ -133,14 +145,28 @@ class ModelToPressureLevel(Filter):
                     da = destagger_z(da)
 
                 out += interpolate_extrapolate(
-                    da, p, t2m, ps, hsurf, param, self.interpolate_levels, self.extrapolate_levels
+                    da,
+                    p,
+                    t2m,
+                    ps,
+                    hsurf,
+                    param,
+                    self.interpolate_levels,
+                    self.extrapolate_levels,
                 ).earthkit.to_fieldlist()
 
             if self.add_geopotential:
                 hhl = self._get_field(time_group, "HHL")
                 fi = _geopotential_from_hhl(hhl)
                 out += interpolate_extrapolate(
-                    fi, p, t2m, ps, hsurf, "FI", self.interpolate_levels, self.extrapolate_levels
+                    fi,
+                    p,
+                    t2m,
+                    ps,
+                    hsurf,
+                    "FI",
+                    self.interpolate_levels,
+                    self.extrapolate_levels,
                 ).earthkit.to_fieldlist()
 
         out = _override_pressure_level_units(out)
@@ -172,7 +198,9 @@ def _override_pressure_level_units(fields):
     out = ekd.SimpleFieldList()
     for field in fields:
         level_hpa = int(int(field.metadata("level")) / 100)
-        field = field.clone(metadata=field.metadata().override(typeOfLevel="isobaricInhPa"))
+        field = field.clone(
+            metadata=field.metadata().override(typeOfLevel="isobaricInhPa")
+        )
         field = field.clone(metadata=field.metadata().override(level=level_hpa))
         field = field.clone(metadata=field.metadata().override(levelist=level_hpa))
         out.append(field)
@@ -208,13 +236,9 @@ def interpolate_extrapolate(
     for p_level in extrapolate_levels:
         idx = {"level": [el for el in interp.level].index(p_level * 100)}
         if param == "T":
-            extrap = extrapolate_temperature_sfc2p(
-                t2m, hsurf, ps, p_level * 100
-            )
+            extrap = extrapolate_temperature_sfc2p(t2m, hsurf, ps, p_level * 100)
         elif param == "FI":
-            extrap = extrapolate_geopotential_sfc2p(
-                hsurf, t2m, ps, p_level * 100
-            )
+            extrap = extrapolate_geopotential_sfc2p(hsurf, t2m, ps, p_level * 100)
         else:
             extrap = extrapolate_k2p(da, p_level * 100)
         interp[idx] = interp[idx].where(
@@ -222,6 +246,7 @@ def interpolate_extrapolate(
             extrap.squeeze().assign_coords(level=p_level * 100),
         )
     return interp
+
 
 ###
 ### Extrapolation functions copied from

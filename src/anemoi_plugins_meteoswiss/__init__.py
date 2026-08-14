@@ -21,7 +21,10 @@ def _use_cosmo_grib_definitions() -> None:
     # `restore` can itself be a colon-joined list of paths (eccodes always appends
     # "/MEMFS/definitions"), so validate each component separately rather than treating the
     # whole string as one path.
-    paths = (eccodes_cosmo_resources.get_definitions_path(), *(Path(p) for p in restore.split(":")))
+    paths = (
+        eccodes_cosmo_resources.get_definitions_path(),
+        *(Path(p) for p in restore.split(":")),
+    )
     for path in paths:
         if not path.exists() and not str(path).startswith("/MEMFS"):
             raise RuntimeError(f"{path} does not exist")

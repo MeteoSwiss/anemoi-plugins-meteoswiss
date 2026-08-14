@@ -43,7 +43,10 @@ def _fake_metadata(variables_to_mars: dict) -> Metadata:
     return Metadata(
         {
             "dataset": {
-                "variables_metadata": {variable: {"mars": mars} for variable, mars in variables_to_mars.items()},
+                "variables_metadata": {
+                    variable: {"mars": mars}
+                    for variable, mars in variables_to_mars.items()
+                },
                 "variables": list(variables_to_mars),
                 "data_request": {"grid": "N320", "area": [90.0, 0.0, -90.0, 359.719]},
             }
@@ -71,7 +74,9 @@ def test_retrieve_fetches_real_fields_from_ecmwf_open_data():
             "z": {"levtype": "sfc", "param": "FIS", "stream": "oper", "levelist": None},
         }
     )
-    input_ = OperEcmwfOpenDataInput(_FakeContext(reference_date), metadata, variables=[])
+    input_ = OperEcmwfOpenDataInput(
+        _FakeContext(reference_date), metadata, variables=[]
+    )
 
     result = input_.retrieve(variables=["2t", "z"], dates=[reference_date])
 

@@ -109,10 +109,10 @@ class ModelToPressureLevel(Filter):
         out = ekd.FieldList()
         passthrough = ekd.FieldList()
         for time_group in data.group_by("valid_datetime"):
-            t2m = self._get_field(time_group, "T_2M").to_xarray()["T_2M"]
-            ps = self._get_field(time_group, "PS").to_xarray()["PS"]
-            p = self._get_field(time_group, "P").to_xarray()["P"]
-            hsurf = self._get_field(time_group, "HSURF").to_xarray()["HSURF"]
+            t2m = self._get_field(time_group, "T_2M").to_xarray(dtype="float32")["T_2M"]
+            ps = self._get_field(time_group, "PS").to_xarray(dtype="float32")["PS"]
+            p = self._get_field(time_group, "P").to_xarray(dtype="float32")["P"]
+            hsurf = self._get_field(time_group, "HSURF").to_xarray(dtype="float32")["HSURF"]
 
             p[{"level": 0}] = p[{"level": 0}].where(p[{"level": 0}] < 5000, 5000 - 1e-5)
 
@@ -127,12 +127,12 @@ class ModelToPressureLevel(Filter):
                     passthrough += param_group  # 2D surface field: passthrough, not interpolated
                     continue
 
-                da = param_group.to_xarray()[param]
+                da = param_group.to_xarray(dtype="float32")[param]
 
                 if param == "W":
                     da = destagger_z(da)
 
-                out += interpolate_extrapolate(
+                interp = interpolate_extrapolate(
                     da,
                     p,
                     t2m,
@@ -141,12 +141,15 @@ class ModelToPressureLevel(Filter):
                     param,
                     self.interpolate_levels,
                     self.extrapolate_levels,
-                ).earthkit.to_fieldlist()
+                )
+
+                out += _to_pressure_fieldlist(interp)
+                del da, interp
 
             if self.add_geopotential:
                 hhl = self._get_field(time_group, "HHL")
                 fi = _geopotential_from_hhl(hhl)
-                out += interpolate_extrapolate(
+                interp = interpolate_extrapolate(
                     fi,
                     p,
                     t2m,
@@ -155,17 +158,20 @@ class ModelToPressureLevel(Filter):
                     "FI",
                     self.interpolate_levels,
                     self.extrapolate_levels,
-                ).earthkit.to_fieldlist()
+                )
+                out += _to_pressure_fieldlist(interp)
+                del hhl, fi, interp
 
-        out = _override_pressure_level_units(out)
+            del p, t2m, ps, hsurf
+
         return out + passthrough
 
 
 def _geopotential_from_hhl(hhl: ekd.FieldList) -> xr.DataArray:
     """Geopotential (FI) from destaggered model-level heights (HHL)."""
-    fi_values = (destagger_z(hhl.to_xarray()["HHL"]) * 9.80665).values
+    fi_values = (destagger_z(hhl.to_xarray(dtype="float32")["HHL"]) * 9.80665).values
     fi_md = [md.override(shortName="FI", typeOfLevel="generalVerticalLayer") for md in hhl[:-1].metadata()]
-    return ekd.FieldList.from_array(fi_values, fi_md).to_xarray()["FI"]
+    return ekd.FieldList.from_array(fi_values, fi_md).to_xarray(dtype="float32")["FI"]
 
 
 def _override_time_metadata_on_constant_auxiliary(da: xr.DataArray, time_metadata: dict) -> xr.DataArray:
@@ -177,14 +183,12 @@ def _override_time_metadata_on_constant_auxiliary(da: xr.DataArray, time_metadat
     return da
 
 
-def _override_pressure_level_units(fields):
+def _to_pressure_fieldlist(da: xr.DataArray) -> ekd.FieldList:
     out = ekd.SimpleFieldList()
-    for field in fields:
+    for field in da.earthkit.to_fieldlist():
         level_hpa = int(int(field.metadata("level")) / 100)
-        field = field.clone(metadata=field.metadata().override(typeOfLevel="isobaricInhPa"))
-        field = field.clone(metadata=field.metadata().override(level=level_hpa))
-        field = field.clone(metadata=field.metadata().override(levelist=level_hpa))
-        out.append(field)
+        md = field.metadata().override(typeOfLevel="isobaricInhPa", level=level_hpa, levelist=level_hpa)
+        out.append(field.clone(metadata=md))
     return out
 
 

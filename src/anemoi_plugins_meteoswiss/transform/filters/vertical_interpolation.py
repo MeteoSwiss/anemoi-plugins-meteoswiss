@@ -187,8 +187,10 @@ def _to_pressure_fieldlist(da: xr.DataArray) -> ekd.FieldList:
     out = ekd.SimpleFieldList()
     for field in da.earthkit.to_fieldlist():
         level_hpa = int(int(field.metadata("level")) / 100)
-        md = field.metadata().override(typeOfLevel="isobaricInhPa", level=level_hpa, levelist=level_hpa)
-        out.append(field.clone(metadata=md))
+        field = field.clone(metadata=field.metadata().override(typeOfLevel="isobaricInhPa"))
+        field = field.clone(metadata=field.metadata().override(level=level_hpa))
+        field = field.clone(metadata=field.metadata().override(levelist=level_hpa))
+        out.append(field)
     return out
 
 

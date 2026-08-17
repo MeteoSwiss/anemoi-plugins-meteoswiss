@@ -16,12 +16,34 @@ Algorithm per variable
     along-path step; a Gaussian-weighted mean across the corridor width and a
     95th-percentile along the path give the effective ridge height.
         d_eff = sqrt(d_euc² + (barrier/elev_scale)² + (elev_diff/elev_diff_scale)²)
-5.  Spread station residuals to the POI grid via ned_interp: IDW weighted by
-    topographic similarity (TPI, slope derivatives, DEM elevation) where
-    descriptor importance is |Pearson corr| with station residuals.
-6.  Multiply the correction by a linear taper that fades to zero at max_dist
+5.  Compute topographic similarity per (POI, station) pair (TPI, slope
+    derivatives, DEM/ICON elevation): each descriptor's importance is
+    |Pearson corr| between it and the station residuals, normalised to sum
+    to 1 per variable — a descriptor uncorrelated with this variable's
+    residuals contributes ~nothing, one that tracks the bias pattern
+    dominates the blend.
+6.  Spread station residuals to the POI grid via ned_interp: IDW
+    (1 / d_eff^weight_power) weighted by the topographic similarity from
+    step 5, floored at min_topo_w so nearby stations always contribute.
+7.  Multiply the correction by a linear taper that fades to zero at max_dist
     from the nearest station.
-7.  Subtract the tapered correction from the background field.
+8.  Subtract the tapered correction from the background field.
+
+Weight computation, symbolically (per POI p, station s)
+---------------------------------------------------------------------------
+Step 1 — raw distance:          d_euc[p,s]
+Step 2 — elevation-aware:       d_eff[p,s]     = barrier_distances(d_euc)          → "ned_sta_poi"
+Step 3 — descriptor importance: importance[d]  = |corr_s(residual[s], descriptor_d[s])| / Σ_d |corr_s(...)|
+                                 (one weight per descriptor d, computed across stations s; recomputed per variable)
+Step 4 — topo similarity:       w_topo[p,s]    = Σ_d importance[d] * (1 - |sta_topo[d,s] - poi_topo[d,p]|), floored at min_topo_w
+Step 5 — combine:               raw_w[p,s]     = w_topo[p,s] * (1 / d_eff[p,s]^weight_power)   [NaN if d_eff ≥ max_dist]
+Step 6 — normalize per POI:     w_ned[p,s]     = raw_w[p,s] / (Σ_s raw_w[p,s] + lim_effective)
+Step 7 — interpolate:           correction_raw[p] = Σ_s w_ned[p,s] * residual[s]
+Step 8 — taper (separate!):     taper[p] = 1 - clip(nearest_station_raw_dist[p] / max_dist, 0, 1)
+Step 9 — apply:                 background[p] -= correction_raw[p] * taper[p]
+
+Note taper (step 8) uses raw d_euc, not d_eff — the geographic fade-out is
+deliberately independent of the barrier logic (see barrier_distances docstring).
 """
 
 import logging
@@ -58,7 +80,7 @@ PARAM_MAP = {
 }
 
 _DEFAULT_TOPO_VARS = [
-    "TPI_500M", "TPI_4000M_SMTH", "SN_DERIV_2000M", "WE_DERIV_2000M", "DEM_1000M"
+    "TPI_500M", "TPI_4000M_SMTH", "SN_DERIV_2000M", "WE_DERIV_2000M", "ICON_OROG"
 ]
 _DEFAULT_TOPO_FILE = (
     "/scratch/mch/llanzila/sruc/aux_files/topo_descriptors_icon_R19B08.nc"
@@ -66,6 +88,23 @@ _DEFAULT_TOPO_FILE = (
 _DEFAULT_DEM_BARRIER_FILE = (
     "/store_new/mch/msclim/appclim/data/grids/topodem/v2/topo/radar_100/topo_DEM_1000M.nc"
 )
+# ICON's own native orography (extpar, ASTER-derived) on the same R19B08 grid — used
+# only as the elevation *topo descriptor* for ned_interp's similarity weighting, since
+# it is what the model itself "sees" as terrain. The elevation-aware barrier distance
+# (barrier_distances) intentionally keeps using the finer external DEM (dem_barrier_file)
+# instead, since that term needs the true terrain, not the model's (smoothed) view of it.
+_DEFAULT_ICON_OROG_FILE = (
+    "/scratch/mch/icontest/testing-input-data/c2sm/icon-1/"
+    "external_parameter_icon_grid_0001_R19B08_mch.nc"
+)
+
+# Standard-atmosphere lapse rate, applied to reduce station observations to the
+# model's elevation before differencing (see NudgeTowardObservation.lapse_rate).
+_DEFAULT_LAPSE_RATE = 0.0065  # K/m
+# T_2M only: dry-bulb temperature follows the standard-atmosphere lapse rate closely.
+# TD_2M (dewpoint) does not decrease with elevation at the same fixed rate, so it is
+# excluded by default; pressure is already sea-level-reduced and wind has no lapse rate.
+_DEFAULT_LAPSE_RATE_VARS = frozenset({"T_2M"})
 
 
 # ── ned_interp (adapted from data4web_pipelines/utils.py) ─────────────────────
@@ -359,10 +398,17 @@ class NudgeTowardObservation(Filter):
     topo_file : str
         Path to the topographic descriptor NetCDF on the ICON R19B08 grid
         (``topo_descriptors_icon_R19B08.nc``). Must contain ``lon`` and ``lat``
-        coordinate variables and all variables listed in *topo_vars*.
+        coordinate variables and all variables listed in *topo_vars* except
+        ``ICON_OROG``, which is injected separately from *icon_orog_file*.
     dem_barrier_file : str
         Path to the 1 km DEM NetCDF (variable ``DEM_1000M``, coordinates ``x``
         and ``y`` in LV95 metres) used for barrier path sampling.
+    icon_orog_file : str
+        Path to the ICON extpar NetCDF for the R19B08 grid (variable
+        ``topography_c``) providing the model's own native orography. Used
+        only as the ``ICON_OROG`` topo descriptor for ned_interp's
+        topographic-similarity weighting — distinct from *dem_barrier_file*,
+        which continues to drive the elevation-aware barrier distance.
     weight_power : float
         IDW distance-decay exponent. Higher values concentrate weight on the
         nearest station (notebook: ``WEIGHT_POWER = 4``).
@@ -390,10 +436,24 @@ class NudgeTowardObservation(Filter):
     lim_effective : float
         Virtual zero-residual station weight added to the normalisation
         denominator; 0 = pure IDW (notebook: ``LIM_EFFECTIVE = 0.0``).
+    lapse_rate : float
+        Standard-atmosphere lapse rate [K/m] used to reduce station observations
+        to the model's elevation before computing the residual, so the residual
+        reflects model bias rather than the elevation mismatch between the true
+        station altitude and ICON's (smoothed) orography at the nearest grid
+        cell: ``obs_corrected = obs - lapse_rate * (elev_model_at_cell - elev_sta)``.
+        Only applied to variables in *lapse_rate_vars* (default: 0.0065, i.e. 6.5 K/km).
+    lapse_rate_vars : list of str, optional
+        GRIB shortNames to which *lapse_rate* is applied. Restricted to
+        ``T_2M`` by default: dry-bulb temperature follows the standard-atmosphere
+        lapse rate closely, whereas dewpoint (``TD_2M``) does not decrease with
+        elevation at the same fixed rate, pressure is already sea-level-reduced,
+        and wind has no lapse rate. Defaults to ``["T_2M"]``.
     topo_vars : list of str, optional
-        Topographic descriptor variable names to use from *topo_file*.
-        Defaults to ``["TPI_500M", "TPI_4000M_SMTH", "SN_DERIV_2000M",
-        "WE_DERIV_2000M", "DEM_1000M"]``.
+        Topographic descriptor variable names, drawn from *topo_file* plus
+        the injected ``ICON_OROG`` (see *icon_orog_file*). Defaults to
+        ``["TPI_500M", "TPI_4000M_SMTH", "SN_DERIV_2000M",
+        "WE_DERIV_2000M", "ICON_OROG"]``.
     nudge_variables : list of str, optional
         GRIB shortNames to nudge (subset of PARAM_MAP keys). Defaults to all
         non-precipitation variables.
@@ -421,6 +481,7 @@ class NudgeTowardObservation(Filter):
         icon_grid_dir: str = "/scratch/mch/llanzila/sruc/aux_files",
         topo_file: str = _DEFAULT_TOPO_FILE,
         dem_barrier_file: str = _DEFAULT_DEM_BARRIER_FILE,
+        icon_orog_file: str = _DEFAULT_ICON_OROG_FILE,
         weight_power: float = 4.0,
         max_dist: float = 0.35,
         n_barrier_samples: int = 35,
@@ -430,6 +491,8 @@ class NudgeTowardObservation(Filter):
         elev_diff_scale: float = 4000.0,
         min_topo_w: float = 0.2,
         lim_effective: float = 0.0,
+        lapse_rate: float = _DEFAULT_LAPSE_RATE,
+        lapse_rate_vars: Optional[list] = None,
         topo_vars: Optional[list] = None,
         nudge_variables: Optional[list] = None,
         run_mode: str = "depl",
@@ -470,6 +533,7 @@ class NudgeTowardObservation(Filter):
         self.icon_grid_dir = Path(icon_grid_dir)
         self.topo_file = Path(topo_file)
         self.dem_barrier_file = Path(dem_barrier_file)
+        self.icon_orog_file = Path(icon_orog_file)
         self.weight_power = weight_power
         self.max_dist = max_dist
         self.n_barrier_samples = n_barrier_samples
@@ -479,6 +543,10 @@ class NudgeTowardObservation(Filter):
         self.elev_diff_scale = elev_diff_scale
         self.min_topo_w = min_topo_w
         self.lim_effective = lim_effective
+        self.lapse_rate = lapse_rate
+        self.lapse_rate_vars = (
+            frozenset(lapse_rate_vars) if lapse_rate_vars is not None else _DEFAULT_LAPSE_RATE_VARS
+        )
         self.topo_vars = list(topo_vars) if topo_vars is not None else _DEFAULT_TOPO_VARS
         self.run_mode = run_mode
         self.holdout_fraction = holdout_fraction
@@ -505,7 +573,8 @@ class NudgeTowardObservation(Filter):
         LOG.info(
             "NudgeTowardObservation v3 initialised: variables=%s, max_dist=%.2f, "
             "weight_power=%.1f, elev_scale=%.0f, elev_diff_scale=%.0f, "
-            "barrier_width_m=%.0f, n_barrier_samples=%d, n_barrier_width_samples=%d",
+            "barrier_width_m=%.0f, n_barrier_samples=%d, n_barrier_width_samples=%d, "
+            "lapse_rate=%.5f K/m (vars=%s)",
             list(self.param_map.keys()),
             self.max_dist,
             self.weight_power,
@@ -514,6 +583,8 @@ class NudgeTowardObservation(Filter):
             self.barrier_width_m,
             self.n_barrier_samples,
             self.n_barrier_width_samples,
+            self.lapse_rate,
+            sorted(self.lapse_rate_vars),
         )
         super().__init__()
 
@@ -532,13 +603,24 @@ class NudgeTowardObservation(Filter):
 
     def _load_topo(self) -> None:
         self._ds_topo = xr.open_dataset(self.topo_file)
+        self._load_icon_orog()
         missing = [v for v in self.topo_vars if v not in self._ds_topo]
         if missing:
             raise ValueError(
-                f"Topo variables {missing} not found in {self.topo_file}. "
-                f"Available: {list(self._ds_topo.data_vars)}"
+                f"Topo variables {missing} not found in {self.topo_file} "
+                f"(plus the injected ICON_OROG). Available: {list(self._ds_topo.data_vars)}"
             )
         LOG.info("Topo descriptors loaded from %s: %s", self.topo_file, self.topo_vars)
+
+    def _load_icon_orog(self) -> None:
+        """Inject ICON's native orography as the 'ICON_OROG' topo descriptor.
+
+        The 'cell' ordering matches topo_file / icon_grid_dir exactly (same source
+        grid file), so the array can be attached positionally without reindexing.
+        """
+        ds_orog = xr.open_dataset(self.icon_orog_file)
+        self._ds_topo["ICON_OROG"] = ("cell", ds_orog["topography_c"].values.astype(np.float32))
+        LOG.info("ICON native orography loaded from %s: ICON_OROG", self.icon_orog_file)
 
     def _load_dem(self) -> None:
         dem_ds = xr.open_dataset(self.dem_barrier_file)
@@ -707,7 +789,26 @@ class NudgeTowardObservation(Filter):
         # and compute background_at_cell − observation.
         # Positive residual: model is too high → we subtract a positive correction later.
         _, gi   = cKDTree(grid_xy).query(sta_xy, k=1)
-        r_at_st = B_flat[gi] - st_obs  # (n_sta,): positive when model > observation
+
+        # Lapse-rate correction: reduce the observation to the model's elevation at
+        # that cell before differencing, so the residual reflects model bias rather
+        # than the elevation mismatch between the true station altitude and ICON's
+        # (smoothed) orography. gi indexes directly into _ds_topo (same source grid
+        # as the ICON grid — see _load_icon_orog). Only applied to temperature-like
+        # variables (self.lapse_rate_vars); other variables use the raw observation.
+        st_obs_lr = st_obs
+        if shortname in self.lapse_rate_vars:
+            elev_model_at_sta = self._ds_topo["ICON_OROG"].values[gi]
+            st_obs_lr = st_obs - self.lapse_rate * (elev_model_at_sta - st_elev)
+            LOG.debug(
+                "Lapse-rate correction for '%s': mean elev_model−elev_sta = %.0f m, "
+                "mean |correction| = %.3f",
+                shortname,
+                float(np.mean(elev_model_at_sta - st_elev)),
+                float(np.mean(np.abs(st_obs_lr - st_obs))),
+            )
+
+        r_at_st = B_flat[gi] - st_obs_lr  # (n_sta,): positive when model > observation
 
         sta_res = xr.Dataset(
             {shortname: xr.DataArray(

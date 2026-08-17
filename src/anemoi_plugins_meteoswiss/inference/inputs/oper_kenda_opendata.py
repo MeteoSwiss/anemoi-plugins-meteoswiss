@@ -24,10 +24,10 @@ from typing import Any
 import earthkit.data as ekd
 import requests
 from anemoi.inference.inputs import input_registry
-from filelock import FileLock
 from anemoi.inference.inputs.mars import MarsInput
 from anemoi.inference.types import Date
 from earthkit.data.utils.dates import to_datetime
+from filelock import FileLock
 
 LOG = logging.getLogger(__name__)
 

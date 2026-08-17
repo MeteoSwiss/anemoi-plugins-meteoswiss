@@ -76,6 +76,7 @@ def _with_cache_dir(cache_dir: str | None):
     if not cache_dir:
         yield
         return
+    os.environ["MIR_CACHE_PATH"] = cache_dir
     with ekd.config.temporary(
         {
             "cache-policy": "user",

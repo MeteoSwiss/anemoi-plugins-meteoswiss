@@ -113,6 +113,7 @@ oper-inference = [
     { name = "anemoi-inference" },
     { name = "anemoi-plugins-ecmwf-inference", extra = ["opendata"] },
     { name = "ecmwf-opendata" },
+    { name = "filelock" },
     { name = "requests" },
 ]
 
@@ -134,6 +135,7 @@ requires-dist = [
     { name = "earthkit-utils", specifier = "==1.0.2" },
     { name = "eccodes-cosmo-resources-python", specifier = "==2.38.3.1" },
     { name = "ecmwf-opendata", marker = "extra == 'oper-inference'" },
+    { name = "filelock", marker = "extra == 'oper-inference'" },
     { name = "peakweather", specifier = "==0.2.2" },
     { name = "requests", marker = "extra == 'oper-inference'" },
 ]

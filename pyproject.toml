@@ -21,6 +21,7 @@ oper-inference = [
     "anemoi-inference>=0.11",
     "anemoi-plugins-ecmwf-inference[opendata]>=0.5.0",
     "ecmwf-opendata",
+    "filelock",
     "requests",
 ]
 

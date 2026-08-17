@@ -24,6 +24,7 @@ from typing import Any
 import earthkit.data as ekd
 import requests
 from anemoi.inference.inputs import input_registry
+from filelock import FileLock
 from anemoi.inference.inputs.mars import MarsInput
 from anemoi.inference.types import Date
 from earthkit.data.utils.dates import to_datetime
@@ -95,7 +96,10 @@ def _download_to_path(href: str, path: str) -> None:
 
 def _cached_fields(cache_dir: str | None, subdir: str, hrefs_by_filename: dict[str, str]) -> ekd.FieldList:
     """Fetch ``hrefs_by_filename``'s assets, reusing whatever's already at ``cache_dir/subdir`` and
-    persisting the rest there; downloads straight to memory without touching disk if ``cache_dir`` is unset."""
+    persisting the rest there; downloads straight to memory without touching disk if ``cache_dir`` is unset.
+
+    Downloads are guarded by a per-file lock so that concurrent processes/threads sharing
+    ``cache_dir`` don't race to download the same asset."""
     if not cache_dir:
         return ekd.from_source("url", list(hrefs_by_filename.values()))
 
@@ -105,7 +109,9 @@ def _cached_fields(cache_dir: str | None, subdir: str, hrefs_by_filename: dict[s
     for filename, href in hrefs_by_filename.items():
         path = os.path.join(directory, filename)
         if not os.path.exists(path):
-            _download_to_path(href, path)
+            with FileLock(f"{path}.lock"):
+                if not os.path.exists(path):  # re-check: another process may have downloaded it while we waited
+                    _download_to_path(href, path)
         paths.append(path)
 
     return ekd.from_source("file", paths)
@@ -225,4 +231,4 @@ class OperKendaOpenDataInput(MarsInput):
                 ]
             )
 
-        return result.to_fieldlist()
+        return ekd.SimpleFieldList([f for f in result])

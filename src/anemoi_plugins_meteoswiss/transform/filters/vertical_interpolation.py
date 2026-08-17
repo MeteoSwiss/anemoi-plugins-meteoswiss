@@ -144,7 +144,6 @@ class ModelToPressureLevel(Filter):
                 )
 
                 out += _to_pressure_fieldlist(interp)
-                del da, interp
 
             if self.add_geopotential:
                 hhl = self._get_field(time_group, "HHL")
@@ -160,9 +159,6 @@ class ModelToPressureLevel(Filter):
                     self.extrapolate_levels,
                 )
                 out += _to_pressure_fieldlist(interp)
-                del hhl, fi, interp
-
-            del p, t2m, ps, hsurf
 
         return out + passthrough
 

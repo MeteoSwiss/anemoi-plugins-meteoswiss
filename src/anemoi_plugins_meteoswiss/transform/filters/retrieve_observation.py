@@ -15,6 +15,7 @@ _PARAM_TO_COL = {
     "U_10M": "10u",
     "V_10M": "10v",
     "PMSL": "msl",
+    "PS": "sp",
     "TOT_PREC": "tp",
     "VMAX_10M": "vmax",
 }
@@ -26,7 +27,8 @@ _COL_TO_JR_PARAMS = {
     "10u": ["fkl010z0", "dkl010z0"],
     "10v": ["fkl010z0", "dkl010z0"],
     "msl": ["pp0qffs0"],
-    "tp": ["rre150h0"],
+    "sp":  ["prestas0"],
+    "tp":  ["rre150h0"],
     "vmax": ["fkl010z1"],
 }
 
@@ -139,6 +141,7 @@ class RetrieveObservation(Filter):
             end=ref_time,
             increment_minutes=60,
             use_limitation=self.use_limitation,
+            quality_info=4,  # request PlausibilityNu: adds {param}_pi columns (0–1)
         )
 
         df["nat_abbr"] = df["station"].map(
@@ -149,6 +152,9 @@ class RetrieveObservation(Filter):
         )
         df["longitude"] = df["station"].map(
             dict(zip(catalog.station_id, catalog.longitude))
+        )
+        df["altitude"] = df["station"].map(
+            dict(zip(catalog.station_id, catalog.elevation))
         )
         df = df.dropna(subset=["nat_abbr"]).set_index("nat_abbr")
         df.index.name = "station"
@@ -163,15 +169,31 @@ class RetrieveObservation(Filter):
             df["10v"] = -df["fkl010z0"] * np.cos(dd_rad)
         if "pp0qffs0" in df.columns:
             df["msl"] = df["pp0qffs0"] * 100.0
+        if "prestas0" in df.columns:
+            df["sp"] = df["prestas0"] * 100.0
         if "rre150h0" in df.columns:
             df["tp"] = df["rre150h0"]
         if "fkl010z1" in df.columns:
             df["vmax"] = df["fkl010z1"]
 
+        # Rename DWH plausibility columns ({param}_pi, range 0–1) to output names
+        _PI_RENAME = {
+            "tre200s0_pi": "2t_pi",
+            "tde200s0_pi": "2d_pi",
+            "fkl010z0_pi": "ff_pi",
+            "fkl010z1_pi": "vmax_pi",
+            "pp0qffs0_pi": "msl_pi",
+            "prestas0_pi": "sp_pi",
+            "rre150h0_pi": "tp_pi",
+        }
+        df = df.rename(columns={k: v for k, v in _PI_RENAME.items() if k in df.columns})
+        pi_cols = [c for c in df.columns if c.endswith("_pi")]
+
         result_cols = [c for c in self.cols if c in df.columns] + [
             "latitude",
             "longitude",
-        ]
+            "altitude",
+        ] + pi_cols
         df = df[result_cols].copy()
 
         Path(self.obs_path).parent.mkdir(parents=True, exist_ok=True)

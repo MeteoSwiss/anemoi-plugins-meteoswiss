@@ -133,7 +133,7 @@ obs_variables = ['T_2M', 'TD_2M', 'RH_2M', 'FF_10M', 'VMAX10M', 'T_G', 'PS', 'PM
 plausibility_thresholds = {'variable': obs_variables,
                             #          T_2M   TD_2M  RH_2M  FF_10M  VMAX10M   T_G      PS      PMSL   (Pa for pressure)
                             'pch_min': [223.15, 203.15,   2,     0,       0, 223.15,  50000,  87000],
-                            'pch_max': [323.15, 323.15, 100,    80,      80, 343.15, 108000, 108500]}
+                            'pch_max': [323.15, 323.15, 100,    80,      80, 343.15, 108500, 108500]}
                             
 #configuation of plateau test in order to identify frozen instruments
 plateau_test={
@@ -715,8 +715,8 @@ sct_dual = {
 }
 
 stations_excluded = { #list of stations to be excluded from the blacklisting of values e.g  ['BRL','COM']
-    "T_2M" : {'stations':['BRL','VSSOR']},
-    "TD_2M" : {'stations':['BRL']},
+    "T_2M" : {'stations':[]},#{'stations':['BRL','VSSOR']},
+    "TD_2M" : {'stations':[]},#{'stations':['BRL']},
     "T_G" : {'stations':[]},
     "RH_2M" : {'stations':[]},
     "FF_10M" : {'stations':[]},

@@ -1,8 +1,8 @@
 #configurations titanlib and QC tests to be done
 #test to be applied ('buddy_obs','buddy_diff','fgt','spt_resistant','spt_dual','DWH_flag','hard_test','plateau_test')
 
-#TITANLIB e other tests
-par2check=['T_2M','TD_2M',"RH_2M","FF_10M","VMAX10M","T_G"]
+#TITANLIB and other tests
+par2check=['T_2M','TD_2M',"RH_2M","FF_10M","VMAX10M","T_G","PS","PMSL"]
 
 # QC parameter -> parquet plausibility column (written by RetrieveObservation as {param}_pi)
 par2pi = {
@@ -10,6 +10,8 @@ par2pi = {
     'TD_2M':   '2d_pi',
     'FF_10M':  'ff_pi',
     'VMAX10M': 'vmax_pi',
+    'PS':      'sp_pi',
+    'PMSL':    'msl_pi',
 }
 
 #DWH plausibility test configuration
@@ -39,7 +41,14 @@ DWH_flag={
         'dwh_plausibility_thr' : 0.7,
         'time_window' : 60
    },
-   
+   "PS" : {
+        'dwh_plausibility_thr' : 0.7,
+        'time_window' : 60
+   },
+   "PMSL" : {
+        'dwh_plausibility_thr' : 0.7,
+        'time_window' : 60
+   },
 }
 #TITALIB and other tests configuration
 #available test: 'hard','buddy_obs','buddy_diff','fgt','spt_resistant','spt_dual','plateau_test', 'cosmo_test'
@@ -81,14 +90,26 @@ titan_ntests_threshold={
         'tests_QC_w': [2,1,1,1,1,1],
         'tests_QC2': ['DWH_flag']
    },
+   "PS" : {
+        'threshold_summary': 0.2,
+        'tests_QC': ['hard','buddy_obs','buddy_diff','fgt','plateau_test','DWH_flag'],
+        'tests_QC_w': [2,1,1,1,1,1],
+        'tests_QC2': ['DWH_flag']
+   },
+   "PMSL" : {
+        'threshold_summary': 0.2,
+        'tests_QC': ['hard','buddy_obs','buddy_diff','fgt','plateau_test','DWH_flag'],
+        'tests_QC_w': [2,1,1,1,1,1],
+        'tests_QC2': ['DWH_flag']
+   },
 }
 
 # configuration of hard test
-obs_variables = ['T_2M', 'TD_2M', 'RH_2M', 'FF_10M', 'VMAX10M', 'T_G']
+obs_variables = ['T_2M', 'TD_2M', 'RH_2M', 'FF_10M', 'VMAX10M', 'T_G', 'PS', 'PMSL']
 plausibility_thresholds = {'variable': obs_variables,
-                            #          T_2M   TD_2M  RH_2M  FF_10M  VMAX10M   T_G
-                            'pch_min': [223.15, 203.15,   2,     0,       0, 223.15],
-                            'pch_max': [323.15, 323.15, 100,    80,      80, 343.15]}
+                            #          T_2M   TD_2M  RH_2M  FF_10M  VMAX10M   T_G      PS      PMSL   (Pa for pressure)
+                            'pch_min': [223.15, 203.15,   2,     0,       0, 223.15,  50000,  87000],
+                            'pch_max': [323.15, 323.15, 100,    80,      80, 343.15, 108000, 108500]}
                             
 #configuation of plateau test in order to identify frozen instruments
 plateau_test={
@@ -114,12 +135,22 @@ plateau_test={
     },
     "FF_10M" : {
         "window" : 24,
-        "gran" :30,
+        "gran" :60,
         "sd" : 0
     },
     "VMAX10M" : {
         "window" : 24,
-        "gran" :30,
+        "gran" :60,
+        "sd" : 0
+    },
+    "PS" : {
+        "window" : 24,
+        "gran" : 360,
+        "sd" : 0
+    },
+    "PMSL" : {
+        "window" : 24,
+        "gran" : 360,
         "sd" : 0
     }
 }
@@ -180,6 +211,24 @@ buddy= {
         "min_std" : 2,
         "num_iterations" : 6
     },
+    "PS" : {
+        "radius" : 150000,
+        "num_min" :  2,
+        "threshold" : [1000, 800],  # [SMN, other stations]  (Pa)
+        "max_elev_diff" : 500,
+        "elev_gradient" : -12.0,  # Pa/m standard atmosphere (dp/dz ≈ -ρg)
+        "min_std" : 200,
+        "num_iterations" : 6
+    },
+    "PMSL" : {
+        "radius" : 150000,
+        "num_min" :  2,
+        "threshold" : [500, 400],   # [SMN, other stations]  (Pa)
+        "max_elev_diff" : 500,
+        "elev_gradient" : 0,
+        "min_std" : 100,
+        "num_iterations" : 6
+    },
 }
 buddy_diff= {
     "T_2M" : {
@@ -234,6 +283,24 @@ buddy_diff= {
         "max_elev_diff" : 500,
         "elev_gradient" : 0,
         "min_std" : 2,
+        "num_iterations" : 6
+    },
+    "PS" : {
+        "radius" : 150000,
+        "num_min" :  2,
+        "threshold" : [1000, 800],  # [SMN, other stations]  (Pa)
+        "max_elev_diff" : 500,
+        "elev_gradient" : 0,
+        "min_std" : 200,
+        "num_iterations" : 6
+    },
+    "PMSL" : {
+        "radius" : 150000,
+        "num_min" :  2,
+        "threshold" : [500, 400],   # [SMN, other stations]  (Pa)
+        "max_elev_diff" : 500,
+        "elev_gradient" : 0,
+        "min_std" : 100,
         "num_iterations" : 6
     },
 }
@@ -335,6 +402,38 @@ fgt= {
         'basic' : True,
         'tpostneg' : [10.5, 9.5], # [SMN, other stations]
     },
+    "PS" : {
+        'background_elab_type' : 3, #1"VerticalProfileTheilSen",3 external data
+        'num_min_outer' : 2,
+        'num_max_outer' : 10,
+        'inner_radius' : 100000,
+        'outer_radius' : 200000,
+        'num_iterations' : 10,
+        'num_min_prof' : 0,
+        'min_elev_diff' : 500,
+        'min_horizontal_scale' : 250,
+        'max_horizontal_scale' : 300000,
+        'kth_closest_obs_horizontal_scale' : 2,
+        'debug' : False,
+        'basic' : True,
+        'tpostneg' : [1500, 1200],  # [SMN, other stations]  (Pa)
+    },
+    "PMSL" : {
+        'background_elab_type' : 3, #1"VerticalProfileTheilSen",3 external data
+        'num_min_outer' : 2,
+        'num_max_outer' : 10,
+        'inner_radius' : 100000,
+        'outer_radius' : 200000,
+        'num_iterations' : 10,
+        'num_min_prof' : 0,
+        'min_elev_diff' : 500,
+        'min_horizontal_scale' : 250,
+        'max_horizontal_scale' : 300000,
+        'kth_closest_obs_horizontal_scale' : 2,
+        'debug' : False,
+        'basic' : True,
+        'tpostneg' : [800, 600],    # [SMN, other stations]  (Pa)
+    },
 }
 #Spacial consistency check resistant configuration
 spt_resistant = {
@@ -434,6 +533,38 @@ spt_resistant = {
         'debug' : False,
         'basic' : False
     },
+    "PS" : {
+        'background_elab_type' : 1,  #"VerticalProfileTheilSen"
+        'num_min_outer' : 2,
+        'num_max_outer' : 10,
+        'inner_radius' : 100000,
+        'outer_radius' : 200000,
+        'num_iterations' : 10,
+        'num_min_prof' : 1,
+        'min_elev_diff' : 500,
+        'min_horizontal_scale' : 250,
+        'max_horizontal_scale' : 300000,
+        'kth_closest_obs_horizontal_scale' : 2,
+        'vertical_scale' : 300,
+        'debug' : False,
+        'basic' : True
+    },
+    "PMSL" : {
+        'background_elab_type' : 1,  #"VerticalProfileTheilSen"
+        'num_min_outer' : 2,
+        'num_max_outer' : 10,
+        'inner_radius' : 100000,
+        'outer_radius' : 200000,
+        'num_iterations' : 10,
+        'num_min_prof' : 1,
+        'min_elev_diff' : 500,
+        'min_horizontal_scale' : 250,
+        'max_horizontal_scale' : 300000,
+        'kth_closest_obs_horizontal_scale' : 2,
+        'vertical_scale' : 300,
+        'debug' : False,
+        'basic' : True
+    },
 }
 #Spacial consistency check dual configuration
 sct_dual = {
@@ -526,6 +657,36 @@ sct_dual = {
         'condition' : 0,
         'event_thresholds' : 0.05,
         'test_thresholds' : 0.95
+    },
+    "PS" : {
+        'num_min_outer' : 2,
+        'num_max_outer' : 10,
+        'inner_radius' : 100000,
+        'outer_radius' : 200000,
+        'num_iterations' : 10,
+        'min_horizontal_scale' : 250,
+        'max_horizontal_scale' : 300000,
+        'kth_closest_obs_horizontal_scale' : 2,
+        'vertical_scale' : 1000,
+        'debug' : False,
+        'condition' : 0,
+        'event_thresholds' : 0.05,
+        'test_thresholds' : 0.95
+    },
+    "PMSL" : {
+        'num_min_outer' : 2,
+        'num_max_outer' : 10,
+        'inner_radius' : 100000,
+        'outer_radius' : 200000,
+        'num_iterations' : 10,
+        'min_horizontal_scale' : 250,
+        'max_horizontal_scale' : 300000,
+        'kth_closest_obs_horizontal_scale' : 2,
+        'vertical_scale' : 1000,
+        'debug' : False,
+        'condition' : 0,
+        'event_thresholds' : 0.05,
+        'test_thresholds' : 0.95
     }
 }
 
@@ -535,7 +696,9 @@ stations_excluded = { #list of stations to be excluded from the blacklisting of 
     "T_G" : {'stations':[]},
     "RH_2M" : {'stations':[]},
     "FF_10M" : {'stations':[]},
-    "VMAX10M" : {'stations':[]}
+    "VMAX10M" : {'stations':[]},
+    "PS" : {'stations':[]},
+    "PMSL" : {'stations':[]}
 }
 
 #stations to be blacklisted anyway example: '1':  {'station': 'WNSDOR', 'paras': ['FF_10M','VMAX10M']}

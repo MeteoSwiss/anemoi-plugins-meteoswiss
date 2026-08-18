@@ -32,6 +32,8 @@ _PARQUET_TO_QC = {
     "2t":   ("T_2M",    lambda x: x),
     "2d":   ("TD_2M",   lambda x: x),
     "vmax": ("VMAX10M", lambda x: x),
+    "sp":   ("PS",      lambda x: x),  # Pa
+    "msl":  ("PMSL",    lambda x: x),  # Pa
 }
 # FF_10M is derived from 10u/10v components — handled separately in _clean
 
@@ -41,6 +43,8 @@ _QC_TO_PARQUET = {
     "TD_2M":   ["2d"],
     "FF_10M":  ["10u", "10v"],
     "VMAX10M": ["vmax"],
+    "PS":      ["sp"],
+    "PMSL":    ["msl"],
 }
 
 # Tests that work without model/background data

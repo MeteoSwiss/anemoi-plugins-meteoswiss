@@ -1,21 +1,27 @@
 """
-NudgeTowardObservation — v3
+NudgeTowardObservation — v3 (distances in km)
 
 Implements Interpolation of Residuals (IoR) using ned_interp combined with
 barrier-aware effective distances derived from a 1 km-scale DEM.
 
 Algorithm per variable
 ----------------------
-1.  Project ICON grid and station coordinates to equirectangular space
-    (lon * cos(lat0), lat) for isotropic distance metrics.
+1.  Project ICON grid and station coordinates to Swiss LV95 (EPSG:2056) — the
+    same exact metric CRS already used for the barrier-distance DEM — and
+    express distances in km. This replaces the (lon * cos(lat0), lat)
+    equirectangular approximation used by earlier versions, which was only
+    exactly isotropic near the domain's mean latitude.
 2.  Restrict POIs to a buffer around the station bounding box derived from
-    max_dist and the mean latitude (different lat/lon buffers due to projection).
-3.  Compute Euclidean distance matrix (n_poi × n_sta) in projected degrees.
+    max_dist. LV95 is isotropic metric, so a simple symmetric km buffer
+    suffices — no lat/lon asymmetry needed, unlike the old projection.
+3.  Compute Euclidean distance matrix (n_poi × n_sta) in km.
 4.  Inflate distances with a barrier term and an elevation-difference term
     (barrier_distances): the DEM is sampled along a perpendicular slab at each
     along-path step; a Gaussian-weighted mean across the corridor width and a
     95th-percentile along the path give the effective ridge height.
         d_eff = sqrt(d_euc² + (barrier/elev_scale)² + (elev_diff/elev_diff_scale)²)
+    All terms are in km; elev_scale/elev_diff_scale are in m/km (a ridge of
+    elev_scale metres now adds 1 km of effective distance).
 5.  Compute topographic similarity per (POI, station) pair (TPI, slope
     derivatives, DEM/ICON elevation): each descriptor's importance is
     |Pearson corr| between it and the station residuals, normalised to sum
@@ -26,24 +32,31 @@ Algorithm per variable
     (1 / d_eff^weight_power) weighted by the topographic similarity from
     step 5, floored at min_topo_w so nearby stations always contribute.
 7.  Multiply the correction by a linear taper that fades to zero at max_dist
-    from the nearest station.
+    km from the nearest station.
 8.  Subtract the tapered correction from the background field.
 
 Weight computation, symbolically (per POI p, station s)
 ---------------------------------------------------------------------------
-Step 1 — raw distance:          d_euc[p,s]
-Step 2 — elevation-aware:       d_eff[p,s]     = barrier_distances(d_euc)          → "ned_sta_poi"
+Step 1 — raw distance (km):     d_euc[p,s]
+Step 2 — elevation-aware (km):  d_eff[p,s]     = barrier_distances(d_euc)          → "ned_sta_poi"
 Step 3 — descriptor importance: importance[d]  = |corr_s(residual[s], descriptor_d[s])| / Σ_d |corr_s(...)|
                                  (one weight per descriptor d, computed across stations s; recomputed per variable)
 Step 4 — topo similarity:       w_topo[p,s]    = Σ_d importance[d] * (1 - |sta_topo[d,s] - poi_topo[d,p]|), floored at min_topo_w
 Step 5 — combine:               raw_w[p,s]     = w_topo[p,s] * (1 / d_eff[p,s]^weight_power)   [NaN if d_eff ≥ max_dist]
 Step 6 — normalize per POI:     w_ned[p,s]     = raw_w[p,s] / (Σ_s raw_w[p,s] + lim_effective)
 Step 7 — interpolate:           correction_raw[p] = Σ_s w_ned[p,s] * residual[s]
-Step 8 — taper (separate!):     taper[p] = 1 - clip(nearest_station_raw_dist[p] / max_dist, 0, 1)
+Step 8 — taper (separate!):     taper[p] = 1 - clip(nearest_station_raw_dist_km[p] / max_dist, 0, 1)
 Step 9 — apply:                 background[p] -= correction_raw[p] * taper[p]
 
-Note taper (step 8) uses raw d_euc, not d_eff — the geographic fade-out is
+Note taper (step 8) uses raw d_euc (km), not d_eff — the geographic fade-out is
 deliberately independent of the barrier logic (see barrier_distances docstring).
+
+Unit history: earlier versions expressed max_dist/elev_scale/elev_diff_scale in
+projected degrees and m/° respectively (1 projected degree ≈ 111.32 km near
+Swiss latitudes). Default values below are those degree-tuned values converted
+to km/m-per-km, so default behaviour is preserved rather than re-tuned;
+deployment configs must supply km/m-per-km values directly (see the YAML
+config for this filter).
 """
 
 import logging
@@ -222,8 +235,8 @@ def barrier_distances(
     dem_rgi: RegularGridInterpolator,
     wgs84_to_lv95: Transformer,
     n_samples: int = 35,
-    elev_scale: float = 2000.0,
-    elev_diff_scale: float = 4000.0,
+    elev_scale: float = 17.966,
+    elev_diff_scale: float = 35.932,
     n_barrier_width_samples: int = 3,
     barrier_width_m: float = 1500.0,
 ) -> np.ndarray:
@@ -231,6 +244,12 @@ def barrier_distances(
 
     For each (POI, station) pair with d_euc < max_dist:
         d_eff = sqrt(d_euc² + (barrier / elev_scale)² + (elev_diff / elev_diff_scale)²)
+
+    d_euc/max_dist are expected in km; elev_scale/elev_diff_scale in m/km (a
+    ridge of elev_scale metres adds 1 km of effective distance). The function
+    itself is unit-agnostic — whatever consistent distance unit d_euc/max_dist
+    are given in is what d_eff comes out in — but NudgeTowardObservation always
+    calls this with km.
 
     Barrier term
     ------------
@@ -413,8 +432,9 @@ class NudgeTowardObservation(Filter):
         IDW distance-decay exponent. Higher values concentrate weight on the
         nearest station (notebook: ``WEIGHT_POWER = 4``).
     max_dist : float
-        Station influence radius in projected degrees; both the barrier-distance
-        cutoff and the linear taper radius (notebook: ``MAX_DIST = 0.35``).
+        Station influence radius in km; both the barrier-distance cutoff and
+        the linear taper radius (notebook v8: ``MAX_DIST_KM``; default here is
+        the historical degree-tuned value (0.35°) converted to km, ≈ 38.96).
     n_barrier_samples : int
         DEM sample points along the straight-line path interior (endpoints
         excluded) (notebook: ``N_BARRIER_SAMPLES = 35``).
@@ -425,11 +445,14 @@ class NudgeTowardObservation(Filter):
         Half-width of the perpendicular DEM corridor in metres
         (notebook: ``BARRIER_WIDTH_M = 1500``).
     elev_scale : float
-        Ridge height in metres that adds 1° to effective distance
-        (notebook: ``ELEV_SCALE = 2000``).
+        Ridge height in metres that adds 1 km to effective distance, i.e. m/km
+        (notebook v8: ``ELEV_SCALE_KM``; default here is the historical
+        degree-tuned value (2000 m/°) converted to m/km, ≈ 17.97).
     elev_diff_scale : float
-        Endpoint elevation difference in metres that adds 1° to effective
-        distance — weaker penalty than a ridge (notebook: ``ELEV_DIFF_SCALE = 4000``).
+        Endpoint elevation difference in metres that adds 1 km to effective
+        distance — weaker penalty than a ridge, i.e. m/km (notebook v8:
+        ``ELEV_DIFF_SCALE_KM``; default here is the historical degree-tuned
+        value (4000 m/°) converted to m/km, ≈ 35.93).
     min_topo_w : float
         Minimum topographic similarity weight floor so nearby stations always
         contribute (notebook: ``MIN_TOPO_W = 0.2``).
@@ -483,12 +506,12 @@ class NudgeTowardObservation(Filter):
         dem_barrier_file: str = _DEFAULT_DEM_BARRIER_FILE,
         icon_orog_file: str = _DEFAULT_ICON_OROG_FILE,
         weight_power: float = 4.0,
-        max_dist: float = 0.35,
+        max_dist: float = 38.962,
         n_barrier_samples: int = 35,
         n_barrier_width_samples: int = 3,
         barrier_width_m: float = 1500.0,
-        elev_scale: float = 2000.0,
-        elev_diff_scale: float = 4000.0,
+        elev_scale: float = 17.966,
+        elev_diff_scale: float = 35.932,
         min_topo_w: float = 0.2,
         lim_effective: float = 0.0,
         lapse_rate: float = _DEFAULT_LAPSE_RATE,
@@ -571,8 +594,8 @@ class NudgeTowardObservation(Filter):
         self._load_dem()
 
         LOG.info(
-            "NudgeTowardObservation v3 initialised: variables=%s, max_dist=%.2f, "
-            "weight_power=%.1f, elev_scale=%.0f, elev_diff_scale=%.0f, "
+            "NudgeTowardObservation v3 initialised: variables=%s, max_dist=%.2f km, "
+            "weight_power=%.1f, elev_scale=%.2f m/km, elev_diff_scale=%.2f m/km, "
             "barrier_width_m=%.0f, n_barrier_samples=%d, n_barrier_width_samples=%d, "
             "lapse_rate=%.5f K/m (vars=%s)",
             list(self.param_map.keys()),
@@ -646,6 +669,28 @@ class NudgeTowardObservation(Filter):
             "DEM loaded from %s: shape=%s",
             self.dem_barrier_file,
             dem_ds["DEM_1000M"].shape,
+        )
+
+        # ── Project the ICON grid and topo-descriptor grid to LV95 km, once ────
+        # Computed here (not per-nudge-call, and not in a separate method) since
+        # self._lon_icon/self._lat_icon (from _load_icon_grid) and self._ds_topo
+        # (from _load_topo) are already set by this point in __init__, and
+        # self._wgs84_to_lv95 was just created above. Replaces the
+        # (lon * cos(lat0), lat) equirectangular approximation used by earlier
+        # versions with this exact metric projection, reused by every
+        # _nudge_field() call instead of being re-projected each time.
+        grid_x, grid_y = self._wgs84_to_lv95.transform(self._lon_icon, self._lat_icon)
+        self._grid_xy_km = np.c_[grid_x, grid_y] / 1000.0  # (n_cells, 2), km
+
+        topo_x, topo_y = self._wgs84_to_lv95.transform(
+            self._ds_topo["lon"].values, self._ds_topo["lat"].values
+        )
+        self._topo_xy_km = np.c_[topo_x, topo_y] / 1000.0  # (n_topo_cells, 2), km
+
+        LOG.info(
+            "ICON/topo grids projected to LV95: x=[%.1f, %.1f] km, y=[%.1f, %.1f] km",
+            self._grid_xy_km[:, 0].min(), self._grid_xy_km[:, 0].max(),
+            self._grid_xy_km[:, 1].min(), self._grid_xy_km[:, 1].max(),
         )
 
     # ── Filter entry point ────────────────────────────────────────────────────
@@ -756,32 +801,33 @@ class NudgeTowardObservation(Filter):
             st_elev = self._dem_rgi(np.c_[sta_y, sta_x])
 
         # ── Coordinate projection ──────────────────────────────────────────
-        # Equirectangular projection: (lon * cos(lat0), lat), so that 1 unit in the
-        # x-direction equals 1 unit in the y-direction at the domain's mean latitude.
-        # Without this correction, longitude degrees are shorter than latitude degrees
-        # at Swiss latitudes (~47°N), making east–west distances appear too small.
-        lat0    = np.deg2rad(np.nanmean(self._lat_icon))
-        grid_xy = np.c_[self._lon_icon * np.cos(lat0), self._lat_icon]  # (n_cells, 2)
-        sta_xy  = np.c_[st_lon * np.cos(lat0), st_lat]                  # (n_sta, 2)
+        # True metric LV95 projection (km): reuses the grid precomputed once in
+        # _load_dem() and the same transformer used there for the DEM. This is
+        # an exact projection — 1 km in x equals 1 km in y everywhere in the
+        # domain — replacing the (lon * cos(lat0), lat) equirectangular
+        # approximation used by earlier versions, which was only exactly
+        # isotropic near the domain's mean latitude.
+        grid_xy = self._grid_xy_km                                     # (n_cells, 2), km
+        sta_x, sta_y = self._wgs84_to_lv95.transform(st_lon, st_lat)
+        sta_xy = np.c_[sta_x, sta_y] / 1000.0                           # (n_sta, 2), km
 
         # ── POI domain ─────────────────────────────────────────────────────
         # Restrict processing to ICON cells within a buffer of the station bounding box.
         # This reduces the n_poi × n_sta distance matrix from ~1.1 M × n_sta to ~100 k × n_sta.
         #
-        # The buffer must be asymmetric because distances are computed in projected space:
-        # a projected distance of max_dist corresponds to max_dist raw degrees in latitude
-        # but max_dist / cos(lat0) raw degrees in longitude (longitude degrees are shorter
-        # than latitude degrees at Swiss latitudes).
-        poi_buffer_lat = self.max_dist
-        poi_buffer_lon = self.max_dist / np.cos(lat0)
+        # LV95 is already isotropic metric (x and y both true km), so a simple
+        # symmetric buffer suffices — no lat/lon asymmetry needed, unlike the old
+        # cos(lat0)-projected-degree scheme.
+        sta_x_min = sta_xy[:, 0].min() - self.max_dist
+        sta_x_max = sta_xy[:, 0].max() + self.max_dist
+        sta_y_min = sta_xy[:, 1].min() - self.max_dist
+        sta_y_max = sta_xy[:, 1].max() + self.max_dist
         dom_mask = (
-            (self._lat_icon >= st_lat.min() - poi_buffer_lat) &
-            (self._lat_icon <= st_lat.max() + poi_buffer_lat) &
-            (self._lon_icon >= st_lon.min() - poi_buffer_lon) &
-            (self._lon_icon <= st_lon.max() + poi_buffer_lon)
+            (grid_xy[:, 0] >= sta_x_min) & (grid_xy[:, 0] <= sta_x_max) &
+            (grid_xy[:, 1] >= sta_y_min) & (grid_xy[:, 1] <= sta_y_max)
         )
         dom_idx = np.where(dom_mask)[0]  # ICON cell indices inside the domain, shape (n_poi,)
-        poi_xy  = grid_xy[dom_idx]       # (n_poi, 2)
+        poi_xy  = grid_xy[dom_idx]       # (n_poi, 2), km
         n_poi   = len(dom_idx)
 
         # ── Residuals at stations ──────────────────────────────────────────
@@ -817,7 +863,7 @@ class NudgeTowardObservation(Filter):
         )
 
         # ── Euclidean distance matrix ──────────────────────────────────────
-        # Shape: (n_poi, n_sta), in projected degrees.
+        # Shape: (n_poi, n_sta), in km.
         d_euc_mat = np.sqrt(
             ((poi_xy[:, None, :] - sta_xy[None, :, :]) ** 2).sum(axis=-1)
         ).astype(np.float32)
@@ -854,13 +900,9 @@ class NudgeTowardObservation(Filter):
             .assign_coords({"poi": dom_idx})
         )
         # Station descriptors: snap each station to the nearest ICON cell using
-        # the same equirectangular projection as grid_xy/sta_xy so the distance
-        # metric is consistent.
-        topo_xy = np.c_[
-            self._ds_topo["lon"].values * np.cos(lat0),
-            self._ds_topo["lat"].values,
-        ]
-        _, topo_gi = cKDTree(topo_xy).query(sta_xy, k=1)
+        # the same LV95-km projection as grid_xy/sta_xy (precomputed once in
+        # _load_dem()) so the distance metric is consistent.
+        _, topo_gi = cKDTree(self._topo_xy_km).query(sta_xy, k=1)
         sta_topo = (
             self._ds_topo[self.topo_vars]
             .isel(cell=topo_gi)

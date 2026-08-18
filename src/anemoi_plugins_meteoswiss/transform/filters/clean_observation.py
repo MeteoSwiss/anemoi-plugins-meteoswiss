@@ -27,28 +27,6 @@ except ImportError as _e:
     LOG.warning("QC modules not available, cleaning will be a no-op: %s", _e)
     _QC_AVAILABLE = False
 
-# Parquet column -> (QC parameter name, unit converter); K values pass through unchanged
-_PARQUET_TO_QC = {
-    "2t":   ("T_2M",    lambda x: x),
-    "2d":   ("TD_2M",   lambda x: x),
-    "vmax": ("VMAX10M", lambda x: x),
-    "sp":   ("PS",      lambda x: x),  # Pa
-    "msl":  ("PMSL",    lambda x: x),  # Pa
-}
-# FF_10M is derived from 10u/10v components — handled separately in _clean
-
-# QC parameter -> parquet columns to mark as NaN when flagged
-_QC_TO_PARQUET = {
-    "T_2M":    ["2t"],
-    "TD_2M":   ["2d"],
-    "FF_10M":  ["10u", "10v"],
-    "VMAX10M": ["vmax"],
-    "PS":      ["sp"],
-    "PMSL":    ["msl"],
-}
-
-# Tests that work without model/background data
-_OBS_ONLY_TESTS = {"hard", "buddy_obs", "DWH_flag", "plateau_test"}
 
 
 class CleanObservation(Filter):
@@ -196,7 +174,7 @@ class CleanObservation(Filter):
         df_qc["sta_name"] = df.index.to_list()
 
         # Direct column mappings (T_2M, TD_2M, VMAX10M)
-        for parquet_col, (qc_para, converter) in _PARQUET_TO_QC.items():
+        for parquet_col, (qc_para, converter) in _qc_config.parquet_to_qc.items():
             if parquet_col in df.columns:
                 df_qc[qc_para] = converter(df[parquet_col].to_numpy())
 
@@ -220,17 +198,17 @@ class CleanObservation(Filter):
         if self.model_grib_path is not None:
             try:
                 df_mod, df_diff = self._load_model_at_stations(df_qc, lats, lons, elevs)
-                active_tests = _OBS_ONLY_TESTS | {"buddy_diff", "fgt"}
+                active_tests = _qc_config.obs_only_tests | {"buddy_diff", "fgt"}
                 LOG.info("Model background loaded; extended test set active")
             except Exception as exc:
                 LOG.warning(
                     "Failed to load model GRIB (%s); falling back to obs-only tests", exc
                 )
                 df_mod, df_diff = self._nan_frames(df_qc)
-                active_tests = _OBS_ONLY_TESTS
+                active_tests = _qc_config.obs_only_tests
         else:
             df_mod, df_diff = self._nan_frames(df_qc)
-            active_tests = _OBS_ONLY_TESTS
+            active_tests = _qc_config.obs_only_tests
 
         current_f = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
         _t0 = time.monotonic()
@@ -299,7 +277,7 @@ class CleanObservation(Filter):
                         t for t in tests_to_do
                         if station in blacklist.get(t, {}).get("Station", [])
                     ]
-                    for parquet_col in _QC_TO_PARQUET.get(para, []):
+                    for parquet_col in _qc_config.qc_to_parquet.get(para, []):
                         if parquet_col in df.columns and station in df.index:
                             self._flagged.append({
                                 "station": station,
@@ -335,7 +313,7 @@ class CleanObservation(Filter):
                     if len(sta_row) and para in df_qc.columns
                     else None
                 )
-                for parquet_col in _QC_TO_PARQUET.get(para, []):
+                for parquet_col in _qc_config.qc_to_parquet.get(para, []):
                     if parquet_col in df.columns:
                         self._flagged.append({
                             "station": station,

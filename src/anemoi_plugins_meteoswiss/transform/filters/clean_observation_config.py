@@ -14,6 +14,30 @@ par2pi = {
     'PMSL':    'msl_pi',
 }
 
+# Parquet column -> (QC parameter name, unit converter); K values pass through unchanged
+# FF_10M is derived from 10u/10v components — handled separately in CleanObservation._clean
+parquet_to_qc = {
+    "2t":   ("T_2M",    lambda x: x),
+    "2d":   ("TD_2M",   lambda x: x),
+    "vmax": ("VMAX10M", lambda x: x),
+    "sp":   ("PS",      lambda x: x),  # Pa
+    "msl":  ("PMSL",    lambda x: x),  # Pa
+}
+
+# QC parameter -> parquet columns to mark as NaN when flagged
+qc_to_parquet = {
+    "T_2M":    ["2t"],
+    "TD_2M":   ["2d"],
+    "FF_10M":  ["10u", "10v"],
+    "VMAX10M": ["vmax"],
+    "PS":      ["sp"],
+    "PMSL":    ["msl"],
+}
+
+# Tests that work without model/background data
+obs_only_tests = {"hard", "buddy_obs", "DWH_flag", "plateau_test"}
+
+
 #DWH plausibility test configuration
 dwh_force='True'
 DWH_flag={

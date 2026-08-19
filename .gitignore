@@ -122,5 +122,4 @@ _dev/
 *tmp_data/
 
 # Project specific
-uv.lock
 _ekd_cache/

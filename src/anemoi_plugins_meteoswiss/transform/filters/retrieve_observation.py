@@ -18,6 +18,7 @@ _PARAM_TO_COL = {
     "PS": "sp",
     "TOT_PREC": "tp",
     "VMAX_10M": "vmax",
+    "T_G": "skt",
 }
 
 # Station column -> DWH (jretrieve) parameter names
@@ -30,6 +31,7 @@ _COL_TO_JR_PARAMS = {
     "sp":  ["prestas0"],
     "tp":  ["rre150h0"],
     "vmax": ["fkl010z1"],
+    "skt": ["tre005s0"],
 }
 
 
@@ -175,6 +177,8 @@ class RetrieveObservation(Filter):
             df["tp"] = df["rre150h0"]
         if "fkl010z1" in df.columns:
             df["vmax"] = df["fkl010z1"]
+        if "tre005s0" in df.columns:
+            df["skt"] = df["tre005s0"] + 273.15
 
         # Rename DWH plausibility columns ({param}_pi, range 0–1) to output names
         _PI_RENAME = {
@@ -185,6 +189,7 @@ class RetrieveObservation(Filter):
             "pp0qffs0_pi": "msl_pi",
             "prestas0_pi": "sp_pi",
             "rre150h0_pi": "tp_pi",
+            "tre005s0_pi": "skt_pi",
         }
         df = df.rename(columns={k: v for k, v in _PI_RENAME.items() if k in df.columns})
         pi_cols = [c for c in df.columns if c.endswith("_pi")]

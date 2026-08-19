@@ -685,7 +685,7 @@ hard_blacklist = {
 # Plotting — set plot_maps = True to save one PNG per parameter alongside the output parquet.
 # Requires cartopy (pip install cartopy). Country borders and geographic features are
 # fetched automatically from Natural Earth on first use (no local shapefiles needed).
-plot_maps = True
+plot_maps = False
 
 # QC parameter -> parquet plausibility column (written by RetrieveObservation as {param}_pi)
 par2pi = {

@@ -1,8 +1,9 @@
-#configurations titanlib and QC tests to be done
-#test to be applied ('buddy_obs','buddy_diff','fgt','spt_resistant','spt_dual','DWH_flag','hard_test','plateau_test')
+#configurations of the QC checks
+#test to be applied ('buddy_obs','buddy_diff','fgt','spt_resistant','spt_dual','DWH_flag','hard_test','plateau_test','isolation_check')
 
 #TITANLIB and other tests
 par2check=['T_2M','TD_2M',"RH_2M","FF_10M","VMAX10M","T_G","PS","PMSL"]
+par2check=['T_2M']
 
 # Tests that work without model/background data
 obs_only_tests = {"hard", "isolation_check", "buddy_obs", "DWH_flag", "plateau_test"}
@@ -12,7 +13,7 @@ obs_only_tests = {"hard", "isolation_check", "buddy_obs", "DWH_flag", "plateau_t
 #tests_QC list (tests) has to have the same length as tests_QC_w (weights)
 titan_ntests_threshold={
    "T_2M" : {
-        'threshold_summary': 0.2, #npos/ntot positive tests over tot tests
+        'threshold_summary': 0.15, #npos/ntot positive tests over tot tests
         'tests_QC': ['hard','isolation_check','buddy_obs','buddy_diff','fgt','plateau_test','DWH_flag'],
         'tests_QC_w': [2,2,1,1,1,1,1], 
    },
@@ -681,6 +682,11 @@ hard_blacklist = {
     1:  {'station': 'WNSSAL', 'paras': ['FF_10M','VMAX10M','DD']},
 }
 
+
+# Plotting — set plot_maps = True to save one PNG per parameter alongside the output parquet.
+# Requires cartopy (pip install cartopy). Country borders and geographic features are
+# fetched automatically from Natural Earth on first use (no local shapefiles needed).
+plot_maps = True
 
 # QC parameter -> parquet plausibility column (written by RetrieveObservation as {param}_pi)
 par2pi = {

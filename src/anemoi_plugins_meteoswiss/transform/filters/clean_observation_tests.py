@@ -54,6 +54,7 @@ def make_tests(current_f, df_obs, df_diff, df_mod, para, stations, lats, lons, e
     elevs = np.delete(elevs,ind)
     mods = np.delete(df_mod[para].iloc[:].to_numpy(),ind)
     diffs= np.delete(df_diff[para].iloc[:].to_numpy(),ind)
+    LOG.info('make_tests %s: %d stations (non-NaN)', para, len(stations))
 
     #0. hard test using hard max und min limits for observations
     if 'hard' in tests_to_do:
@@ -756,6 +757,26 @@ def plateau_test(data, window, std_lim, var, time, obs_path_in=None, gran_minute
     current = datetime.strptime(file_ts, '%Y%m%d%H%M')
     stem_pattern = obs_path_in.stem.replace(file_ts, '{}')
 
+    def _normalize_hist(hist_df):
+        """Return a two-column DataFrame {sta_name, var} from a raw obs parquet.
+
+        Raw parquets use station nat_abbr as index and parquet column names
+        (e.g. '2t') rather than the QC names (e.g. 'T_2M') used in df_qc.
+        """
+        norm = pd.DataFrame({'sta_name': hist_df.index.to_list()})
+        # Map parquet column → QC column for this var
+        for pc, (qp, conv) in c.parquet_to_qc.items():
+            if qp == var and pc in hist_df.columns:
+                norm[var] = conv(hist_df[pc].to_numpy())
+                return norm
+        # FF_10M is derived from U/V components
+        if var == 'FF_10M' and '10u' in hist_df.columns and '10v' in hist_df.columns:
+            norm[var] = np.sqrt(hist_df['10u'].to_numpy() ** 2 +
+                                hist_df['10v'].to_numpy() ** 2)
+        else:
+            norm[var] = np.nan
+        return norm
+
     historical_dfs = []
     missing = []
     for step in range(1, n_steps + 1):
@@ -763,7 +784,7 @@ def plateau_test(data, window, std_lim, var, time, obs_path_in=None, gran_minute
         fn = obs_path_in.parent / (stem_pattern.format(t.strftime('%Y%m%d%H%M')) + obs_path_in.suffix)
         if fn.exists():
             try:
-                historical_dfs.append(pd.read_parquet(fn))
+                historical_dfs.append(_normalize_hist(pd.read_parquet(fn)))
             except Exception as e:
                 LOG.warning('plateau_test: could not read %s: %s', fn, e)
                 missing.append(str(fn))
@@ -787,17 +808,29 @@ def plateau_test(data, window, std_lim, var, time, obs_path_in=None, gran_minute
             var, n_found, n_steps,
         )
 
-    obs_all = pd.concat([data] + historical_dfs)
-    stations = data['sta_name']
-    for s in stations:
-        sta_data = data[data['sta_name'] == s][var]
-        if not sta_data.isna().item():
-            sd = obs_all[obs_all['sta_name'] == s][var].std()
-            nn = obs_all[obs_all['sta_name'] == s][var].shape[0]
-            if sd <= std_lim and nn > n_steps / 2:
-                LOG.warning('plateau_test %s %s std=%.4f', var, s, sd)
-                my_dict["Station"].append(s)
-                my_dict["Time"].append(time)
-                my_dict["Parameter"].append(var)
+    # Only test stations present in every historical file to avoid spurious
+    # plateau flags caused by a station first appearing mid-window.
+    always_available = set(data['sta_name'])
+    for hdf in historical_dfs:
+        always_available &= set(hdf['sta_name'].dropna())
+    skipped = len(set(data['sta_name'])) - len(always_available)
+    if skipped:
+        LOG.info('plateau_test %s: skipping %d station(s) not present in all historical files', var, skipped)
+
+    obs_all = pd.concat([data[[var, 'sta_name']]] + historical_dfs, ignore_index=True)
+    for s in data['sta_name']:
+        if s not in always_available:
+            continue
+        cur_val = data.loc[data['sta_name'] == s, var]
+        if len(cur_val) == 0 or pd.isna(cur_val.iloc[0]):
+            continue
+        series = obs_all.loc[obs_all['sta_name'] == s, var]
+        sd = series.std()
+        nn = series.count()
+        if not pd.isna(sd) and sd <= std_lim and nn > n_steps / 2:
+            LOG.warning('plateau_test %s %s std=%.4f', var, s, sd)
+            my_dict["Station"].append(s)
+            my_dict["Time"].append(time)
+            my_dict["Parameter"].append(var)
     LOG.info('plateau_test %s: %d stations flagged', var, len(my_dict["Station"]))
     return my_dict

@@ -123,8 +123,22 @@ class CleanObservation(Filter):
             "flagged": flagged,
         }
         with open(json_path, "w") as fh:
-            json.dump(output, fh, indent=2)
+            outer = {k: v for k, v in output.items() if k != "flagged"}
+            header = json.dumps(outer, indent=2)[:-1].rstrip()  # drop closing }
+            fh.write(header)
+            fh.write(',\n  "flagged": [\n')
+            for i, entry in enumerate(flagged):
+                e = {k: round(v, 2) if isinstance(v, float) else v for k, v in entry.items()}
+                fh.write("    " + json.dumps(e))
+                fh.write(",\n" if i < len(flagged) - 1 else "\n")
+            fh.write("  ]\n}\n")
         LOG.info("Wrote %d flagged entries to %s", len(flagged), json_path)
+
+        if getattr(_qc_config, "plot_maps", False):
+            try:
+                self._plot_station_maps(df)
+            except Exception:
+                LOG.exception("QC station map generation failed")
 
         return data
 
@@ -502,3 +516,57 @@ class CleanObservation(Filter):
                 df_diff[col] = df_qc[col].to_numpy() - df_mod[col].to_numpy()
 
         return df_mod, df_diff
+
+    def _plot_station_maps(self, df: pd.DataFrame) -> None:
+        LOG.info("Generating QC station maps in %s", self.obs_path_out.parent)
+        from clean_observation_plot import plot_station_maps
+
+        # For flagged stations df values are already NaN; recover original qc_value
+        # stored in self._flagged so the map can still show what value was measured.
+        flagged_vals: dict = {}  # {para: {station: float}}
+        for entry in getattr(self, "_flagged", []):
+            qv = entry.get("qc_value")
+            if qv is not None:
+                flagged_vals.setdefault(entry["qc_parameter"], {})[entry["station"]] = qv
+
+        station_names = df.index.to_list()
+        para_values: dict = {}
+        for para in _qc_config.par2check:
+            vals: dict = dict(flagged_vals.get(para, {}))  # seed with flagged originals
+            if para == "FF_10M" and "10u" in df.columns and "10v" in df.columns:
+                u = df["10u"].to_numpy(dtype=float)
+                v = df["10v"].to_numpy(dtype=float)
+                for i, name in enumerate(station_names):
+                    if name not in vals and not (np.isnan(u[i]) or np.isnan(v[i])):
+                        vals[name] = float(np.sqrt(u[i] ** 2 + v[i] ** 2))
+            else:
+                parquet_cols = _qc_config.qc_to_parquet.get(para, [])
+                if parquet_cols and parquet_cols[0] in df.columns:
+                    col = parquet_cols[0]
+                    conv_fn = next(
+                        (fn for pc, (qp, fn) in _qc_config.parquet_to_qc.items()
+                         if pc == col and qp == para),
+                        None,
+                    )
+                    raw = df[col].to_numpy(dtype=float)
+                    for i, name in enumerate(station_names):
+                        if name not in vals and not np.isnan(raw[i]):
+                            vals[name] = float(conv_fn(raw[i])) if conv_fn else float(raw[i])
+            para_values[para] = vals
+
+        # Stations flagged by isolation_check, regardless of total score
+        isolation_sets: dict = {}
+        for para, diag in getattr(self, "_qc_diagnostics", {}).items():
+            iso_stations = diag.get("blacklist", {}).get("isolation_check", {})
+            if isinstance(iso_stations, dict):
+                iso_stations = iso_stations.get("Station", [])
+            isolation_sets[para] = set(iso_stations)
+
+        plot_station_maps(
+            getattr(self, "_flagged", []),
+            _qc_config.par2check,
+            df,
+            self.obs_path_out,
+            para_values=para_values,
+            isolation_sets=isolation_sets,
+        )

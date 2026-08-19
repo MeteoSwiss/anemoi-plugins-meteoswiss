@@ -223,13 +223,82 @@ def make_qc_map(para, station_names, lats, lons, flagged_set, values, out_path,
     LOG.info("QC map saved: %s", out_path)
 
 
+def prepare_and_plot_station_maps(flagged, qc_diagnostics, df, obs_path_out,
+                                   par2check, qc_to_parquet, parquet_to_qc):
+    """Build per-parameter value and isolation dicts from QC results, then call plot_station_maps.
+
+    This is the entry point used by ``CleanObservation``.  It extracts the
+    original observed values (including those already set to NaN by QC) and the
+    set of isolation_check-flagged stations, then delegates to
+    ``plot_station_maps``.
+
+    Parameters
+    ----------
+    flagged : list of dict
+        ``CleanObservation._flagged`` — one entry per station/column pair set to NaN.
+    qc_diagnostics : dict
+        ``CleanObservation._qc_diagnostics`` — per-parameter diagnostic info.
+    df : pd.DataFrame
+        Cleaned observation DataFrame (index = station nat_abbr).
+    obs_path_out : Path
+        Output parquet path; maps are written to ``obs_path_out.parent``.
+    par2check : list of str
+        QC parameter names to plot (from ``clean_observation_config``).
+    qc_to_parquet : dict
+        Mapping ``{qc_para: [parquet_col, ...]}``.
+    parquet_to_qc : dict
+        Mapping ``{parquet_col: (qc_para, converter_fn)}``.
+    """
+    import numpy as _np
+
+    flagged_vals: dict = {}
+    for entry in flagged:
+        qv = entry.get("qc_value")
+        if qv is not None:
+            flagged_vals.setdefault(entry["qc_parameter"], {})[entry["station"]] = qv
+
+    station_names = df.index.to_list()
+    para_values: dict = {}
+    for para in par2check:
+        vals: dict = dict(flagged_vals.get(para, {}))
+        if para == "FF_10M" and "10u" in df.columns and "10v" in df.columns:
+            u = df["10u"].to_numpy(dtype=float)
+            v = df["10v"].to_numpy(dtype=float)
+            for i, name in enumerate(station_names):
+                if name not in vals and not (_np.isnan(u[i]) or _np.isnan(v[i])):
+                    vals[name] = float(_np.sqrt(u[i] ** 2 + v[i] ** 2))
+        else:
+            parquet_cols = qc_to_parquet.get(para, [])
+            if parquet_cols and parquet_cols[0] in df.columns:
+                col = parquet_cols[0]
+                conv_fn = next(
+                    (fn for pc, (qp, fn) in parquet_to_qc.items() if pc == col and qp == para),
+                    None,
+                )
+                raw = df[col].to_numpy(dtype=float)
+                for i, name in enumerate(station_names):
+                    if name not in vals and not _np.isnan(raw[i]):
+                        vals[name] = float(conv_fn(raw[i])) if conv_fn else float(raw[i])
+        para_values[para] = vals
+
+    isolation_sets: dict = {}
+    for para, diag in qc_diagnostics.items():
+        iso_stations = diag.get("blacklist", {}).get("isolation_check", {})
+        if isinstance(iso_stations, dict):
+            iso_stations = iso_stations.get("Station", [])
+        isolation_sets[para] = set(iso_stations)
+
+    plot_station_maps(flagged, par2check, df, obs_path_out,
+                      para_values=para_values, isolation_sets=isolation_sets)
+
+
 def plot_station_maps(flagged, par2check, df, obs_path_out, para_values=None, isolation_sets=None):
     """Save one PNG per parameter to the same directory as the output parquet.
 
     Parameters
     ----------
     flagged : list of dict
-        ``self._flagged`` list from :class:`CleanObservation`.
+        ``CleanObservation._flagged`` list.
     par2check : list of str
         Parameters to produce maps for (from ``clean_observation_config``).
     df : pd.DataFrame
@@ -239,7 +308,8 @@ def plot_station_maps(flagged, par2check, df, obs_path_out, para_values=None, is
         Output parquet path — maps are written to ``obs_path_out.parent``.
     para_values : dict or None
         ``{para: {station: float}}`` of original observed values in QC-space units.
-        Built by :meth:`CleanObservation._plot_station_maps`.
+    isolation_sets : dict or None
+        ``{para: set of station names}`` flagged by isolation_check.
     """
     try:
         import matplotlib

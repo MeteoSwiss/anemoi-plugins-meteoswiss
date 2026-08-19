@@ -30,32 +30,45 @@ except ImportError as _e:
 
 
 class CleanObservation(Filter):
-    """Clean pre-fetched station observations and write the result to disk.
+    """Apply titanlib QC to station observations and write the cleaned parquet to disk.
 
-    Reads a Parquet file produced by RetrieveObservation, applies quality-
-    control cleaning, and writes the cleaned DataFrame to a new Parquet file
-    for use by NudgeTowardObservation.  The forecast fields are passed through
-    unchanged.
+    Reads a parquet file produced by ``RetrieveObservation``, runs per-parameter
+    QC tests configured in ``clean_observation_config``, sets suspected values to
+    NaN, and saves the result.  Forecast fields passed via ``forward()`` are
+    returned unchanged.
+
+    After ``forward()`` or ``_clean()`` completes the following attributes are set:
+
+    ``_flagged`` : list of dict
+        One entry per (station, parquet column) pair whose value was set to NaN,
+        with keys ``station``, ``column``, ``qc_parameter``, ``qc_value``,
+        ``source`` (``"qc_test"`` or ``"hard_blacklist"``), and
+        ``tests_positive`` (list of test names that voted to flag; qc_test only).
+    ``_qc_diagnostics`` : dict
+        Per-parameter diagnostic information: scores per station, list of flagged
+        stations, tests run, threshold, and the raw per-test blacklist.
+    ``_tests_done`` : dict
+        Per-parameter list of test names that were actually executed.
+    ``_qc_duration`` : float
+        Wall-clock time in seconds for the QC stage.
 
     Parameters
     ----------
     obs_path_in : str
-        Path to the raw observation Parquet file written by RetrieveObservation.
+        Path to the raw observation parquet file written by ``RetrieveObservation``.
     obs_path_out : str
-        Path where the cleaned observation Parquet file will be written.
+        Destination path for the cleaned observation parquet file.
     model_grib_path : str, optional
-        Path to a model GRIB file (e.g. ``202501020600_0.grib``) whose fields
-        are interpolated to station locations and used as the NWP background.
-        When provided, ``buddy_diff`` and ``fgt`` QC tests are also run in
-        addition to the obs-only tests.  HSURF is read from the same file if
-        available (used by ``min_elev_diff`` interpolation).  If *None*
-        (default) the NWP-dependent tests are skipped and the background frames
-        are filled with NaN.
+        Path to a model GRIB file whose fields are interpolated to station
+        locations and used as the NWP background.  When provided, the
+        model-dependent tests ``buddy_diff`` and ``fgt`` are activated in
+        addition to the obs-only tests.  If *None* (default) those tests are
+        skipped and background frames are filled with NaN.
     model_interp : str, optional
-        Grid-to-station interpolation strategy.  ``"nearest"`` (default) picks
-        the closest grid point on the unit sphere.  ``"min_elev_diff"`` queries
-        the 4 nearest grid points and picks the one whose HSURF elevation is
-        closest to the station elevation (requires HSURF in the GRIB file).
+        Grid-to-station interpolation method: ``"nearest"`` (default) picks the
+        closest grid point on the unit sphere; ``"min_elev_diff"`` queries the 4
+        nearest points and selects the one whose HSURF elevation is closest to
+        the station elevation (requires HSURF in the GRIB file).
     """
 
     def __init__(
@@ -76,17 +89,23 @@ class CleanObservation(Filter):
         super().__init__()
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
-        """Read, clean, and write observations; return forecast fields unchanged.
+        """Run QC, write cleaned parquet + flagged JSON, optionally produce maps.
+
+        Reads ``obs_path_in``, calls ``_clean()``, writes the result to
+        ``obs_path_out`` (dropping internal ``*_pi`` columns), and saves a
+        ``*_flagged.json`` summary alongside the parquet.  If
+        ``clean_observation_config.plot_maps`` is *True*, per-parameter PNG
+        maps are also written to the same directory.
 
         Parameters
         ----------
         data : ekd.FieldList
-            Forecast fields (passed through unchanged).
+            Forecast fields — passed through unchanged.
 
         Returns
         -------
         ekd.FieldList
-            The input data, unchanged.
+            The input *data*, unchanged.
         """
         if not self.obs_path_in.exists():
             raise FileNotFoundError(f"Observation file not found: {self.obs_path_in}")
@@ -151,39 +170,38 @@ class CleanObservation(Filter):
         return data
 
     def _clean(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Apply quality-control cleaning to station observations.
+        """Apply QC tests and set suspected values to NaN.
 
-        The method runs in two stages:
+        Two stages:
 
-        1. **Automated QC tests** (``clean_observation_config.par2check``): for each parameter,
-           the subset of active tests is run via ``make_tests``.  Without a
-           model GRIB file only ``hard`` (range check) and ``buddy_obs``
-           (spatial consistency) run.  When ``model_grib_path`` is set the
-           model background is interpolated to station locations and
-           ``buddy_diff`` and ``fgt`` are also activated.  The weighted score
-           returned by ``tests_summary`` is compared against
-           ``titan_ntests_threshold[para]['threshold_summary']``.  Stations
-           whose score exceeds the threshold are blacklisted unless they appear
-           in ``clean_observation_config.stations_excluded[para]``.
+        1. **Automated QC** (``par2check`` parameters): for each parameter the
+           configured tests are run via ``make_tests``.  Obs-only tests
+           (``hard``, ``isolation_check``, ``buddy_obs``, ``DWH_flag``,
+           ``plateau_test``) always run; model-dependent tests (``buddy_diff``,
+           ``fgt``) are added only when ``model_grib_path`` is set.  Each test
+           returns a blacklist; the weighted score from ``tests_summary`` is
+           compared against ``titan_ntests_threshold[para]["threshold_summary"]``.
+           Stations above the threshold are set to NaN unless listed in
+           ``stations_excluded[para]``.
 
-        2. **Hard blacklist** (``clean_observation_config.hard_blacklist``): a fixed list of
-           station/parameter pairs that are always set to NaN regardless of
-           QC scores or the exclusion list.
+        2. **Hard blacklist** (``hard_blacklist``): station/parameter pairs
+           permanently set to NaN regardless of QC scores or exclusions.
+
+        Populates ``self._flagged``, ``self._qc_diagnostics``,
+        ``self._tests_done``, and ``self._qc_duration``.
 
         Parameters
         ----------
         df : pd.DataFrame
-            Raw station observations produced by ``RetrieveObservation``.
-            Index is the station ``nat_abbr``; columns include the parquet
-            variable columns (``2t``, ``2d``, ``10u``, ``10v``, ``vmax``, …)
-            plus ``latitude``, ``longitude``, and ``altitude`` (m a.s.l.).
-            Temperature values are in K, wind speeds in m/s.
+            Raw observations from ``RetrieveObservation``.  Index is station
+            ``nat_abbr``; columns include parquet variable columns (``2t``,
+            ``2d``, ``10u``, ``10v``, ``vmax``, …), ``latitude``,
+            ``longitude``, and ``altitude`` (m a.s.l.).
 
         Returns
         -------
         pd.DataFrame
-            Same DataFrame (same index and columns) with the values of
-            suspected observations replaced by NaN.
+            Same DataFrame with suspected observation values replaced by NaN.
         """
         # Diagnostics accumulated below; accessible as self._qc_diagnostics after the call.
         # Structure: {para: {"scores": {station: float}, "flagged": [str], "tests_run": [str],
@@ -387,7 +405,7 @@ class CleanObservation(Filter):
 
     @staticmethod
     def _nan_frames(df_qc: pd.DataFrame):
-        """Return (df_mod, df_diff) filled with NaN for all non-meta columns."""
+        """Return ``(df_mod, df_diff)`` with the same shape as *df_qc* but all parameter columns set to NaN."""
         df_mod = df_qc.copy()
         df_diff = df_qc.copy()
         for col in df_qc.columns:
@@ -403,28 +421,25 @@ class CleanObservation(Filter):
         lons: np.ndarray,
         elevs: np.ndarray,
     ):
-        """Interpolate model GRIB fields to station locations.
+        """Interpolate model GRIB fields to station locations and compute obs-minus-model.
 
         Reads ``self.model_grib_path`` with earthkit.data, builds a spherical
-        KD-tree over the model grid, then interpolates each QC parameter to
-        station locations using the strategy chosen by ``self.model_interp``.
-        HSURF is read from the same GRIB file when ``min_elev_diff`` is
-        requested.
+        KD-tree, and interpolates each QC parameter to station locations using
+        the strategy in ``self.model_interp``.
 
         Parameters
         ----------
         df_qc : pd.DataFrame
-            QC observation frame (integer index, ``sta_name`` column, parameter
-            columns).
+            QC observation frame (integer index, ``sta_name`` column, QC parameter columns).
         lats, lons, elevs : np.ndarray
             Station latitudes (°N), longitudes (°E), and elevations (m a.s.l.).
 
         Returns
         -------
         df_mod : pd.DataFrame
-            Model values at station locations, same shape as *df_qc*.
+            Model values interpolated to station locations, same shape as *df_qc*.
         df_diff : pd.DataFrame
-            Observation minus model background (``df_qc - df_mod``).
+            Observation innovation: ``df_qc - df_mod`` (used by ``buddy_diff`` and ``fgt``).
         """
         from scipy.spatial import cKDTree
 
@@ -526,55 +541,19 @@ class CleanObservation(Filter):
         return df_mod, df_diff
 
     def _plot_station_maps(self, df: pd.DataFrame) -> None:
+        """Save per-parameter QC PNG maps to the same directory as the output parquet.
+
+        Delegates to ``prepare_and_plot_station_maps`` in ``clean_observation_plot``.
+        Produces two PNG files per parameter (full domain and Switzerland zoom).
+        """
         LOG.info("Generating QC station maps in %s", self.obs_path_out.parent)
-        from clean_observation_plot import plot_station_maps
-
-        # For flagged stations df values are already NaN; recover original qc_value
-        # stored in self._flagged so the map can still show what value was measured.
-        flagged_vals: dict = {}  # {para: {station: float}}
-        for entry in getattr(self, "_flagged", []):
-            qv = entry.get("qc_value")
-            if qv is not None:
-                flagged_vals.setdefault(entry["qc_parameter"], {})[entry["station"]] = qv
-
-        station_names = df.index.to_list()
-        para_values: dict = {}
-        for para in _qc_config.par2check:
-            vals: dict = dict(flagged_vals.get(para, {}))  # seed with flagged originals
-            if para == "FF_10M" and "10u" in df.columns and "10v" in df.columns:
-                u = df["10u"].to_numpy(dtype=float)
-                v = df["10v"].to_numpy(dtype=float)
-                for i, name in enumerate(station_names):
-                    if name not in vals and not (np.isnan(u[i]) or np.isnan(v[i])):
-                        vals[name] = float(np.sqrt(u[i] ** 2 + v[i] ** 2))
-            else:
-                parquet_cols = _qc_config.qc_to_parquet.get(para, [])
-                if parquet_cols and parquet_cols[0] in df.columns:
-                    col = parquet_cols[0]
-                    conv_fn = next(
-                        (fn for pc, (qp, fn) in _qc_config.parquet_to_qc.items()
-                         if pc == col and qp == para),
-                        None,
-                    )
-                    raw = df[col].to_numpy(dtype=float)
-                    for i, name in enumerate(station_names):
-                        if name not in vals and not np.isnan(raw[i]):
-                            vals[name] = float(conv_fn(raw[i])) if conv_fn else float(raw[i])
-            para_values[para] = vals
-
-        # Stations flagged by isolation_check, regardless of total score
-        isolation_sets: dict = {}
-        for para, diag in getattr(self, "_qc_diagnostics", {}).items():
-            iso_stations = diag.get("blacklist", {}).get("isolation_check", {})
-            if isinstance(iso_stations, dict):
-                iso_stations = iso_stations.get("Station", [])
-            isolation_sets[para] = set(iso_stations)
-
-        plot_station_maps(
+        from clean_observation_plot import prepare_and_plot_station_maps
+        prepare_and_plot_station_maps(
             getattr(self, "_flagged", []),
-            _qc_config.par2check,
+            getattr(self, "_qc_diagnostics", {}),
             df,
             self.obs_path_out,
-            para_values=para_values,
-            isolation_sets=isolation_sets,
+            _qc_config.par2check,
+            _qc_config.qc_to_parquet,
+            _qc_config.parquet_to_qc,
         )

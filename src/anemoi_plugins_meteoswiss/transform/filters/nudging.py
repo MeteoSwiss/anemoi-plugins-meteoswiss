@@ -125,6 +125,28 @@ _DEFAULT_LAPSE_RATE_VARS = frozenset({"T_2M"})
 # internal MeteoSwiss libraries not available in the production environment.
 
 
+def _cast_astype(ds: xr.Dataset, dtypes: dict) -> xr.Dataset:
+    """Cast each variable in ds to the dtype given in dtypes. Verbatim from
+    data4web_pipelines/utils.py::cast_astype."""
+    dtypes_unique = list(set(dtypes.values()))
+    if len(dtypes_unique) == 1:
+        return ds.astype(dtypes_unique[0])
+    ds_out = ds.copy()
+    for var, da in ds_out.items():
+        if var in dtypes:
+            ds_out[var] = da.astype(dtypes[var])
+    return ds_out
+
+
+def _normalize(ds: xr.Dataset) -> xr.Dataset:
+    """Scale each variable in ds to [0, 1] using its own min/max. Verbatim from
+    data4web_pipelines/utils.py::normalize."""
+    dtypes = {name: da.dtype for name, da in ds.items()}
+    min_val = _cast_astype(ds.min(), dtypes)
+    max_val = _cast_astype(ds.max(), dtypes)
+    return (ds - min_val) / (max_val - min_val)
+
+
 def ned_interp(
     sta_res: xr.Dataset,
     ned_sta_poi: xr.DataArray,
@@ -143,10 +165,11 @@ def ned_interp(
     ----------------------------------------
     1.  Mask stations beyond max_dist: set their distance to NaN so their
         inverse-distance weight becomes NaN (effectively 0 after normalisation).
-    2.  Joint normalisation: scale both sta_topo and poi_topo to [0, 1] using the
-        combined min/max over both sets. This is critical — normalising them
-        separately would put ~150 station values and ~400 k POI values on different
-        [0, 1] scales, making delta_topo = 1 − |sta − poi| inconsistent.
+    2.  Separate normalisation: scale sta_topo and poi_topo to [0, 1] EACH using its
+        own min/max (data4web_pipelines/utils.py::normalize) — not a combined min/max
+        over both sets. The ~150 station values and the ~400 k POI values therefore
+        each get stretched to fill their own [0, 1] scale independently; this is
+        data4web's actual reference behaviour, kept here for exact equivalence.
     3.  Descriptor importance: |Pearson corr(residuals, descriptor)| across stations,
         normalised so descriptor weights sum to 1. Data-driven: if a descriptor has
         no correlation with the residuals it receives zero importance.
@@ -168,16 +191,10 @@ def ned_interp(
         # Pure IDW fallback when no topographic descriptors are available.
         w_ned = 1 / np.power(ned_sta_poi, weight_power)
     else:
-        # Step 2 — joint normalisation: iterate over each topo descriptor variable.
-        # We modify copies to avoid mutating the caller's datasets.
-        sta_topo = sta_topo.copy()
-        poi_topo = poi_topo.copy()
-        for var in list(sta_topo.data_vars):
-            vmin = float(min(float(sta_topo[var].min()), float(poi_topo[var].min())))
-            vmax = float(max(float(sta_topo[var].max()), float(poi_topo[var].max())))
-            rng = (vmax - vmin) if (vmax - vmin) > 0 else 1.0  # guard against constant fields
-            sta_topo[var] = ((sta_topo[var] - vmin) / rng).astype(sta_topo[var].dtype)
-            poi_topo[var] = ((poi_topo[var] - vmin) / rng).astype(poi_topo[var].dtype)
+        # Step 2 — separate normalisation: each dataset scaled to [0, 1] using its
+        # OWN min/max, exactly as data4web_pipelines/utils.py::ned_interp.
+        sta_topo = _normalize(sta_topo)
+        poi_topo = _normalize(poi_topo)
 
         # Topographic similarity per (poi, sta, descriptor): 1 = identical, 0 = opposite extremes.
         # xarray broadcasts (sta,) and (poi,) dimensions automatically, yielding shape (poi, sta)

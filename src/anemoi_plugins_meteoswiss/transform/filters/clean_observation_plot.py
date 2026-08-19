@@ -52,12 +52,13 @@ def make_qc_map(para, station_names, lats, lons, flagged_set, values, out_path,
 
     in_extent   = ((lons >= ext[0]) & (lons <= ext[1]) &
                    (lats >= ext[2]) & (lats <= ext[3]))
+    has_value   = ~np.isnan(values)
     is_isolated = np.array([n in isolation_set for n in station_names])
     is_flagged  = np.array([n in flagged_set and n not in isolation_set
                             for n in station_names])
-    ok_mask   = in_extent & ~is_isolated & ~is_flagged
-    iso_mask  = in_extent & is_isolated
-    flag_mask = in_extent & is_flagged
+    ok_mask   = in_extent & has_value & ~is_isolated & ~is_flagged
+    iso_mask  = in_extent & has_value & is_isolated
+    flag_mask = in_extent & has_value & is_flagged
 
     # Colormap: robust percentile range so outliers don't dominate the scale
     valid = values[in_extent & ~np.isnan(values)]

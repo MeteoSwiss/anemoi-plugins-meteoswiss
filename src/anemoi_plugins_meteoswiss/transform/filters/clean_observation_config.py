@@ -3,7 +3,6 @@
 
 #TITANLIB and other tests
 par2check=['T_2M','TD_2M',"RH_2M","FF_10M","VMAX10M","T_G","PS","PMSL"]
-par2check=['T_2M']
 
 # Tests that work without model/background data
 obs_only_tests = {"hard", "isolation_check", "buddy_obs", "DWH_flag", "plateau_test"}
@@ -18,37 +17,37 @@ titan_ntests_threshold={
         'tests_QC_w': [2,2,1,1,1,1,1], 
    },
    "TD_2M" : {
-        'threshold_summary': 0.2,
+        'threshold_summary': 0.15,
         'tests_QC': ['hard','isolation_check','buddy_obs','buddy_diff','fgt','plateau_test','DWH_flag'],
         'tests_QC_w': [2,2,1,1,1,1,1],
    },
    "T_G" : {
-        'threshold_summary': 0.2,
+        'threshold_summary': 0.15,
         'tests_QC': ['hard','isolation_check','buddy_obs','buddy_diff','fgt','plateau_test','DWH_flag'],
         'tests_QC_w': [2,2,1,1,1,1,1],
    },
     "FF_10M" : {
-        'threshold_summary': 0.2,
+        'threshold_summary': 0.15,
         'tests_QC': ['hard','isolation_check','buddy_obs','buddy_diff','fgt','plateau_test','DWH_flag'],
         'tests_QC_w': [2,2,1,1,1,2,1],
    },
    "VMAX10M" : {
-        'threshold_summary': 0.2,
+        'threshold_summary': 0.15,
         'tests_QC': ['hard','isolation_check','buddy_obs','buddy_diff','fgt','plateau_test','DWH_flag'],
         'tests_QC_w': [2,2,1,1,1,2,1],
    },
    "RH_2M" : {
-        'threshold_summary': 0.2,
+        'threshold_summary': 0.15,
         'tests_QC': ['hard','isolation_check','buddy_obs','buddy_diff','fgt','plateau_test','DWH_flag'],
         'tests_QC_w': [2,2,1,1,1,1,1],
    },
    "PS" : {
-        'threshold_summary': 0.2,
+        'threshold_summary': 0.15,
         'tests_QC': ['hard','isolation_check','buddy_obs','buddy_diff','fgt','plateau_test','DWH_flag'],
         'tests_QC_w': [2,2,1,1,1,1,1],
    },
    "PMSL" : {
-        'threshold_summary': 0.2,
+        'threshold_summary': 0.15,
         'tests_QC': ['hard','isolation_check','buddy_obs','buddy_diff','fgt','plateau_test','DWH_flag'],
         'tests_QC_w': [2,2,1,1,1,1,1],
    },

@@ -123,10 +123,17 @@ class CleanObservation(Filter):
             "flagged": flagged,
         }
         with open(json_path, "w") as fh:
-            outer = {k: v for k, v in output.items() if k != "flagged"}
-            header = json.dumps(outer, indent=2)[:-1].rstrip()  # drop closing }
-            fh.write(header)
-            fh.write(',\n  "flagged": [\n')
+            td_str = "{" + ", ".join(
+                f"{json.dumps(p)}: {json.dumps(tl)}"
+                for p, tl in output["tests_done"].items()
+            ) + "}"
+            fh.write("{\n")
+            fh.write(f'  "obs_timestamp": {json.dumps(output["obs_timestamp"])},\n')
+            fh.write(f'  "duration_seconds": {output["duration_seconds"]},\n')
+            fh.write(f'  "tests_done": {td_str},\n')
+            fh.write(f'  "n_flagged": {output["n_flagged"]},\n')
+            fh.write(f'  "n_flagged_per_parameter": {json.dumps(output["n_flagged_per_parameter"])},\n')
+            fh.write('  "flagged": [\n')
             for i, entry in enumerate(flagged):
                 e = {k: round(v, 2) if isinstance(v, float) else v for k, v in entry.items()}
                 fh.write("    " + json.dumps(e))

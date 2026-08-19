@@ -12,32 +12,38 @@ LOG = logging.getLogger(__name__)
 
 
 def make_tests(current_f, df_obs, df_diff, df_mod, para, stations, lats, lons, elevs, ii, jj, my_dict, tests_to_do, df_pi=None, obs_path_in=None):
-    """
-    Performs multiple tests on meteorological stations to detect outliers and generates a dictionary of blacklisted stations.
+    """Run the requested QC tests for a single parameter and accumulate flagged stations.
 
     Args:
-        current_f (str): Current timestamp in the format "%Y%m%d%H%M".
-        df_obs (DataFrame): DataFrame containing observed values.
-        df_diff (DataFrame): DataFrame containing differences between model and observations.
-        df_mod (DataFrame): DataFrame containing model values.
-        para (str): Parameter name.
-        stations (list): List of station names.
-        lats (list): List of latitudes for each station.
-        lons (list): List of longitudes for each station.
-        elevs (list): List of elevations for each station.
-        ii (int): Index value.
-        jj (int): Index value.
-        my_dict (dict): Dictionary to store blacklisted stations.
+        current_f (str): Wall-clock timestamp ('%Y%m%d%H%M') used as the Time label in blacklist entries.
+        df_obs (DataFrame): Current observation DataFrame (must contain 'sta_name' and parameter columns).
+        df_diff (DataFrame): Obs-minus-model difference DataFrame (same shape as df_obs).
+        df_mod (DataFrame): Model background DataFrame (same shape as df_obs).
+        para (str): QC parameter name (e.g. 'T_2M', 'PS').
+        stations (ndarray): Station name array (NaN rows pre-removed).
+        lats (ndarray): Station latitudes.
+        lons (ndarray): Station longitudes.
+        elevs (ndarray): Station elevations (m).
+        ii (int): Unused index (kept for interface compatibility).
+        jj (int): Unused index (kept for interface compatibility).
+        my_dict (dict): Accumulator dict with keys 'tests', 'n', and one sub-dict per test name,
+            each containing lists 'ID', 'Station', 'Time', 'Parameter'.
+        tests_to_do (list[str]): Subset of tests to run, e.g. ['hard', 'buddy_obs', 'plateau_test'].
+            Model-dependent tests ('buddy_diff', 'fgt') are included only when a model is available.
+        df_pi (DataFrame, optional): Plausibility frame (columns = '*_pi') used by DWH_flag.
+        obs_path_in (str | Path, optional): Path to the current observation parquet file,
+            used by plateau_test to locate historical files.
 
     Returns:
-        dict: A dictionary containing the blacklisted stations and their corresponding information.
-              The dictionary has keys for each test, such as 'hard', 'buddy_obs', 'buddy_diff', 'fgt', etc.
-              Each test key contains a sub-dictionary with keys 'ID', 'Station', 'Time', and 'Parameter'.
-              The 'ID' key provides a unique identifier for each blacklisted station.
+        tuple: (my_dict, freq, skipped_tests) where my_dict is the updated accumulator,
+            freq is the plausibility value-counts Series from DWH_flag (empty DataFrame
+            otherwise), and skipped_tests is a set of test names that could not be run
+            (e.g. plateau_test when no historical files were available).
     """
     #obs values
     values=df_obs[para].iloc[:].to_numpy()
     freq=pd.DataFrame()
+    executed_tests = []
     
     #remove stations with nan for titanlib tests
     ind=np.argwhere(np.isnan(values))
@@ -63,7 +69,8 @@ def make_tests(current_f, df_obs, df_diff, df_mod, para, stations, lats, lons, e
                 my_dict['hard']["Station"].append(my_d["Station"])
                 my_dict['hard']["Time"].append(my_d["Time"])
                 my_dict['hard']["Parameter"].append(my_d["Parameter"])
-        LOG.info('hard test         blacklisted stations: %d', len(blacklist["Station"]) if blacklist else 0)
+        LOG.info('hard test          %s blacklisted stations: %d', para, len(blacklist["Station"]) if blacklist else 0)
+        executed_tests.append('hard')
 
     #1. buddy check using only observations
     if 'buddy_obs' in tests_to_do:
@@ -80,7 +87,8 @@ def make_tests(current_f, df_obs, df_diff, df_mod, para, stations, lats, lons, e
                 my_dict['buddy_obs']["Station"].append(my_d["Station"])
                 my_dict['buddy_obs']["Time"].append(my_d["Time"])
                 my_dict['buddy_obs']["Parameter"].append(my_d["Parameter"])
-        LOG.info('buddy_obs test    blacklisted stations: %d', len(blacklist["Station"]) if blacklist else 0)
+        LOG.info('buddy_obs test     %s blacklisted stations: %d', para, len(blacklist["Station"]) if blacklist else 0)
+        executed_tests.append('buddy_obs')
 
     #2. buddy check with differences between model and observations (titanlib)
     if 'buddy_diff' in tests_to_do:
@@ -97,7 +105,8 @@ def make_tests(current_f, df_obs, df_diff, df_mod, para, stations, lats, lons, e
                 my_dict['buddy_diff']["Station"].append(my_d["Station"])
                 my_dict['buddy_diff']["Time"].append(my_d["Time"])
                 my_dict['buddy_diff']["Parameter"].append(my_d["Parameter"])
-        LOG.info('buddy_diff test   blacklisted stations: %d', len(blacklist2["Station"]) if blacklist2 else 0)
+        LOG.info('buddy_diff test    %s blacklisted stations: %d', para, len(blacklist2["Station"]) if blacklist2 else 0)
+        executed_tests.append('buddy_diff')
 
     #3.first guess test (titanlib)
     if 'fgt' in tests_to_do:
@@ -116,7 +125,8 @@ def make_tests(current_f, df_obs, df_diff, df_mod, para, stations, lats, lons, e
                 my_dict['fgt']["Station"].append(my_d["Station"])
                 my_dict['fgt']["Time"].append(my_d["Time"])
                 my_dict['fgt']["Parameter"].append(my_d["Parameter"])
-        LOG.info('fgt test          blacklisted stations: %d', len(blacklist3["Station"]) if blacklist3 else 0)
+        LOG.info('fgt test           %s blacklisted stations: %d', para, len(blacklist3["Station"]) if blacklist3 else 0)
+        executed_tests.append('fgt')
 
     #5 SCT resistant test
     if 'spt_resistant' in tests_to_do:
@@ -136,7 +146,8 @@ def make_tests(current_f, df_obs, df_diff, df_mod, para, stations, lats, lons, e
                 my_dict['spt_resistant']["Station"].append(my_d["Station"])
                 my_dict['spt_resistant']["Time"].append(my_d["Time"])
                 my_dict['spt_resistant']["Parameter"].append(my_d["Parameter"])
-        LOG.info('spt_resistant test blacklisted stations: %d', len(blacklist4["Station"]) if blacklist4 else 0)
+        LOG.info('spt_resistant test %s blacklisted stations: %d', para, len(blacklist4["Station"]) if blacklist4 else 0)
+        executed_tests.append('spt_resistant')
 
     #5. SCT dual test
     if 'spt_dual' in tests_to_do:
@@ -155,7 +166,8 @@ def make_tests(current_f, df_obs, df_diff, df_mod, para, stations, lats, lons, e
                 my_dict['spt_dual']["Station"].append(my_d["Station"])
                 my_dict['spt_dual']["Time"].append(my_d["Time"])
                 my_dict['spt_dual']["Parameter"].append(my_d["Parameter"])
-        LOG.info('spt_dual test     blacklisted stations: %d', len(blacklist5["Station"]) if blacklist5 else 0)
+        LOG.info('spt_dual test      %s blacklisted stations: %d', para, len(blacklist5["Station"]) if blacklist5 else 0)
+        executed_tests.append('spt_dual')
 
     #6. quality flag of DWH
     if 'DWH_flag' in tests_to_do:
@@ -176,23 +188,74 @@ def make_tests(current_f, df_obs, df_diff, df_mod, para, stations, lats, lons, e
                 my_dict['DWH_flag']["Station"].append(my_d["Station"])
                 my_dict['DWH_flag']["Time"].append(my_d["Time"])
                 my_dict['DWH_flag']["Parameter"].append(my_d["Parameter"])
-        LOG.info('DWH_flag test     blacklisted stations: %d', len(blacklist6["Station"]) if blacklist6 else 0)
+        LOG.info('DWH_flag test      %s blacklisted stations: %d', para, len(blacklist6["Station"]) if blacklist6 else 0)
+        executed_tests.append('DWH_flag')
 
     #8. plateau test
     if 'plateau_test' in tests_to_do:
         blacklist8=plateau_test(df_obs,c.plateau_test[para]['window'],c.plateau_test[para]['sd'],para,current_f,obs_path_in=obs_path_in,gran_minutes=c.plateau_test[para]['gran'])
-        nb8=len(my_dict['plateau_test']['ID'])
-        if blacklist8:
-            nblack=len(blacklist8["Station"])
-            for k in range(0,nblack):
-                nb8=nb8+1
-                my_d = {"ID":nb8,"Station":blacklist8["Station"][k],"Time":blacklist8["Time"][k],"Parameter":blacklist8["Parameter"][k]}
-                my_dict['plateau_test']["ID"].append(my_d["ID"])
-                my_dict['plateau_test']["Station"].append(my_d["Station"])
-                my_dict['plateau_test']["Time"].append(my_d["Time"])
-                my_dict['plateau_test']["Parameter"].append(my_d["Parameter"])
-        LOG.info('plateau test blacklisted stations: %d', len(blacklist8["Station"]) if blacklist8 else 0)
-    return my_dict,freq
+        if blacklist8 is None:
+            LOG.warning('plateau_test skipped — no historical files available')
+        else:
+            executed_tests.append('plateau_test')
+            nb8=len(my_dict['plateau_test']['ID'])
+            if blacklist8:
+                nblack=len(blacklist8["Station"])
+                for k in range(0,nblack):
+                    nb8=nb8+1
+                    my_d = {"ID":nb8,"Station":blacklist8["Station"][k],"Time":blacklist8["Time"][k],"Parameter":blacklist8["Parameter"][k]}
+                    my_dict['plateau_test']["ID"].append(my_d["ID"])
+                    my_dict['plateau_test']["Station"].append(my_d["Station"])
+                    my_dict['plateau_test']["Time"].append(my_d["Time"])
+                    my_dict['plateau_test']["Parameter"].append(my_d["Parameter"])
+            LOG.info('plateau_test       %s blacklisted stations: %d', para, len(blacklist8["Station"]))
+
+    # isolation_check
+    if 'isolation_check' in tests_to_do:
+        blacklist_iso = isolation_check(stations, lats, lons, elevs, para, current_f,
+                                        c.isolation_check[para]['num_min'],
+                                        c.isolation_check[para]['radius'])
+        nb_iso = len(my_dict['isolation_check']['ID'])
+        if blacklist_iso:
+            for k in range(len(blacklist_iso["Station"])):
+                nb_iso += 1
+                my_dict['isolation_check']["ID"].append(nb_iso)
+                my_dict['isolation_check']["Station"].append(blacklist_iso["Station"][k])
+                my_dict['isolation_check']["Time"].append(blacklist_iso["Time"][k])
+                my_dict['isolation_check']["Parameter"].append(blacklist_iso["Parameter"][k])
+        LOG.info('isolation_check    %s blacklisted stations: %d', para, len(blacklist_iso.get("Station", [])) if blacklist_iso else 0)
+        executed_tests.append('isolation_check')
+
+    return my_dict, freq, executed_tests
+
+#----------------------------------
+# isolation check
+def isolation_check(stations, lats, lons, elevs, para, date, num_min=2, radius=50000):
+    """Flag stations with too few neighbours within radius (titanlib isolation_check).
+
+    Args:
+        stations (ndarray): Station names.
+        lats (ndarray): Station latitudes.
+        lons (ndarray): Station longitudes.
+        elevs (ndarray): Station elevations (m).
+        para (str): QC parameter name.
+        date (str): Observation timestamp label.
+        num_min (int): Minimum number of neighbours required to pass. Default 2.
+        radius (float): Search radius (m). Default 150000.
+
+    Returns:
+        dict: Keys 'Station', 'Time', 'Parameter' listing isolated stations,
+            or empty dict if no stations were flagged.
+    """
+    points = titanlib.Points(lats, lons, elevs)
+    flags = titanlib.isolation_check(points, num_min, radius)
+    my_dict = {"Station": [], "Time": [], "Parameter": []}
+    for idx in np.nonzero(np.asarray(flags))[0]:
+        my_dict["Station"].append(stations[idx])
+        my_dict["Time"].append(date)
+        my_dict["Parameter"].append(para)
+        LOG.info('isolation_check %s isolated station: %s', para, stations[idx])
+    return my_dict if my_dict["Station"] else {}
 
 #----------------------------------
 # DWH quality flag test
@@ -226,8 +289,8 @@ def DWH_flag(current_f, para, stationss, plausibility):
             my_dict["Station"].append(station)
             my_dict["Time"].append(current_f)
             my_dict["Parameter"].append(para)
-            LOG.info('DWH flag %s (pi=%.3f)', station, flagged[station])
-        LOG.info('DWH flag blacklisted stations: %d', len(flagged))
+            LOG.info('DWH flag %s %s (pi=%.3f)', para, station, flagged[station])
+        LOG.info('DWH flag %s blacklisted stations: %d', para, len(flagged))
     else:
         my_dict = {}
 
@@ -237,29 +300,35 @@ def DWH_flag(current_f, para, stationss, plausibility):
 #buddy check
 def buddy_check(stations,lats,lons,elevs,values,para,date,threshold=4,max_elev_diff=200,elev_gradient=-0.0065,
                           min_std=1,num_iterations=5,num_min=3,radius=30000):
-    """
-    Performs a buddy check on meteorological stations.
+    """Run titanlib buddy_check with separate thresholds for SMN and other stations.
+
+    The test is run twice on the full station set:
+      - Round 1 uses threshold[0] (lenient, for SMN); only flags from 3-letter stations are kept.
+      - Round 2 uses threshold[1] (stricter, for other networks); only flags from longer-name
+        stations are kept.
+    Running both rounds on the full set preserves spatial context for both groups.
 
     Args:
-        stations (list): List of station names.
-        lats (list): List of latitudes for each station.
-        lons (list): List of longitudes for each station.
-        elevs (list): List of elevations for each station.
-        values (list): List of observed values for each station.
-        para (str): Parameter name.
-        date (str): Date of observation.
-        threshold (float, optional): Threshold for the buddy check. Default is 4.
-        max_elev_diff (float, optional): Maximum elevation difference for the buddy check. Default is 200.
-        elev_gradient (float, optional): Elevation gradient for the buddy check. Default is -0.0065.
-        min_std (float, optional): Minimum standard deviation for the buddy check. Default is 1.
-        num_iterations (int, optional): Number of iterations for the buddy check. Default is 5.
-        num_min (int, optional): Number of minimum neighbors for the buddy check. Default is 3.
-        radius (float, optional): Radius for the buddy check. Default is 30000.
+        stations (list[str]): Station short names.
+        lats (ndarray): Station latitudes.
+        lons (ndarray): Station longitudes.
+        elevs (ndarray): Station elevations (m).
+        values (ndarray): Observed values.
+        para (str): QC parameter name.
+        date (str): Observation timestamp label (stored in the returned dict).
+        threshold (float | list[float, float]): Buddy-check deviation threshold.
+            Pass a 2-element list [SMN_thr, other_thr] to apply different thresholds per network.
+            A scalar is broadcast to both rounds.
+        max_elev_diff (float): Max elevation difference between buddies (m). Default 200.
+        elev_gradient (float): Value lapse rate with elevation (unit/m). Default -0.0065.
+        min_std (float): Minimum standard deviation of buddy values. Default 1.
+        num_iterations (int): Number of titanlib buddy_check iterations. Default 5.
+        num_min (int): Minimum number of neighbours required. Default 3.
+        radius (float): Search radius (m). Default 30000.
 
     Returns:
-        dict: A dictionary containing the blacklisted stations and their corresponding information.
-              The dictionary has the following keys: "Station", "Time", "Parameter".
-              If no stations are blacklisted, an empty dictionary is returned.
+        dict: Keys 'Station', 'Time', 'Parameter' listing flagged stations,
+            or empty dict if no stations were flagged.
     """
     thresholds = threshold if isinstance(threshold, list) else [threshold, threshold]
     thr_short = thresholds[0]
@@ -271,14 +340,14 @@ def buddy_check(stations,lats,lons,elevs,values,para,date,threshold=4,max_elev_d
     num_min_arr = np.full(points.size(), num_min)
     flagged_indices = set()
     # round 1: all stations, keep only SMN (3-letter) flags
-    LOG.info('titanlib buddy_check threshold=%.2f (SMN)', thr_short)
+    LOG.info('titanlib buddy_check %s threshold=%.2f (SMN)', para, thr_short)
     flags = titanlib.buddy_check(points, values, radius_arr, num_min_arr, thr_short,
                                  max_elev_diff, elev_gradient, min_std, num_iterations)
     for idx in np.nonzero(flags)[0]:
         if short_mask[idx]:
             flagged_indices.add(int(idx))
     # round 2: all stations, keep only other (longer-name) flags
-    LOG.info('titanlib buddy_check threshold=%.2f (other)', thr_long)
+    LOG.info('titanlib buddy_check %s threshold=%.2f (other)', para, thr_long)
     flags = titanlib.buddy_check(points, values, radius_arr, num_min_arr, thr_long,
                                  max_elev_diff, elev_gradient, min_std, num_iterations)
     for idx in np.nonzero(flags)[0]:
@@ -291,9 +360,9 @@ def buddy_check(stations,lats,lons,elevs,values,para,date,threshold=4,max_elev_d
             my_dict["Station"].append(snames[idx])
             my_dict["Time"].append(date)
             my_dict["Parameter"].append(para)
-            LOG.info('%s %s', snames[idx], values[idx])
+            LOG.info('titanlib buddy_check %s %s %.4f', para, snames[idx], values[idx])
             n += 1
-    LOG.info('titanlib buddy_check blacklisted stations: %d', n)
+    LOG.info('titanlib buddy_check %s blacklisted stations: %d', para, n)
     if len(my_dict["Station"]) == 0:
         my_dict = {}
     return my_dict
@@ -303,37 +372,43 @@ def first_guess_test(stations,lats,lons,elevs,values,background_values,para,date
                     inner_radius=50000,outer_radius=100000,num_iterations=10,num_min_prof=1,min_elev_diff=250,
                     min_horizontal_scale=250,max_horizontal_scale=100000,kth_closest_obs_horizontal_scale=2,
                     bdebug=True,bbasic=True,tpostneg=5):
-    """
-    Performs a first guess test on meteorological stations.
+    """Run titanlib fgt (first-guess test) with separate thresholds for SMN and other stations.
+
+    The test is run twice on the full station set:
+      - Round 1 uses tpostneg[0] (lenient, for SMN); only flags from 3-letter stations are kept.
+      - Round 2 uses tpostneg[1] (stricter, for other networks); only flags from longer-name
+        stations are kept.
+    Running both rounds on the full set preserves the spatial background for both groups.
 
     Args:
-        stations (list): List of station names.
-        lats (list): List of latitudes for each station.
-        lons (list): List of longitudes for each station.
-        elevs (list): List of elevations for each station.
-        values (list): List of observed values for each station.
-        background_values (list): List of background values for each station.
-        para (str): Parameter name.
-        date (str): Date of observation.
-        background_elab_type (int, optional): Background elaboration type. Default is 1.
-        num_min_outer (int, optional): Number of minimum outer neighbors. Default is 3.
-        num_max_outer (int, optional): Number of maximum outer neighbors. Default is 10.
-        inner_radius (float, optional): Inner radius for the test. Default is 50000.
-        outer_radius (float, optional): Outer radius for the test. Default is 100000.
-        num_iterations (int, optional): Number of iterations for the test. Default is 10.
-        num_min_prof (int, optional): Number of minimum vertical profile neighbors. Default is 1.
-        min_elev_diff (float, optional): Minimum elevation difference for the test. Default is 250.
-        min_horizontal_scale (float, optional): Minimum horizontal scale for the test. Default is 250.
-        max_horizontal_scale (float, optional): Maximum horizontal scale for the test. Default is 100000.
-        kth_closest_obs_horizontal_scale (int, optional): Kth closest observation horizontal scale. Default is 2.
-        bdebug (bool, optional): Enable debugging output. Default is True.
-        bbasic (bool, optional): Enable basic output. Default is True.
-        tpostneg (int, optional): Threshold for positive/negative differences. Default is 5.
+        stations (list[str]): Station short names.
+        lats (ndarray): Station latitudes.
+        lons (ndarray): Station longitudes.
+        elevs (ndarray): Station elevations (m).
+        values (ndarray): Observed values.
+        background_values (ndarray): Model background values at station locations.
+        para (str): QC parameter name.
+        date (str): Observation timestamp label (stored in the returned dict).
+        background_elab_type (int): Background elaboration type passed to fgt. Default 1.
+        num_min_outer (int): Minimum outer neighbours for background estimation. Default 3.
+        num_max_outer (int): Maximum outer neighbours. Default 10.
+        inner_radius (float): Inner search radius (m). Default 50000.
+        outer_radius (float): Outer search radius (m). Default 100000.
+        num_iterations (int): Number of titanlib fgt iterations. Default 10.
+        num_min_prof (int): Minimum neighbours for vertical profile. Default 1.
+        min_elev_diff (float): Minimum elevation difference for vertical profile. Default 250.
+        min_horizontal_scale (float): Minimum horizontal decorrelation length (m). Default 250.
+        max_horizontal_scale (float): Maximum horizontal decorrelation length (m). Default 100000.
+        kth_closest_obs_horizontal_scale (int): k-th closest obs used for horizontal scale. Default 2.
+        bdebug (bool): Enable titanlib debug output. Default True.
+        bbasic (bool): Enable titanlib basic output. Default True.
+        tpostneg (float | list[float, float]): Obs-minus-background acceptance threshold.
+            Pass a 2-element list [SMN_thr, other_thr] for per-network thresholds.
+            A scalar is broadcast to both rounds.
 
     Returns:
-        dict: A dictionary containing the blacklisted stations and their corresponding information.
-              The dictionary has the following keys: "Station", "Time", "Parameter".
-              If no stations are blacklisted, an empty dictionary is returned.
+        dict: Keys 'Station', 'Time', 'Parameter' listing flagged stations,
+            or empty dict if no stations were flagged.
     """
     thresholds = tpostneg if isinstance(tpostneg, list) else [tpostneg, tpostneg]
     thr_short = thresholds[0]
@@ -352,7 +427,7 @@ def first_guess_test(stations,lats,lons,elevs,values,background_values,para,date
     # round 1: all stations, keep only SMN (3-letter) flags
     tpos = np.repeat(1, N) * thr_short
     tneg = np.repeat(1, N) * thr_short
-    LOG.info('titanlib first_guess_test threshold=%.2f (SMN)', thr_short)
+    LOG.info('titanlib first_guess_test %s threshold=%.2f (SMN)', para, thr_short)
     try:
         flags, scores = titanlib.fgt(points, values, obs_to_check, background_values, background_uncertainties,
                                      background_elab_type, num_min_outer, num_max_outer, inner_radius,
@@ -370,7 +445,7 @@ def first_guess_test(stations,lats,lons,elevs,values,background_values,para,date
     # round 2: all stations, keep only other (longer-name) flags
     tpos = np.repeat(1, N) * thr_long
     tneg = np.repeat(1, N) * thr_long
-    LOG.info('titanlib first_guess_test threshold=%.2f (other)', thr_long)
+    LOG.info('titanlib first_guess_test %s threshold=%.2f (other)', para, thr_long)
     try:
         flags, scores = titanlib.fgt(points, values, obs_to_check, background_values, background_uncertainties,
                                      background_elab_type, num_min_outer, num_max_outer, inner_radius,
@@ -392,7 +467,7 @@ def first_guess_test(stations,lats,lons,elevs,values,background_values,para,date
             my_dict["Station"].append(snames[idx])
             my_dict["Time"].append(date)
             my_dict["Parameter"].append(para)
-            LOG.info('titanlib first_guess_test %s %s %.4f', snames[idx], para, values[idx])
+            LOG.info('titanlib first_guess_test %s %s %.4f', para, snames[idx], values[idx])
             n += 1
     LOG.info('titanlib first_guess_test %s blacklisted stations: %d', para, n)
     return my_dict
@@ -402,36 +477,34 @@ def spacial_ct_resistant(stations,lats,lons,elevs,values,para,date,background_el
                     inner_radius=50000,outer_radius=100000,num_iterations=10,num_min_prof=1,min_elev_diff=250,
                     min_horizontal_scale=250,max_horizontal_scale=100000,kth_closest_obs_horizontal_scale=2,
                     vertical_scale=200,bdebug=True,bbasic=True):
-    """
-    Performs a spacial consistency test resistant using the titanlib library on meteorological stations.
+    """Run titanlib sct_resistant (spatial consistency test, resistant variant).
 
     Args:
-        stations (list): List of station names.
-        lats (list): List of latitudes for each station.
-        lons (list): List of longitudes for each station.
-        elevs (list): List of elevations for each station.
-        values (array): Array of observed values.
-        para (str): Parameter name.
-        date (str): Date of the observation.
-        background_elab_type (int): Background elaboration type.
-        num_min_outer (int): Minimum number of outer stations.
-        num_max_outer (int): Maximum number of outer stations.
-        inner_radius (int): Inner radius for the spacial consistency test.
-        outer_radius (int): Outer radius for the spacial consistency test.
-        num_iterations (int): Number of iterations.
-        num_min_prof (int): Minimum number of profiles.
-        min_elev_diff (int): Minimum elevation difference.
-        min_horizontal_scale (int): Minimum horizontal scale.
-        max_horizontal_scale (int): Maximum horizontal scale.
-        kth_closest_obs_horizontal_scale (int): Kth closest observation for horizontal scale.
-        vertical_scale (int): Vertical scale.
-        bdebug (bool): Debug flag.
-        bbasic (bool): Basic flag.
+        stations (list[str]): Station short names.
+        lats (ndarray): Station latitudes.
+        lons (ndarray): Station longitudes.
+        elevs (ndarray): Station elevations (m).
+        values (ndarray): Observed values.
+        para (str): QC parameter name.
+        date (str): Observation timestamp label.
+        background_elab_type (int): Background elaboration type. Default 1.
+        num_min_outer (int): Minimum outer neighbours. Default 3.
+        num_max_outer (int): Maximum outer neighbours. Default 10.
+        inner_radius (float): Inner search radius (m). Default 50000.
+        outer_radius (float): Outer search radius (m). Default 100000.
+        num_iterations (int): Number of iterations. Default 10.
+        num_min_prof (int): Minimum neighbours for vertical profile. Default 1.
+        min_elev_diff (float): Minimum elevation difference (m). Default 250.
+        min_horizontal_scale (float): Minimum horizontal decorrelation length (m). Default 250.
+        max_horizontal_scale (float): Maximum horizontal decorrelation length (m). Default 100000.
+        kth_closest_obs_horizontal_scale (int): k-th closest obs for horizontal scale. Default 2.
+        vertical_scale (float): Vertical decorrelation length (m). Default 200.
+        bdebug (bool): Enable titanlib debug output. Default True.
+        bbasic (bool): Enable titanlib basic output. Default True.
 
     Returns:
-        dict: A dictionary containing the blacklisted stations and their corresponding information.
-              The dictionary has the following keys: "Station", "Time", "Parameter".
-              If no stations are blacklisted, an empty dictionary is returned.
+        dict: Keys 'Station', 'Time', 'Parameter' listing flagged stations,
+            or empty dict if no stations were flagged.
     """
     points = titanlib.Points(lats, lons, elevs)
     npoints = len(lats)
@@ -445,7 +518,7 @@ def spacial_ct_resistant(stations,lats,lons,elevs,values,para,date,background_el
     values_maxa = values + 15
     values_minv = values - 1
     values_maxv = values + 1
-    LOG.info('spacial_ct_resistant')
+    LOG.info('spacial_ct_resistant %s', para)
     try:
         flags,scores = titanlib.sct_resistant(points, values, obs_to_check, background_values, 
                         background_elab_type, num_min_outer, num_max_outer, 
@@ -469,9 +542,9 @@ def spacial_ct_resistant(stations,lats,lons,elevs,values,para,date,background_el
                 my_dict["Station"].append(stations[indices[b]])
                 my_dict["Time"].append(date)
                 my_dict["Parameter"].append(para)
-                LOG.info('titanlib sct_resistant'+' '+stations[indices[b]]+' '+str(values[indices[b]])+' '+str(scores[indices[b]]))
+                LOG.info('titanlib sct_resistant %s %s %.4f score=%.4f', para, stations[indices[b]], values[indices[b]], scores[indices[b]])
                 n=n+1
-        LOG.info('spacial_ct_resistant '+'blacklisted stations: '+str(n))
+        LOG.info('spacial_ct_resistant %s blacklisted stations: %d', para, n)
     else:
         my_dict={}
     return my_dict
@@ -482,35 +555,33 @@ def spacial_ct_dual(stations,lats,lons,elevs,values,para,date,num_min_outer=3,nu
                     min_horizontal_scale=250,max_horizontal_scale=100000,kth_closest_obs_horizontal_scale=2,
                     vertical_scale=200,debug=True,condition = 1, event_thresholds = 0.1,test_thresholds = 0.8):
     
-    """
-    Performs a spacial consistency test using the titanlib library on meteorological stations.
+    """Run titanlib sct_dual (spatial consistency test, dual-threshold variant).
 
     Args:
-        stations (list): List of station names.
-        lats (list): List of latitudes for each station.
-        lons (list): List of longitudes for each station.
-        elevs (list): List of elevations for each station.
-        values (array): Array of observed values.
-        para (str): Parameter name.
-        date (str): Date of the observation.
-        num_min_outer (int): Minimum number of outer stations.
-        num_max_outer (int): Maximum number of outer stations.
-        inner_radius (int): Inner radius for the spacial consistency test.
-        outer_radius (int): Outer radius for the spacial consistency test.
-        num_iterations (int): Number of iterations.
-        min_horizontal_scale (int): Minimum horizontal scale.
-        max_horizontal_scale (int): Maximum horizontal scale.
-        kth_closest_obs_horizontal_scale (int): Kth closest observation for horizontal scale.
-        vertical_scale (int): Vertical scale.
-        debug (bool): Debug flag.
-        condition (int): Condition for the spacial consistency test.
-        event_thresholds (float): Event thresholds.
-        test_thresholds (float): Test thresholds.
+        stations (list[str]): Station short names.
+        lats (ndarray): Station latitudes.
+        lons (ndarray): Station longitudes.
+        elevs (ndarray): Station elevations (m).
+        values (ndarray): Observed values.
+        para (str): QC parameter name.
+        date (str): Observation timestamp label.
+        num_min_outer (int): Minimum outer neighbours. Default 3.
+        num_max_outer (int): Maximum outer neighbours. Default 10.
+        inner_radius (float): Inner search radius (m). Default 50000.
+        outer_radius (float): Outer search radius (m). Default 100000.
+        num_iterations (int): Number of iterations. Default 10.
+        min_horizontal_scale (float): Minimum horizontal decorrelation length (m). Default 250.
+        max_horizontal_scale (float): Maximum horizontal decorrelation length (m). Default 100000.
+        kth_closest_obs_horizontal_scale (int): k-th closest obs for horizontal scale. Default 2.
+        vertical_scale (float): Vertical decorrelation length (m). Default 200.
+        debug (bool): Enable titanlib debug output. Default True.
+        condition (int): Event condition type passed to sct_dual. Default 1.
+        event_thresholds (float): Threshold defining an 'event'. Default 0.1.
+        test_thresholds (float): Threshold for flagging (broadcast to all stations). Default 0.8.
 
     Returns:
-        dict: A dictionary containing the blacklisted stations and their corresponding information.
-              The dictionary has the following keys: "Station", "Time", "Parameter".
-              If no stations are blacklisted, an empty dictionary is returned.
+        dict: Keys 'Station', 'Time', 'Parameter' listing flagged stations,
+            or empty dict if no stations were flagged.
     """
     points = titanlib.Points(lats, lons, elevs)
     npoints = len(lats)
@@ -519,7 +590,7 @@ def spacial_ct_dual(stations,lats,lons,elevs,values,para,date,num_min_outer=3,nu
     test_thresholds = np.repeat(test_thresholds, npoints)
     event_thresholds = np.repeat(event_thresholds, npoints)
     #print(locals())
-    LOG.info('titanlib spacial_ct_dual')
+    LOG.info('titanlib spacial_ct_dual %s', para)
     try:
         values=np.asarray(values, dtype=np.float64)
         flags= titanlib.sct_dual(points, values, obs_to_check, event_thresholds, condition,
@@ -541,55 +612,41 @@ def spacial_ct_dual(stations,lats,lons,elevs,values,para,date,num_min_outer=3,nu
                 my_dict["Station"].append(stations[indices[b]])
                 my_dict["Time"].append(date)
                 my_dict["Parameter"].append(para)
-                LOG.info('titanlib sct_dual'+' '+stations[indices[b]]+' '+str(values[indices[b]]))
+                LOG.info('titanlib sct_dual %s %s %.4f', para, stations[indices[b]], values[indices[b]])
                 n=n+1
-        LOG.info('titanlib spacial_ct_dual '+'blacklisted stations: '+str(n))
+        LOG.info('titanlib spacial_ct_dual %s blacklisted stations: %d', para, n)
     else:
         my_dict={}
     return my_dict
 #--------------------------------------------------------------
 def find_indices(list_to_check, item_to_find):
-    """
-    Find the indices of occurrences of 'item_to_find' in the given list 'list_to_check'.
-
-    This function searches for all occurrences of 'item_to_find' in the 'list_to_check' and returns
-    a list containing the indices of those occurrences.
-
-    Parameters:
-        list_to_check (list): The list in which to search for the 'item_to_find'.
-        item_to_find: The item to find occurrences of in the 'list_to_check'.
-
-    Returns:
-        list: A list of integers representing the indices of occurrences of 'item_to_find' in 'list_to_check'.
-
-    Note:
-        If 'item_to_find' is not present in 'list_to_check', an empty list will be returned.
-    """
+    """Return all indices where list_to_check equals item_to_find."""
     return [idx for idx, value in enumerate(list_to_check) if value == item_to_find]
 
 #--------------------------------------------------------------
 def tests_summary (blacklist,weights,tests):
-    """
-    Calculate the summary of tests for each station and time from a given blacklist dictionary.
+    """Aggregate per-test flags into a weighted score for each (time, station) pair.
 
-    This function takes a JSON-like dictionary 'mydict' containing information about blacklisted tests
-    for different stations and times. It extracts the relevant data, processes it, and returns a DataFrame
-    containing the quality control (QC) summary for each station and time.
+    For each station the score is:
 
-    Parameters:
-        blacklist (dict): A JSON-like dictionary containing blacklisted tests information.
+        score = sum(weight_i for each test_i that flagged the station)
+                / len(blacklist['tests'])
+
+    where ``blacklist['tests']`` is the list of tests that were actually run
+    (not the full configured set).  A station is considered suspicious when
+    ``score > threshold_summary`` (0.2 by default, checked by the caller).
+
+    Args:
+        blacklist (dict): Accumulator produced by make_tests.  Must have key
+            'tests' (list of test names that ran) and one sub-dict per test
+            with keys 'Station' and 'Time'.
+        weights (list[float]): Per-test weights in the same order as ``tests``.
+        tests (list[str]): Ordered list of all configured test names
+            (used to align weights; subset of blacklist['tests']).
 
     Returns:
-        pandas.DataFrame: A DataFrame containing the quality control (QC) summary for each station and time.
-                          The rows represent the different time values, and the columns represent the unique
-                          station names. The value at df.loc[time, station] represents the ratio of blacklisted
-                          tests for the station at the specified time to the total number of tests. This ratio
-                          is calculated by counting the number of occurrences of a station-time pair in the
-                          blacklisted tests and dividing it by the total number of tests.
-
-    Note:
-        This function relies on the 'find_indices' function, which should be defined before calling
-        'tests_summary' or imported from another module.
+        pandas.DataFrame: Shape (n_times, n_stations).  Each cell is the
+            weighted flag score for that (time, station) pair.
     """
     stations=[]
     times=[]
@@ -623,26 +680,21 @@ def tests_summary (blacklist,weights,tests):
    
     return df
 def hard_test (obs_all,datamin,datamax,var,time):
-    """
-    Perform a hard test on the data within the given limits and record the observations that fall outside.
+    """Flag stations whose value falls outside absolute physical limits.
 
-    Parameters:
-    obs_all (DataFrame): The DataFrame containing all observations.
-    datamin (float): The minimum threshold for the data.
-    datamax (float): The maximum threshold for the data.
-    var (str): The parameter being tested.
-    time (str): The time of the observation.
+    Args:
+        obs_all (DataFrame): Observation DataFrame (must contain 'sta_name' and var columns).
+        datamin (float): Lower hard limit.
+        datamax (float): Upper hard limit.
+        var (str): Column name of the parameter to test.
+        time (str): Timestamp label stored in the returned dict.
 
     Returns:
-    dict: A dictionary containing the stations, times, and parameters for the observations that fall outside the given limits.
-
-    The function performs a hard test on the 'obs_all' DataFrame, checking the 'var' parameter against the 'datamin' and 'datamax' limits.
-    For each station, if the 'var' parameter is outside the given limits, the station name, time, and parameter details are logged.
-    The function then returns a dictionary 'my_dict' containing the recorded information for the observations that failed the test.
-
+        dict: Keys 'Station', 'Time', 'Parameter' listing flagged stations.
+            Always non-empty structure (never empty dict like other tests).
     """
 
-    LOG.info('Hard test '+ var + ' '+time +' '+str(datamin) +'/'+ str(datamax))
+    LOG.info('hard test %s min=%.2f max=%.2f', var, datamin, datamax)
     my_dict = {"Station":[],"Time":[],"Parameter":[]}
     n=0
     stations=obs_all['sta_name']
@@ -654,7 +706,7 @@ def hard_test (obs_all,datamin,datamax,var,time):
                 my_dict["Station"].append(stations[n])
                 my_dict["Time"].append(time)
                 my_dict["Parameter"].append(var)
-                LOG.info('Hard test '+var+' '+stations[n]+' '+str(sta_data.iloc[0]))
+                LOG.info('hard test %s %s %.4f', var, stations[n], sta_data.iloc[0])
         n=n+1
     return my_dict
 
@@ -676,15 +728,16 @@ def plateau_test(data, window, std_lim, var, time, obs_path_in=None, gran_minute
         gran_minutes (int): Step between historical parquet files in minutes (default 60).
 
     Returns:
-        dict: {'Station': [...], 'Time': [...], 'Parameter': [...]} for flagged stations.
-            Empty dict when nothing is flagged or the test is skipped.
+        dict | None: {'Station': [...], 'Time': [...], 'Parameter': [...]} for flagged stations,
+            empty dict when run but nothing flagged, or None when the test could not run
+            (no obs_path_in, no timestamp in filename, or zero historical files available).
     """
     LOG.info('plateau test for %s', var)
     my_dict = {"Station": [], "Time": [], "Parameter": []}
 
     if obs_path_in is None:
         LOG.warning('plateau_test %s: obs_path_in not provided, cannot run test', var)
-        return my_dict
+        return None
 
     import re as _re
     obs_path_in = Path(obs_path_in)
@@ -698,7 +751,7 @@ def plateau_test(data, window, std_lim, var, time, obs_path_in=None, gran_minute
             'cannot build historical file list',
             var, obs_path_in.name,
         )
-        return my_dict
+        return None
     file_ts = ts_match.group()
     current = datetime.strptime(file_ts, '%Y%m%d%H%M')
     stem_pattern = obs_path_in.stem.replace(file_ts, '{}')
@@ -721,16 +774,17 @@ def plateau_test(data, window, std_lim, var, time, obs_path_in=None, gran_minute
         for mf in missing:
             LOG.warning('plateau_test %s: missing file: %s', var, mf)
 
-    if not historical_dfs:
+    n_found = len(historical_dfs)
+    if n_found < n_steps / 2:
         LOG.warning(
-            'plateau_test %s: cannot run — 0/%d historical files available (window=%dh, gran=%dmin)',
-            var, n_steps, window, gran_minutes,
+            'plateau_test %s: cannot run — only %d/%d historical files available (window=%dh, gran=%dmin)',
+            var, n_found, n_steps, window, gran_minutes,
         )
-        return my_dict
-    if len(missing) > 0:
+        return None
+    if missing:
         LOG.warning(
             'plateau_test %s: running on partial history (%d/%d files available)',
-            var, n_steps - len(missing), n_steps,
+            var, n_found, n_steps,
         )
 
     obs_all = pd.concat([data] + historical_dfs)

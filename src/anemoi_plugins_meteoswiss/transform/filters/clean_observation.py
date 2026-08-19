@@ -97,19 +97,27 @@ class CleanObservation(Filter):
         df = self._clean(df)
 
         self.obs_path_out.parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(self.obs_path_out)
+        # Drop _pi columns (DWH plausibility values) from output — they are only
+        # needed internally during QC and should not propagate downstream.
+        pi_cols = [c for c in df.columns if c.endswith("_pi")]
+        df.to_parquet(self.obs_path_out, columns=[c for c in df.columns if c not in pi_cols])
         LOG.info("Saved %d cleaned stations to %s", len(df), self.obs_path_out)
 
         flagged = getattr(self, "_flagged", [])
         json_path = self.obs_path_out.with_suffix("").with_name(
             self.obs_path_out.stem + "_flagged.json"
         )
+        import re as _re
+        ts_match = _re.search(r'\d{12}', Path(self.obs_path_in).stem)
+        obs_timestamp = ts_match.group() if ts_match else None
         n_flagged_per_parameter: dict = {}
         for entry in flagged:
             para = entry.get("qc_parameter", "unknown")
             n_flagged_per_parameter[para] = n_flagged_per_parameter.get(para, 0) + 1
         output = {
+            "obs_timestamp": obs_timestamp,
             "duration_seconds": round(getattr(self, "_qc_duration", 0.0), 3),
+            "tests_done": getattr(self, "_tests_done", {}),
             "n_flagged": len(flagged),
             "n_flagged_per_parameter": n_flagged_per_parameter,
             "flagged": flagged,
@@ -159,6 +167,7 @@ class CleanObservation(Filter):
         # Structure: {para: {"scores": {station: float}, "flagged": [str], "tests_run": [str],
         #                     "threshold": float, "blacklist": dict}}
         self._qc_diagnostics: dict = {}
+        self._tests_done: dict = {}
 
         # Flagged observations: list of {"station", "column", "qc_parameter", "original_value"}
         self._flagged: list = []
@@ -178,17 +187,21 @@ class CleanObservation(Filter):
             if parquet_col in df.columns:
                 df_qc[qc_para] = converter(df[parquet_col].to_numpy())
 
-        # FF_10M is wind speed derived from the U/V components
+        # FF_10M is wind speed derived from the U/V components; the scalar speed
+        # is what titanlib spatial tests operate on (not the vector components).
         if "10u" in df.columns and "10v" in df.columns:
             df_qc["FF_10M"] = np.sqrt(df["10u"].to_numpy() ** 2 + df["10v"].to_numpy() ** 2)
 
         # Station coordinates and elevation from the parquet
         lats = df["latitude"].to_numpy(dtype=float)
         lons = df["longitude"].to_numpy(dtype=float)
+        # altitude may be missing for synthetic test data; default to 0 m a.s.l.
         elevs = df["altitude"].to_numpy(dtype=float) if "altitude" in df.columns else np.zeros(len(df), dtype=float)
         stations = np.array(df.index.to_list())
 
-        # Plausibility frame for DWH_flag test: index = station name, columns = *_pi
+        # Plausibility frame for DWH_flag: index = station name, columns = *_pi.
+        # Each *_pi column contains a DWH plausibility value (0–1) pre-fetched by
+        # RetrieveObservation.  Stations with pi < dwh_plausibility_thr are flagged.
         pi_cols = [col for col in df.columns if col.endswith("_pi")]
         df_pi = df[pi_cols] if pi_cols else pd.DataFrame(index=df.index)
 
@@ -216,7 +229,7 @@ class CleanObservation(Filter):
         # --- Stage 1: automated QC tests per parameter --------------------
         for para in _qc_config.par2check:
             if para not in df_qc.columns:
-                LOG.debug("Skipping %s: not available in parquet", para)
+                LOG.warning("Skipping %s: not available in parquet", para)
                 continue
 
             all_tests = _qc_config.titan_ntests_threshold[para]["tests_QC"]
@@ -225,6 +238,8 @@ class CleanObservation(Filter):
             if not tests_to_do:
                 LOG.info("%-10s  no active tests (configured: %s)", para, all_tests)
                 continue
+            # tests not in active_tests are model-dependent (buddy_diff, fgt) and
+            # are skipped when no model background is available.
             skipped = [t for t in all_tests if t not in active_tests]
             LOG.info("%-10s  running: %s", para, tests_to_do)
             if skipped:
@@ -234,12 +249,15 @@ class CleanObservation(Filter):
                 )
             weights = [all_weights[all_tests.index(t)] for t in tests_to_do]
 
-            # Initialise the blacklist accumulator dict expected by make_tests
+            # Blacklist accumulator expected by make_tests:
+            #   'n'    : number of planned tests
+            #   'tests': list of planned test names
+            #   <name> : per-test sub-dict with lists 'ID', 'Station', 'Time', 'Parameter'
             my_dict = {"n": len(tests_to_do), "tests": tests_to_do}
             for test in tests_to_do:
                 my_dict[test] = {"ID": [], "Station": [], "Time": [], "Parameter": []}
 
-            blacklist, _ = _make_tests(
+            blacklist, _, executed_tests = _make_tests(
                 current_f, df_qc, df_diff, df_mod, para,
                 stations.copy(), lats.copy(), lons.copy(), elevs.copy(),
                 0, 0, my_dict, tests_to_do,
@@ -247,13 +265,25 @@ class CleanObservation(Filter):
                 obs_path_in=self.obs_path_in,
             )
 
-            # Compute a weighted score [0, 1] per station across all tests run
-            qc_summary = _tests_summary(blacklist, weights, tests_to_do)
+            # executed_tests may be shorter than tests_to_do (e.g. plateau_test skipped)
+            # or longer (isolation_check always runs but is not in tests_QC).
+            # Score uses only the tests that are in tests_QC (have configured weights).
+            # isolation_check stations are flagged directly after the score loop.
+            score_tests = [t for t in executed_tests if t in all_tests]
+            self._tests_done[para] = executed_tests
+            blacklist['tests'] = score_tests
+            blacklist['n'] = len(score_tests)
+            weights = [all_weights[all_tests.index(t)] for t in score_tests]
+
+            # Score = sum(weight_i for flagging tests) / n_score_tests.
+            # A station is blacklisted when score > threshold_summary (default 0.2).
+            qc_summary = _tests_summary(blacklist, weights, score_tests)
             threshold = _qc_config.titan_ntests_threshold[para]["threshold_summary"]
 
             flagged_stations = []
 
-            # Stations in stations_excluded are never blacklisted for this parameter
+            # stations_excluded: trusted stations (e.g. reference stations) that are
+            # never blacklisted by automated QC, regardless of their score.
             excluded = _qc_config.stations_excluded.get(para, {}).get("stations", [])
             for station in qc_summary.columns:
                 if qc_summary[station].iloc[0] > threshold:
@@ -264,19 +294,21 @@ class CleanObservation(Filter):
                     LOG.info("QC flagged %s for station %s (score=%.2f)",
                              para, station, qc_summary[station].iloc[0])
                     flagged_stations.append(station)
-                    # For derived parameters (e.g. FF_10M from u/v) record the QC
-                    # value that was actually tested, not the raw vector components.
+                    # Record the QC-space value (e.g. wind speed scalar, not u/v)
+                    # that triggered the flag, for traceability in the JSON output.
                     sta_row = df_qc.index[df_qc["sta_name"] == station]
                     qc_val = (
                         float(df_qc.loc[sta_row[0], para])
                         if len(sta_row) and para in df_qc.columns
                         else None
                     )
-                    # Which individual tests were positive for this station?
+                    # Which individual tests voted to flag this station?
                     positive_tests = [
-                        t for t in tests_to_do
+                        t for t in executed_tests
                         if station in blacklist.get(t, {}).get("Station", [])
                     ]
+                    # A QC parameter may map to multiple parquet columns
+                    # (e.g. FF_10M → 10u and 10v); set all of them to NaN.
                     for parquet_col in _qc_config.qc_to_parquet.get(para, []):
                         if parquet_col in df.columns and station in df.index:
                             self._flagged.append({
@@ -301,7 +333,9 @@ class CleanObservation(Filter):
                 },
             }
 
-        # --- Stage 2: hard blacklist — always applied, ignores exclusions --
+        # --- Stage 2: hard blacklist — always applied, ignores exclusions -------
+        # Stations here are permanently unreliable for specific parameters and are
+        # always set to NaN regardless of QC score or stations_excluded membership.
         for entry in _qc_config.hard_blacklist.values():
             station = entry["station"]
             if station not in df.index:
@@ -386,7 +420,8 @@ class CleanObservation(Filter):
         LOG.info("Reading model GRIB: %s", self.model_grib_path)
         fs = ekd.from_source("file", self.model_grib_path)
 
-        # Build unit-sphere KD-tree from the model grid (first field sets the grid)
+        # Build a KD-tree on the unit sphere (3-D Cartesian coords) rather than
+        # lat/lon directly, to avoid discontinuities at the date-line and poles.
         ll = fs[0].to_latlon()
         grid_lats = np.asarray(ll["lat"]).flatten()
         grid_lons = np.asarray(ll["lon"]).flatten()
@@ -414,11 +449,13 @@ class CleanObservation(Filter):
                     pass
             return None
 
-        # Determine the grid index for each station
+        # For each station, pick the best model grid point.
+        # min_elev_diff: among the 4 nearest points, take the one whose HSURF
+        # elevation is closest to the station elevation.  This reduces the
+        # temperature bias caused by interpolating across steep orography.
         if self.model_interp == "min_elev_diff":
             _, indices = tree.query(_xyz(lats, lons), k=4)  # (n_sta, 4)
 
-            # Try to read HSURF for elevation-guided selection
             grid_hsurf = _first_field_values(_HSURF_SHORTNAMES)
             if grid_hsurf is None:
                 LOG.warning(
@@ -456,7 +493,9 @@ class CleanObservation(Filter):
                 )
                 LOG.debug("Derived FF_10M (U/V) for %d stations", len(station_idx))
 
-        # df_diff = obs - model background (innovation vector)
+        # df_diff = obs - model background (observation innovation).
+        # buddy_diff and fgt use this instead of raw obs values so that
+        # the NWP climatology is removed before spatial consistency checks.
         df_diff = df_qc.copy()
         for col in df_qc.columns:
             if col != "sta_name":

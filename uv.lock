@@ -133,7 +133,7 @@ requires-dist = [
     { name = "earthkit-data", specifier = "==0.19.2" },
     { name = "earthkit-meteo", specifier = "==1.0.0" },
     { name = "earthkit-utils", specifier = "==1.0.2" },
-    { name = "eccodes-cosmo-resources-python", specifier = "==2.38.3.1" },
+    { name = "eccodes-cosmo-resources-python" },
     { name = "ecmwf-opendata", marker = "extra == 'oper-inference'" },
     { name = "filelock", marker = "extra == 'oper-inference'" },
     { name = "peakweather", specifier = "==0.2.2" },

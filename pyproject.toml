@@ -13,7 +13,7 @@ dependencies = [
     "peakweather==0.2.2",
     "earthkit-data==0.19.2",
     "earthkit-utils ==1.0.2",
-    "eccodes-cosmo-resources-python==2.38.3.1",
+    "eccodes-cosmo-resources-python",
 ]
 
 [project.optional-dependencies]

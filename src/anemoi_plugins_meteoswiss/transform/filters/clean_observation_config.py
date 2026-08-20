@@ -2,7 +2,7 @@
 #test to be applied ('buddy_obs','buddy_diff','fgt','spt_resistant','spt_dual','DWH_flag','hard_test','plateau_test','isolation_check')
 
 #TITANLIB and other tests
-par2check=['T_2M','TD_2M',"RH_2M","FF_10M","VMAX10M","T_G","PS","PMSL"]
+par2check=['T_2M','TD_2M',"FF_10M","VMAX10M","T_G","PS","PMSL"]
 
 # Tests that work without model/background data
 obs_only_tests = {"hard", "isolation_check", "buddy_obs", "DWH_flag", "plateau_test"}
@@ -63,13 +63,13 @@ plausibility_thresholds = {'variable': obs_variables,
 
 # Isolation check configuration (titanlib.isolation_check — flags stations with too few neighbours)
 isolation_check = {
-    "T_2M":    {"radius": 50000, "num_min": 3},
-    "TD_2M":   {"radius": 50000, "num_min": 3},
-    "T_G":     {"radius": 50000, "num_min": 2},
-    "FF_10M":  {"radius": 50000, "num_min": 3},
-    "VMAX10M": {"radius": 50000, "num_min": 3},
-    "RH_2M":   {"radius": 50000, "num_min": 3},
-    "PS":      {"radius": 50000, "num_min": 3},
+    "T_2M":    {"radius": 75000, "num_min": 3},
+    "TD_2M":   {"radius": 75000, "num_min": 3},
+    "T_G":     {"radius": 75000, "num_min": 2},
+    "FF_10M":  {"radius": 75000, "num_min": 3},
+    "VMAX10M": {"radius": 75000, "num_min": 3},
+    "RH_2M":   {"radius": 75000, "num_min": 3},
+    "PS":      {"radius": 75000, "num_min": 3},
     "PMSL":    {"radius": 75000, "num_min": 2},
 }
 
@@ -685,7 +685,7 @@ hard_blacklist = {
 # Plotting — set plot_maps = True to save one PNG per parameter alongside the output parquet.
 # Requires cartopy (pip install cartopy). Country borders and geographic features are
 # fetched automatically from Natural Earth on first use (no local shapefiles needed).
-plot_maps = False
+plot_maps = True
 
 # QC parameter -> parquet plausibility column (written by RetrieveObservation as {param}_pi)
 par2pi = {

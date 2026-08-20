@@ -19,8 +19,17 @@ if _FILTERS_DIR not in sys.path:
 
 try:
     import clean_observation_config as _qc_config
-    from clean_observation_tests import make_tests as _make_tests
-    from clean_observation_tests import tests_summary as _tests_summary
+    from clean_observation_tests import (
+        DWH_flag as _DWH_flag,
+        buddy_check as _buddy_check,
+        first_guess_test as _first_guess_test,
+        hard_test as _hard_test,
+        isolation_check as _isolation_check,
+        plateau_test as _plateau_test,
+        spacial_ct_dual as _spacial_ct_dual,
+        spacial_ct_resistant as _spacial_ct_resistant,
+        tests_summary as _tests_summary,
+    )
 
     _QC_AVAILABLE = True
 except ImportError as _e:
@@ -297,7 +306,7 @@ class CleanObservation(Filter):
             for test in tests_to_do:
                 my_dict[test] = {"ID": [], "Station": [], "Time": [], "Parameter": []}
 
-            blacklist, _, executed_tests = _make_tests(
+            blacklist, _, executed_tests = self.make_tests(
                 current_f, df_qc, df_diff, df_mod, para,
                 stations.copy(), lats.copy(), lons.copy(), elevs.copy(),
                 0, 0, my_dict, tests_to_do,
@@ -402,6 +411,241 @@ class CleanObservation(Filter):
         self._qc_duration: float = time.monotonic() - _t0
         LOG.info("QC tests completed in %.2f s", self._qc_duration)
         return df
+
+    def make_tests(
+        self,
+        current_f,
+        df_obs,
+        df_diff,
+        df_mod,
+        para,
+        stations,
+        lats,
+        lons,
+        elevs,
+        ii,
+        jj,
+        my_dict,
+        tests_to_do,
+        df_pi=None,
+        obs_path_in=None,
+    ):
+        """Run the requested QC tests for a single parameter and accumulate flagged stations.
+
+        Args:
+            current_f (str): Wall-clock timestamp ('%Y%m%d%H%M') used as the Time label in blacklist entries.
+            df_obs (DataFrame): Current observation DataFrame (must contain 'sta_name' and parameter columns).
+            df_diff (DataFrame): Obs-minus-model difference DataFrame (same shape as df_obs).
+            df_mod (DataFrame): Model background DataFrame (same shape as df_obs).
+            para (str): QC parameter name (e.g. 'T_2M', 'PS').
+            stations (ndarray): Station name array (NaN rows pre-removed).
+            lats (ndarray): Station latitudes.
+            lons (ndarray): Station longitudes.
+            elevs (ndarray): Station elevations (m).
+            ii (int): Unused index (kept for interface compatibility).
+            jj (int): Unused index (kept for interface compatibility).
+            my_dict (dict): Accumulator dict with keys 'tests', 'n', and one sub-dict per test name,
+                each containing lists 'ID', 'Station', 'Time', 'Parameter'.
+            tests_to_do (list[str]): Subset of tests to run, e.g. ['hard', 'buddy_obs', 'plateau_test'].
+                Model-dependent tests ('buddy_diff', 'fgt') are included only when a model is available.
+            df_pi (DataFrame, optional): Plausibility frame (columns = '*_pi') used by DWH_flag.
+            obs_path_in (str | Path, optional): Path to the current observation parquet file,
+                used by plateau_test to locate historical files.
+
+        Returns:
+            tuple: (my_dict, freq, executed_tests) where my_dict is the updated accumulator,
+                freq is the plausibility value-counts Series from DWH_flag (empty DataFrame
+                otherwise), and executed_tests is the list of test names that were actually run.
+        """
+        values = df_obs[para].iloc[:].to_numpy()
+        freq = pd.DataFrame()
+        executed_tests = []
+
+        ind = np.argwhere(np.isnan(values))
+        values = np.delete(values, ind)
+        stations = np.delete(stations, ind)
+        lats = np.delete(lats, ind)
+        lons = np.delete(lons, ind)
+        elevs = np.delete(elevs, ind)
+        mods = np.delete(df_mod[para].iloc[:].to_numpy(), ind)
+        diffs = np.delete(df_diff[para].iloc[:].to_numpy(), ind)
+        LOG.info('make_tests %s: %d stations (non-NaN)', para, len(stations))
+
+        if 'hard' in tests_to_do:
+            ind_var = _qc_config.obs_variables.index(para)
+            blacklist = _hard_test(df_obs, _qc_config.plausibility_thresholds['pch_min'][ind_var],
+                                   _qc_config.plausibility_thresholds['pch_max'][ind_var], para, current_f)
+            nb0 = len(my_dict['hard']['ID'])
+            if blacklist:
+                for k in range(len(blacklist["Station"])):
+                    nb0 += 1
+                    my_dict['hard']["ID"].append(nb0)
+                    my_dict['hard']["Station"].append(blacklist["Station"][k])
+                    my_dict['hard']["Time"].append(blacklist["Time"][k])
+                    my_dict['hard']["Parameter"].append(blacklist["Parameter"][k])
+            LOG.info('hard test          %s blacklisted stations: %d', para, len(blacklist["Station"]) if blacklist else 0)
+            executed_tests.append('hard')
+
+        if 'buddy_obs' in tests_to_do:
+            blacklist = _buddy_check(stations, lats, lons, elevs, values, para, current_f,
+                                     _qc_config.buddy[para]["threshold"], _qc_config.buddy[para]["max_elev_diff"],
+                                     _qc_config.buddy[para]["elev_gradient"], _qc_config.buddy[para]["min_std"],
+                                     _qc_config.buddy[para]["num_iterations"], _qc_config.buddy[para]["num_min"],
+                                     _qc_config.buddy[para]["radius"])
+            nb1 = len(my_dict['buddy_obs']['ID'])
+            if blacklist:
+                for k in range(len(blacklist["Station"])):
+                    nb1 += 1
+                    my_dict['buddy_obs']["ID"].append(nb1)
+                    my_dict['buddy_obs']["Station"].append(blacklist["Station"][k])
+                    my_dict['buddy_obs']["Time"].append(blacklist["Time"][k])
+                    my_dict['buddy_obs']["Parameter"].append(blacklist["Parameter"][k])
+            LOG.info('buddy_obs test     %s blacklisted stations: %d', para, len(blacklist["Station"]) if blacklist else 0)
+            executed_tests.append('buddy_obs')
+
+        if 'buddy_diff' in tests_to_do:
+            blacklist2 = _buddy_check(stations, lats, lons, elevs, diffs, para, current_f,
+                                      _qc_config.buddy_diff[para]["threshold"], _qc_config.buddy_diff[para]["max_elev_diff"],
+                                      _qc_config.buddy_diff[para]["elev_gradient"], _qc_config.buddy_diff[para]["min_std"],
+                                      _qc_config.buddy_diff[para]["num_iterations"], _qc_config.buddy_diff[para]["num_min"],
+                                      _qc_config.buddy_diff[para]["radius"])
+            nb2 = len(my_dict['buddy_diff']['ID'])
+            if blacklist2:
+                for k in range(len(blacklist2["Station"])):
+                    nb2 += 1
+                    my_dict['buddy_diff']["ID"].append(nb2)
+                    my_dict['buddy_diff']["Station"].append(blacklist2["Station"][k])
+                    my_dict['buddy_diff']["Time"].append(blacklist2["Time"][k])
+                    my_dict['buddy_diff']["Parameter"].append(blacklist2["Parameter"][k])
+            LOG.info('buddy_diff test    %s blacklisted stations: %d', para, len(blacklist2["Station"]) if blacklist2 else 0)
+            executed_tests.append('buddy_diff')
+
+        if 'fgt' in tests_to_do:
+            blacklist3 = _first_guess_test(stations, lats, lons, elevs, values, mods, para, current_f,
+                                           _qc_config.fgt[para]['background_elab_type'], _qc_config.fgt[para]['num_min_outer'],
+                                           _qc_config.fgt[para]['num_max_outer'], _qc_config.fgt[para]['inner_radius'],
+                                           _qc_config.fgt[para]['outer_radius'], _qc_config.fgt[para]['num_iterations'],
+                                           _qc_config.fgt[para]['num_min_prof'], _qc_config.fgt[para]['min_elev_diff'],
+                                           _qc_config.fgt[para]['min_horizontal_scale'], _qc_config.fgt[para]['max_horizontal_scale'],
+                                           _qc_config.fgt[para]['kth_closest_obs_horizontal_scale'],
+                                           bool(_qc_config.fgt[para]['debug']), bool(_qc_config.fgt[para]['basic']),
+                                           _qc_config.fgt[para]['tpostneg'])
+            nb3 = len(my_dict['fgt']['ID'])
+            if blacklist3:
+                for k in range(len(blacklist3["Station"])):
+                    nb3 += 1
+                    my_dict['fgt']["ID"].append(nb3)
+                    my_dict['fgt']["Station"].append(blacklist3["Station"][k])
+                    my_dict['fgt']["Time"].append(blacklist3["Time"][k])
+                    my_dict['fgt']["Parameter"].append(blacklist3["Parameter"][k])
+            LOG.info('fgt test           %s blacklisted stations: %d', para, len(blacklist3["Station"]) if blacklist3 else 0)
+            executed_tests.append('fgt')
+
+        if 'spt_resistant' in tests_to_do:
+            blacklist4 = _spacial_ct_resistant(stations, lats, lons, elevs, values, para, current_f,
+                                               _qc_config.spt_resistant[para]['background_elab_type'],
+                                               _qc_config.spt_resistant[para]['num_min_outer'],
+                                               _qc_config.spt_resistant[para]['num_max_outer'],
+                                               _qc_config.spt_resistant[para]['inner_radius'],
+                                               _qc_config.spt_resistant[para]['outer_radius'],
+                                               _qc_config.spt_resistant[para]['num_iterations'],
+                                               _qc_config.spt_resistant[para]['num_min_prof'],
+                                               _qc_config.spt_resistant[para]['min_elev_diff'],
+                                               _qc_config.spt_resistant[para]['min_horizontal_scale'],
+                                               _qc_config.spt_resistant[para]['max_horizontal_scale'],
+                                               _qc_config.spt_resistant[para]['kth_closest_obs_horizontal_scale'],
+                                               _qc_config.spt_resistant[para]['vertical_scale'],
+                                               _qc_config.spt_resistant[para]['debug'],
+                                               _qc_config.spt_resistant[para]['basic'])
+            nb4 = len(my_dict['spt_resistant']['ID'])
+            if blacklist4:
+                for k in range(len(blacklist4["Station"])):
+                    nb4 += 1
+                    my_dict['spt_resistant']["ID"].append(nb4)
+                    my_dict['spt_resistant']["Station"].append(blacklist4["Station"][k])
+                    my_dict['spt_resistant']["Time"].append(blacklist4["Time"][k])
+                    my_dict['spt_resistant']["Parameter"].append(blacklist4["Parameter"][k])
+            LOG.info('spt_resistant test %s blacklisted stations: %d', para, len(blacklist4["Station"]) if blacklist4 else 0)
+            executed_tests.append('spt_resistant')
+
+        if 'spt_dual' in tests_to_do:
+            blacklist5 = _spacial_ct_dual(stations, lats, lons, elevs, values, para, current_f,
+                                          _qc_config.sct_dual[para]['num_min_outer'], _qc_config.sct_dual[para]['num_max_outer'],
+                                          _qc_config.sct_dual[para]['inner_radius'], _qc_config.sct_dual[para]['outer_radius'],
+                                          _qc_config.sct_dual[para]['num_iterations'],
+                                          _qc_config.sct_dual[para]['min_horizontal_scale'],
+                                          _qc_config.sct_dual[para]['max_horizontal_scale'],
+                                          _qc_config.sct_dual[para]['kth_closest_obs_horizontal_scale'],
+                                          _qc_config.sct_dual[para]['vertical_scale'],
+                                          bool(_qc_config.sct_dual[para]['debug']),
+                                          _qc_config.sct_dual[para]['condition'],
+                                          float(_qc_config.sct_dual[para]['event_thresholds']),
+                                          float(_qc_config.sct_dual[para]['test_thresholds']))
+            nb5 = len(my_dict['spt_dual']['ID'])
+            if blacklist5:
+                for k in range(len(blacklist5["Station"])):
+                    nb5 += 1
+                    my_dict['spt_dual']["ID"].append(nb5)
+                    my_dict['spt_dual']["Station"].append(blacklist5["Station"][k])
+                    my_dict['spt_dual']["Time"].append(blacklist5["Time"][k])
+                    my_dict['spt_dual']["Parameter"].append(blacklist5["Parameter"][k])
+            LOG.info('spt_dual test      %s blacklisted stations: %d', para, len(blacklist5["Station"]) if blacklist5 else 0)
+            executed_tests.append('spt_dual')
+
+        if 'DWH_flag' in tests_to_do:
+            pi_col = _qc_config.par2pi.get(para, "")
+            if df_pi is not None and pi_col and pi_col in df_pi.columns:
+                pla_series = df_pi[pi_col]
+            else:
+                LOG.warning('DWH_flag: no pi column for %s, skipping', para)
+                pla_series = pd.Series(dtype=float)
+            blacklist6, freq = _DWH_flag(current_f, para, stations, pla_series)
+            nb6 = len(my_dict['DWH_flag']['ID'])
+            if blacklist6:
+                for k in range(len(blacklist6["Station"])):
+                    nb6 += 1
+                    my_dict['DWH_flag']["ID"].append(nb6)
+                    my_dict['DWH_flag']["Station"].append(blacklist6["Station"][k])
+                    my_dict['DWH_flag']["Time"].append(blacklist6["Time"][k])
+                    my_dict['DWH_flag']["Parameter"].append(blacklist6["Parameter"][k])
+            LOG.info('DWH_flag test      %s blacklisted stations: %d', para, len(blacklist6["Station"]) if blacklist6 else 0)
+            executed_tests.append('DWH_flag')
+
+        if 'plateau_test' in tests_to_do:
+            blacklist8 = _plateau_test(df_obs, _qc_config.plateau_test[para]['window'],
+                                       _qc_config.plateau_test[para]['sd'], para, current_f,
+                                       obs_path_in=obs_path_in, gran_minutes=_qc_config.plateau_test[para]['gran'])
+            if blacklist8 is None:
+                LOG.warning('plateau_test skipped — no historical files available')
+            else:
+                executed_tests.append('plateau_test')
+                nb8 = len(my_dict['plateau_test']['ID'])
+                if blacklist8:
+                    for k in range(len(blacklist8["Station"])):
+                        nb8 += 1
+                        my_dict['plateau_test']["ID"].append(nb8)
+                        my_dict['plateau_test']["Station"].append(blacklist8["Station"][k])
+                        my_dict['plateau_test']["Time"].append(blacklist8["Time"][k])
+                        my_dict['plateau_test']["Parameter"].append(blacklist8["Parameter"][k])
+                LOG.info('plateau_test       %s blacklisted stations: %d', para, len(blacklist8["Station"]))
+
+        if 'isolation_check' in tests_to_do:
+            blacklist_iso = _isolation_check(stations, lats, lons, elevs, para, current_f,
+                                             _qc_config.isolation_check[para]['num_min'],
+                                             _qc_config.isolation_check[para]['radius'])
+            nb_iso = len(my_dict['isolation_check']['ID'])
+            if blacklist_iso:
+                for k in range(len(blacklist_iso["Station"])):
+                    nb_iso += 1
+                    my_dict['isolation_check']["ID"].append(nb_iso)
+                    my_dict['isolation_check']["Station"].append(blacklist_iso["Station"][k])
+                    my_dict['isolation_check']["Time"].append(blacklist_iso["Time"][k])
+                    my_dict['isolation_check']["Parameter"].append(blacklist_iso["Parameter"][k])
+            LOG.info('isolation_check    %s blacklisted stations: %d', para,
+                     len(blacklist_iso.get("Station", [])) if blacklist_iso else 0)
+            executed_tests.append('isolation_check')
+
+        return my_dict, freq, executed_tests
 
     @staticmethod
     def _nan_frames(df_qc: pd.DataFrame):

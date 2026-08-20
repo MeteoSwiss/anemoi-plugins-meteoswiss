@@ -1,5 +1,7 @@
 """
-NudgeTowardObservation — v3 (distances in km)
+NudgeTowardObservation — v4 (distances in km; v4 adds per-station reliability-based
+influence radius; v4.1 makes the linear taper per-station too — both ported
+unchanged from notebooks/nudging_analysis_v10.ipynb)
 
 Implements Interpolation of Residuals (IoR) using ned_interp combined with
 barrier-aware effective distances derived from a 1 km-scale DEM.
@@ -31,9 +33,12 @@ Algorithm per variable
 6.  Spread station residuals to the POI grid via ned_interp: IDW
     (1 / d_eff^weight_power) weighted by the topographic similarity from
     step 5, floored at min_topo_w so nearby stations always contribute.
-7.  Multiply the correction by a linear taper that fades to zero at max_dist
-    km from the nearest station.
-8.  Subtract the tapered correction from the background field.
+7.  Multiply each station's own normalised weight by a linear taper that
+    fades to zero at THAT station's own max_dist (v4.1 — see the
+    "Per-station linear taper" note in _nudge_field: each station may have
+    its own reliability-scaled max_dist, so a single taper shared by every
+    station would no longer coincide with each one's own cutoff).
+8.  Subtract the resulting correction from the background field.
 
 Weight computation, symbolically (per POI p, station s)
 ---------------------------------------------------------------------------
@@ -42,14 +47,19 @@ Step 2 — elevation-aware (km):  d_eff[p,s]     = barrier_distances(d_euc)     
 Step 3 — descriptor importance: importance[d]  = |corr_s(residual[s], descriptor_d[s])| / Σ_d |corr_s(...)|
                                  (one weight per descriptor d, computed across stations s; recomputed per variable)
 Step 4 — topo similarity:       w_topo[p,s]    = Σ_d importance[d] * (1 - |sta_topo[d,s] - poi_topo[d,p]|), floored at min_topo_w
-Step 5 — combine:               raw_w[p,s]     = w_topo[p,s] * (1 / d_eff[p,s]^weight_power)   [NaN if d_eff ≥ max_dist]
+Step 5 — combine:               raw_w[p,s]     = w_topo[p,s] * (1 / d_eff[p,s]^weight_power)   [NaN if d_eff ≥ max_dist[s]]
 Step 6 — normalize per POI:     w_ned[p,s]     = raw_w[p,s] / (Σ_s raw_w[p,s] + lim_effective)
-Step 7 — interpolate:           correction_raw[p] = Σ_s w_ned[p,s] * residual[s]
-Step 8 — taper (separate!):     taper[p] = 1 - clip(nearest_station_raw_dist_km[p] / max_dist, 0, 1)
-Step 9 — apply:                 background[p] -= correction_raw[p] * taper[p]
+Step 7 — per-station taper:     taper[p,s]     = 1 - clip(d_euc[p,s] / max_dist[s], 0, 1)   (v4.1; applied
+                                 AFTER Step 6's normalisation — see ned_interp's "v4.1" docstring
+                                 note for why applying it before normalisation would not work)
+Step 8 — interpolate:           correction[p] = Σ_s w_ned[p,s] * taper[p,s] * residual[s]
+Step 9 — apply:                 background[p] -= correction[p]
 
-Note taper (step 8) uses raw d_euc (km), not d_eff — the geographic fade-out is
+Note taper (step 7) uses raw d_euc (km), not d_eff — the geographic fade-out is
 deliberately independent of the barrier logic (see barrier_distances docstring).
+max_dist[s] may be a single global value shared by every station (use_reliability_check=False)
+or per-station (use_reliability_check=True; see "Station reliability" below) — the taper always
+uses whichever max_dist[s] applies to that particular station.
 
 Unit history: earlier versions expressed max_dist/elev_scale/elev_diff_scale in
 projected degrees and m/° respectively (1 projected degree ≈ 111.32 km near
@@ -57,6 +67,56 @@ Swiss latitudes). Default values below are those degree-tuned values converted
 to km/m-per-km, so default behaviour is preserved rather than re-tuned;
 deployment configs must supply km/m-per-km values directly (see the YAML
 config for this filter).
+
+Station reliability (v4) — optional, ported unchanged from
+notebooks/nudging_analysis_v10.ipynb
+---------------------------------------------------------------------------
+Before step 6 (spreading residuals via ned_interp), each station's own
+influence radius may be scaled by a leave-one-out spatial-consistency check
+(NudgeTowardObservation._compute_reliability), independent of any particular
+POI:
+  1. r_hat[s] = ned_interp(residuals of all OTHER stations j != s,
+                            station<->station d_eff(s, j), sta_topo, sta_topo)
+     i.e. the same barrier-aware distance + topographic-similarity weighting
+     used for POIs, evaluated at station s's own location with s excluded
+     from its own neighbour set (self-distance forced to +inf beforehand).
+  2. e[s]      = r_at_st[s] - r_hat[s]         (self-reported minus neighbour consensus)
+  3. u[s]      = (e[s] - median(e)) / (1.4826 * MAD(e))   (robust z-score;
+     median/MAD instead of mean/std for BOTH the centre and the spread, so a
+     few bad stations don't drag either one toward themselves)
+  4. reliability[s] = clip(1 - (u[s]/number_of_std)^2, 0, None)^2   (Tukey
+     biweight: 1 when u[s]=0, smoothly falling to 0 once |u[s]| >= number_of_std)
+     A station with no neighbour at all within max_dist gets e[s]=NaN (step 1's
+     ned_interp returns NaN, not 0, for a fully-masked POI) and is excluded from
+     the median(e)/MAD(e) in step 3 — otherwise a single NaN would silently
+     poison every OTHER station's u/reliability too (np.median is not NaN-safe).
+     Such a station is left at reliability[s]=1 (full radius) since there is no
+     neighbour evidence to judge it against.
+  5. min_dist         = reliability_min_dist_frac * max_dist
+     station_max_dist[s] = min_dist + (max_dist - min_dist) * reliability[s]
+     used in place of the single global max_dist in ned_interp's Step 1 mask,
+     for THIS station's column only (max_dist there may be a per-station array;
+     ned_interp needs no change to support this — xarray broadcasts a (sta,)
+     array against the (poi, sta) distance matrix automatically).
+
+reliability[s]=1 (fully consistent with its neighbours) keeps station s's full
+max_dist reach; reliability[s]=0 (>= number_of_std robust sigmas off) shrinks
+it down to the configurable floor (reliability_min_dist_frac * max_dist),
+never all the way to zero — every station keeps at least some very local
+influence. Within whatever radius a station keeps, its weight is otherwise
+undiminished (same IDW/topo formula as any other station); it is excluded
+entirely beyond that radius. use_reliability_check=False reproduces the pre-v4
+(v3) behaviour exactly (a single global max_dist shared by every station).
+
+The leave-one-out neighbour search in step 1, and the domain buffer computed
+in _nudge_field, always use the GLOBAL max_dist — never a per-station radius
+— since reliability must be computed before any per-station radius can be
+derived from it, and the domain buffer only needs to be large enough to
+contain every station's largest possible reach. The final linear taper, by
+contrast, is reliability-DEPENDENT as of v4.1 (see "Per-station linear
+taper" in _nudge_field): each station's own taper fades out at its own
+(possibly reliability-shrunk) max_dist, not a single radius shared by every
+station.
 """
 
 import logging
@@ -156,6 +216,7 @@ def ned_interp(
     weight_power: float = 1,
     min_topo_w: float = 0.2,
     lim_effective: float = 0,
+    taper: Optional[xr.DataArray] = None,
 ) -> xr.Dataset:
     """Spread station residuals to POIs via IDW with optional topographic similarity.
 
@@ -180,6 +241,20 @@ def ned_interp(
     6.  Normalise final weights so they sum to 1 per POI. lim_effective > 0 adds a
         virtual zero-residual station to the denominator, shrinking corrections in
         data-sparse regions.
+    7.  Multiply by `taper` (if given) — see the v4.1 note below.
+
+    v4.1: `taper`, if given, is a per-(poi, sta) DataArray in [0, 1] (e.g. a linear
+    fade based on each station's own distance and its own max_dist — see
+    NudgeTowardObservation._nudge_field's "Per-station linear taper" section)
+    multiplied into the weights AFTER Step 6's normalisation, not merged into the
+    raw weights beforehand. This ordering matters: if a POI has only one
+    contributing station, that station's normalised weight is always exactly 1
+    regardless of its raw (pre-normalisation) weight's magnitude — so a taper
+    applied before Step 6 would be exactly cancelled out by the division and have
+    no effect at all in that (common, e.g. an isolated low-reliability station)
+    case. Applying it after Step 6 avoids this: it independently dampens each
+    station's own contribution without disturbing the relative blend between
+    multiple contributing stations at the same POI.
     """
     # Step 1 — exclude stations beyond the cutoff radius.
     # ned_sta_poi has dims (poi, sta). Where the condition is False (distance ≥ max_dist),
@@ -234,6 +309,11 @@ def ned_interp(
     # Adding lim_effective to the denominator introduces a virtual zero-residual station,
     # which shrinks the total correction in regions with few real stations.
     w_ned /= w_ned.sum("sta") + lim_effective
+
+    # Step 7 (v4.1) — per-(poi, sta) taper, applied AFTER normalisation. See the
+    # docstring note above for why applying it before Step 6 would not work.
+    if taper is not None:
+        w_ned = w_ned * taper
 
     # Weighted sum of residuals over stations → Dataset{var: DataArray(poi,)}.
     # min_count=1: POIs whose every station is masked (NaN weight) return NaN instead of 0.
@@ -449,9 +529,15 @@ class NudgeTowardObservation(Filter):
         IDW distance-decay exponent. Higher values concentrate weight on the
         nearest station (notebook: ``WEIGHT_POWER = 4``).
     max_dist : float
-        Station influence radius in km; both the barrier-distance cutoff and
-        the linear taper radius (notebook v8: ``MAX_DIST_KM``; default here is
-        the historical degree-tuned value (0.35°) converted to km, ≈ 38.96).
+        Station influence radius in km; the barrier-distance cutoff, the base
+        for the domain buffer, and (when *use_reliability_check* is ``False``)
+        the linear taper radius shared by every station. When
+        *use_reliability_check* is ``True``, each station's own taper radius
+        is instead its own reliability-scaled *max_dist* (see "Station
+        reliability" and "Per-station linear taper" below) — this parameter
+        remains the upper bound every station's radius scales down from
+        (notebook v8: ``MAX_DIST_KM``; default here is the historical
+        degree-tuned value (0.35°) converted to km, ≈ 38.96).
     n_barrier_samples : int
         DEM sample points along the straight-line path interior (endpoints
         excluded) (notebook: ``N_BARRIER_SAMPLES = 35``).
@@ -476,6 +562,36 @@ class NudgeTowardObservation(Filter):
     lim_effective : float
         Virtual zero-residual station weight added to the normalisation
         denominator; 0 = pure IDW (notebook: ``LIM_EFFECTIVE = 0.0``).
+    use_reliability_check : bool
+        If ``True``, scale each station's own influence radius by a
+        leave-one-out spatial-consistency check (see module docstring,
+        "Station reliability"), so non-representative stations (bad sensors,
+        siting issues, local micro-effects the model can't resolve) reach a
+        smaller area. Defaults to ``False``, reproducing the pre-v4 (v3)
+        behaviour exactly (a single global *max_dist* shared by every
+        station) — existing deployment configs are unaffected unless they
+        explicitly opt in (notebook: ``USE_RELIABILITY_CHECK``, which
+        defaults to ``True`` there since the notebook is the exploratory
+        context this was validated in).
+    number_of_std : float
+        Tukey biweight rejection threshold, in robust (median/MAD-based)
+        standard deviations: a station whose leave-one-out residual
+        discrepancy is at or beyond this many robust sigmas from the
+        network's typical discrepancy gets reliability=0 (its influence
+        radius shrinks to the configured floor). Only used when
+        *use_reliability_check* is ``True`` (notebook: ``RELIABILITY_REJECT_C``,
+        default 4.0).
+    reliability_min_dist_frac : float
+        Minimum fraction of *max_dist* every station keeps as its influence
+        radius, even at reliability=0 — the radius never shrinks all the way
+        to zero, so every station retains at least some very local influence.
+        Must be in [0, 1]. Only used when *use_reliability_check* is ``True``
+        (notebook: ``RELIABILITY_MIN_DIST_FRAC``, default 0.1, i.e. 10%).
+    reliability_eps : float
+        Numerical floor on the robust (MAD-based) scale estimate used by the
+        reliability check, avoiding division by zero when stations agree with
+        their neighbours almost exactly (notebook: ``RELIABILITY_EPS``,
+        default 1e-6). Only used when *use_reliability_check* is ``True``.
     lapse_rate : float
         Standard-atmosphere lapse rate [K/m] used to reduce station observations
         to the model's elevation before computing the residual, so the residual
@@ -508,6 +624,27 @@ class NudgeTowardObservation(Filter):
     exclude_stations : list of str, optional
         Station nat_abbr identifiers to unconditionally exclude.
         Mutually exclusive with *holdout_fraction*.
+    plot_dir : str, optional
+        If given, save a 5-panel reliability diagnostic PNG (station residual
+        — holdin AND holdout stations, pre-nudging; station reliability
+        — holdin only, since reliability is only defined for stations that
+        participated in the nudging; gridded correction; pre-nudging station
+        RMSE; post-nudging station RMSE, the last two split by holdin/holdout
+        — the station-residual, reliability, and gridded-correction panels
+        are the same figure produced interactively in
+        notebooks/nudging_analysis_v10.ipynb; the two RMSE panels are
+        production-only) for every nudged variable at every call, one file
+        per (variable, ref_time):
+        ``{plot_dir}/reliability_diag_{shortname}_{ref_time:%Y%m%d%H%M}.png``.
+        Only has an effect when *use_reliability_check* is ``True`` — there is
+        no reliability to plot otherwise. Defaults to ``None`` (no plotting).
+        Plotting failures (including matplotlib/cartopy not being installed)
+        are logged and skipped; they never affect the nudging correction
+        itself, which is computed and returned identically either way.
+    plot_extent : list of float, optional
+        ``[lon_min, lon_max, lat_min, lat_max]`` map extent for the diagnostic
+        plot. Defaults to ``[5.8, 10.8, 45.7, 47.9]`` (Switzerland). Only used
+        when *plot_dir* is set.
     power : float, optional
         Deprecated alias for *weight_power*. Will be removed in a future version.
     k : int, optional
@@ -531,6 +668,12 @@ class NudgeTowardObservation(Filter):
         elev_diff_scale: float = 35.932,
         min_topo_w: float = 0.2,
         lim_effective: float = 0.0,
+        use_reliability_check: bool = False,
+        number_of_std: float = 4.0,
+        reliability_min_dist_frac: float = 0.1,
+        reliability_eps: float = 1e-6,
+        plot_dir: Optional[str] = None,
+        plot_extent: Optional[list] = None,
         lapse_rate: float = _DEFAULT_LAPSE_RATE,
         lapse_rate_vars: Optional[list] = None,
         topo_vars: Optional[list] = None,
@@ -553,6 +696,12 @@ class NudgeTowardObservation(Filter):
             raise ValueError(
                 f"holdout_fraction must be in [0, 1], got {holdout_fraction!r}"
             )
+        if not (0.0 <= reliability_min_dist_frac <= 1.0):
+            raise ValueError(
+                f"reliability_min_dist_frac must be in [0, 1], got {reliability_min_dist_frac!r}"
+            )
+        if number_of_std <= 0:
+            raise ValueError(f"number_of_std must be > 0, got {number_of_std!r}")
 
         if power is not None:
             warnings.warn(
@@ -583,6 +732,12 @@ class NudgeTowardObservation(Filter):
         self.elev_diff_scale = elev_diff_scale
         self.min_topo_w = min_topo_w
         self.lim_effective = lim_effective
+        self.use_reliability_check = use_reliability_check
+        self.number_of_std = number_of_std
+        self.reliability_min_dist_frac = reliability_min_dist_frac
+        self.reliability_eps = reliability_eps
+        self.plot_dir = Path(plot_dir) if plot_dir is not None else None
+        self.plot_extent = list(plot_extent) if plot_extent is not None else [5.8, 10.8, 45.7, 47.9]
         self.lapse_rate = lapse_rate
         self.lapse_rate_vars = (
             frozenset(lapse_rate_vars) if lapse_rate_vars is not None else _DEFAULT_LAPSE_RATE_VARS
@@ -593,6 +748,19 @@ class NudgeTowardObservation(Filter):
         self.holdout_seed = holdout_seed
         self.exclude_stations = list(exclude_stations) if exclude_stations is not None else None
         self._nudging_done = False
+        # param -> dict of diagnostic arrays from the last _compute_reliability() call,
+        # consumed by _plot_reliability_diagnostic(). Mirrors RELIABILITY_DIAG in
+        # notebooks/nudging_analysis_v10.ipynb.
+        self._reliability_diag = {}
+
+        if self.plot_dir is not None:
+            self.plot_dir.mkdir(parents=True, exist_ok=True)
+            if not self.use_reliability_check:
+                LOG.warning(
+                    "plot_dir=%s is set but use_reliability_check=False — there is no "
+                    "reliability to plot, so no diagnostic plots will be produced.",
+                    self.plot_dir,
+                )
 
         if nudge_variables is not None:
             unknown = set(nudge_variables) - PARAM_MAP.keys()
@@ -611,10 +779,11 @@ class NudgeTowardObservation(Filter):
         self._load_dem()
 
         LOG.info(
-            "NudgeTowardObservation v3 initialised: variables=%s, max_dist=%.2f km, "
+            "NudgeTowardObservation v4 initialised: variables=%s, max_dist=%.2f km, "
             "weight_power=%.1f, elev_scale=%.2f m/km, elev_diff_scale=%.2f m/km, "
             "barrier_width_m=%.0f, n_barrier_samples=%d, n_barrier_width_samples=%d, "
-            "lapse_rate=%.5f K/m (vars=%s)",
+            "lapse_rate=%.5f K/m (vars=%s), use_reliability_check=%s, number_of_std=%.2f, "
+            "reliability_min_dist_frac=%.3f (min radius = %.2f km)",
             list(self.param_map.keys()),
             self.max_dist,
             self.weight_power,
@@ -625,6 +794,10 @@ class NudgeTowardObservation(Filter):
             self.n_barrier_width_samples,
             self.lapse_rate,
             sorted(self.lapse_rate_vars),
+            self.use_reliability_check,
+            self.number_of_std,
+            self.reliability_min_dist_frac,
+            self.reliability_min_dist_frac * self.max_dist,
         )
         super().__init__()
 
@@ -727,10 +900,14 @@ class NudgeTowardObservation(Filter):
         )
         LOG.info("Nudging initial condition at %s", ref_time)
 
-        stations = self._load_stations()
-        LOG.info("Stations loaded: %d", len(stations))
-        stations = self._apply_holdout(stations)
+        all_stations = self._load_stations()
+        LOG.info("Stations loaded: %d", len(all_stations))
+        stations = self._apply_holdout(all_stations)
         LOG.info("Stations after holdout: %d", len(stations))
+        # Stations removed by _apply_holdout, kept around only for the optional
+        # post-nudging error panel (_plot_reliability_diagnostic) — they never
+        # participate in the nudging correction itself.
+        held_out_stations = all_stations.drop(index=stations.index)
 
         nudged = {}
         for field in data.sel(shortName=list(self.param_map.keys())):
@@ -745,7 +922,9 @@ class NudgeTowardObservation(Filter):
                 LOG.warning("No observations for '%s', skipping", shortname)
                 continue
 
-            corrected = self._nudge_field(field, stations, shortname, col, offset)
+            corrected = self._nudge_field(
+                field, stations, shortname, col, offset, ref_time, held_out_stations
+            )
             nudged[shortname] = new_field_from_numpy(
                 corrected,
                 template=field,
@@ -780,8 +959,16 @@ class NudgeTowardObservation(Filter):
         shortname: str,
         col: str,
         offset: float,
+        ref_time=None,
+        held_out_stations: Optional[pd.DataFrame] = None,
     ) -> np.ndarray:
-        """Apply v3 IoR nudging to a single field; return the corrected 1-D array."""
+        """Apply v3 IoR nudging to a single field; return the corrected 1-D array.
+
+        ``ref_time`` and ``held_out_stations`` are only used for the optional
+        reliability diagnostic plot (see *plot_dir*); neither plays any role
+        in the nudging computation itself and both may be omitted when not
+        plotting.
+        """
         # Background field values on the full ICON grid, shape (n_cells,).
         B_flat = np.asarray(field.values, dtype=float).ravel()
 
@@ -927,6 +1114,48 @@ class NudgeTowardObservation(Filter):
             .assign_coords({"sta": sta_ids})
         )
 
+        # ── Station reliability → per-station influence radius (v4) ────────
+        # A fully reliable station (reliability=1) keeps the full self.max_dist
+        # reach; a station near reliability=0 shrinks down to a configurable
+        # floor (self.reliability_min_dist_frac * self.max_dist) rather than
+        # all the way to zero — every station keeps at least some very local
+        # influence. Reliability scales the radius LINEARLY between that floor
+        # and the full self.max_dist. Within whatever radius a station keeps,
+        # its weight is otherwise undiminished (same IDW/topo formula as any
+        # other station); it is excluded entirely beyond that radius. See the
+        # module docstring ("Station reliability") for the full algorithm,
+        # ported unchanged from notebooks/nudging_analysis_v10.ipynb.
+        # use_reliability_check=False reproduces the pre-v4 (v3) behaviour
+        # exactly (a single global max_dist shared by every station).
+        if self.use_reliability_check:
+            reliability = self._compute_reliability(
+                shortname, sta_ids, st_lon, st_lat, st_elev, sta_xy, r_at_st, sta_topo,
+            )
+            min_dist = self.reliability_min_dist_frac * self.max_dist
+            station_max_dist = min_dist + (self.max_dist - min_dist) * reliability
+        else:
+            station_max_dist = self.max_dist
+
+        # ── Per-station linear taper (v4.1) ─────────────────────────────────
+        # v3/early-v4 used ONE taper per POI (distance to the nearest station
+        # overall, fading out at the single global max_dist) — that coincided
+        # exactly with ned_interp's hard cutoff back when every station shared
+        # the same max_dist. Once each station got its OWN (possibly much
+        # smaller) max_dist above (station reliability), a single global-radius
+        # taper no longer coincides with THAT station's own cutoff: its
+        # contribution jumped straight from ~full strength to exactly zero right
+        # at its own (small) radius — a sharp-edged "blob" instead of a smooth
+        # fade. Fix: one taper factor per (POI, station) pair, using RAW
+        # Euclidean distance (d_euc_mat — not barrier-inflated d_eff, same
+        # "independent of barrier logic" principle as the original taper) and
+        # THAT station's own station_max_dist. Passed into ned_interp, which
+        # applies it AFTER weight normalisation (see ned_interp's "v4.1"
+        # docstring note for why applying it before normalisation would not work).
+        d_euc_da = xr.DataArray(
+            d_euc_mat, dims=["poi", "sta"], coords={"poi": dom_idx, "sta": sta_ids}
+        )
+        pair_taper = (1.0 - (d_euc_da / station_max_dist).clip(min=0.0, max=1.0)).astype(np.float32)
+
         # ── ned_interp ─────────────────────────────────────────────────────
         # Spreads residuals to POIs using IDW weighted by topographic similarity.
         # The max_dist cutoff here acts on barrier-aware distances, so a POI that is
@@ -934,21 +1163,15 @@ class NudgeTowardObservation(Filter):
         result = ned_interp(
             sta_res, ned_sta_poi,
             sta_topo=sta_topo, poi_topo=poi_topo,
-            max_dist=self.max_dist,
+            max_dist=station_max_dist,
             weight_power=self.weight_power,
             min_topo_w=self.min_topo_w,
             lim_effective=self.lim_effective,
+            taper=pair_taper,
         )
 
-        # ── Linear taper ───────────────────────────────────────────────────
-        # Fade the correction linearly from 1 (at the nearest station) to 0 (at max_dist).
-        # The taper uses raw Euclidean distance — not barrier-inflated distance — because
-        # we want the geographic fade-out to be independent of the barrier logic.
-        dmin_poi, _ = cKDTree(sta_xy).query(poi_xy, k=1)
-        taper = (1.0 - np.clip(dmin_poi / self.max_dist, 0.0, 1.0)).astype(np.float32)
-
-        # POIs with no station within max_dist return NaN from ned_interp → no correction.
-        correction = np.nan_to_num(result[shortname].values, nan=0.0) * taper
+        # POIs with no station within their radius return NaN from ned_interp → no correction.
+        correction = np.nan_to_num(result[shortname].values, nan=0.0)
 
         # ── Apply correction ───────────────────────────────────────────────
         # corrected ≈ background − (background − obs) = obs near stations.
@@ -956,11 +1179,398 @@ class NudgeTowardObservation(Filter):
         corrected_flat = B_flat.copy()
         corrected_flat[dom_idx] -= correction
 
-        LOG.info(
-            "Nudged '%s': %d stations, %d POIs, max |correction| = %.4f",
-            shortname, len(st_lat), n_poi, float(np.abs(correction).max()),
-        )
+        # ── Pre/post-nudging station error (holdin + holdout), for the
+        # diagnostic plot's station-residual and RMSE panels only — never
+        # feeds back into the correction above. Holdin stations (gi/
+        # st_obs_lr/st_lat/st_lon already computed above) validate the fit at
+        # stations that DID influence the correction; holdout stations
+        # (excluded by _apply_holdout, passed in separately since `stations`
+        # no longer contains them) give an independent check at locations the
+        # correction never saw.
+        if self.plot_dir is not None and self.use_reliability_check:
+            err_lat = [st_lat]
+            err_lon = [st_lon]
+            err_val_pre = [B_flat[gi] - st_obs_lr]
+            err_val_post = [corrected_flat[gi] - st_obs_lr]
+            err_is_holdout = [np.zeros(len(st_lat), dtype=bool)]
+
+            if held_out_stations is not None and len(held_out_stations):
+                ho_valid = held_out_stations[col].notna() if col in held_out_stations.columns else pd.Series(dtype=bool)
+                if ho_valid.any():
+                    ho_lat = held_out_stations.loc[ho_valid, "latitude"].to_numpy()
+                    ho_lon = held_out_stations.loc[ho_valid, "longitude"].to_numpy()
+                    ho_obs = held_out_stations.loc[ho_valid, col].to_numpy() + offset
+
+                    if "elevation" in held_out_stations.columns:
+                        ho_elev = held_out_stations.loc[ho_valid, "elevation"].to_numpy(dtype=float)
+                        nan_mask = np.isnan(ho_elev)
+                        if nan_mask.any():
+                            hx, hy = self._wgs84_to_lv95.transform(ho_lon[nan_mask], ho_lat[nan_mask])
+                            ho_elev[nan_mask] = self._dem_rgi(np.c_[hy, hx])
+                    else:
+                        hx, hy = self._wgs84_to_lv95.transform(ho_lon, ho_lat)
+                        ho_elev = self._dem_rgi(np.c_[hy, hx])
+
+                    ho_x, ho_y = self._wgs84_to_lv95.transform(ho_lon, ho_lat)
+                    ho_xy = np.c_[ho_x, ho_y] / 1000.0
+                    _, ho_gi = cKDTree(grid_xy).query(ho_xy, k=1)
+
+                    ho_obs_lr = ho_obs
+                    if shortname in self.lapse_rate_vars:
+                        elev_model_at_ho = self._ds_topo["ICON_OROG"].values[ho_gi]
+                        ho_obs_lr = ho_obs - self.lapse_rate * (elev_model_at_ho - ho_elev)
+
+                    err_lat.append(ho_lat)
+                    err_lon.append(ho_lon)
+                    err_val_pre.append(B_flat[ho_gi] - ho_obs_lr)
+                    err_val_post.append(corrected_flat[ho_gi] - ho_obs_lr)
+                    err_is_holdout.append(np.ones(len(ho_lat), dtype=bool))
+
+            # Squared-error rooted per station: a single ref_time gives a single
+            # sample per station, so this is algebraically just |error| — kept as
+            # an explicit RMS formula in case this is ever extended to aggregate
+            # multiple ref_times/variables per station.
+            residual_pre_nudge = np.concatenate(err_val_pre)
+            self._reliability_diag.setdefault(shortname, {}).update({
+                "err_latitude": np.concatenate(err_lat),
+                "err_longitude": np.concatenate(err_lon),
+                # Signed pre-nudging residual (background − obs) at every station,
+                # holdin and holdout alike — feeds the "all stations" residual panel.
+                "residual_pre_nudge": residual_pre_nudge,
+                "pre_nudge_rmse": np.sqrt(residual_pre_nudge ** 2),
+                "post_nudge_rmse": np.sqrt(np.concatenate(err_val_post) ** 2),
+                "err_is_holdout": np.concatenate(err_is_holdout),
+            })
+
+        if self.use_reliability_check:
+            n_shrunk = int((station_max_dist < self.max_dist).sum())
+            LOG.info(
+                "Nudged '%s': %d stations, %d POIs, max |correction| = %.4f "
+                "(reliability check: number_of_std=%.2f, %d/%d station(s) with a shrunk radius)",
+                shortname, len(st_lat), n_poi, float(np.abs(correction).max()),
+                self.number_of_std, n_shrunk, len(st_lat),
+            )
+        else:
+            LOG.info(
+                "Nudged '%s': %d stations, %d POIs, max |correction| = %.4f "
+                "(reliability check: disabled)",
+                shortname, len(st_lat), n_poi, float(np.abs(correction).max()),
+            )
+
+        # Diagnostic plot (opt-in, never affects the correction above — see
+        # _plot_reliability_diagnostic's own try/except).
+        if self.plot_dir is not None and self.use_reliability_check:
+            self._plot_reliability_diagnostic(shortname, ref_time, B_flat, corrected_flat)
+
         return corrected_flat
+
+    def _compute_reliability(
+        self,
+        shortname: str,
+        sta_ids: list,
+        st_lon: np.ndarray,
+        st_lat: np.ndarray,
+        st_elev: np.ndarray,
+        sta_xy: np.ndarray,
+        r_at_st: np.ndarray,
+        sta_topo: xr.Dataset,
+    ) -> xr.DataArray:
+        """Leave-one-out spatial-consistency check (v4; ported unchanged from
+        notebooks/nudging_analysis_v10.ipynb — see module docstring, "Station
+        reliability", for the full algorithm description).
+
+        Down-weights (via a shrunk influence radius, applied by the caller)
+        stations whose residual disagrees with what their own neighbours would
+        predict for them, independent of distance/topo similarity to any
+        particular POI.
+
+        Reuses ``st_lon``/``st_lat``/``st_elev``/``sta_xy``/``r_at_st``/``sta_topo``
+        already computed by ``_nudge_field`` for the exact same station set,
+        rather than recomputing them — a pure implementation-level
+        deduplication (avoids repeating the elevation-fallback DEM sampling and
+        lapse-rate correction a second time); it does not change any numerical
+        result, since these arrays are deterministic given the same station
+        DataFrame and field.
+
+        Returns an xr.DataArray (dims=["sta"]) of reliability in [0, 1],
+        aligned with ``sta_ids``.
+        """
+        n_sta = len(sta_ids)
+
+        sta_res = xr.Dataset(
+            {shortname: xr.DataArray(
+                r_at_st.astype(np.float32), dims=["sta"], coords={"sta": sta_ids}
+            )}
+        )
+
+        # ── Station <-> station barrier-aware distances ────────────────────
+        # Same barrier_distances() used for POIs, with the station list
+        # standing in as its own "POI" set. The diagonal (station vs. itself)
+        # is forced to +inf *before* calling barrier_distances so its own
+        # close_mask excludes it outright — never processed, stays +inf —
+        # which ned_interp's max_dist cutoff then masks out, guaranteeing
+        # station s can never be its own neighbour. Always uses the GLOBAL
+        # self.max_dist (not any per-station radius) — reliability itself has
+        # to be computed before any per-station radius can be derived from it.
+        d_euc_ss = np.sqrt(
+            ((sta_xy[:, None, :] - sta_xy[None, :, :]) ** 2).sum(axis=-1)
+        ).astype(np.float32)
+        np.fill_diagonal(d_euc_ss, np.inf)
+
+        d_eff_ss = barrier_distances(
+            st_lon, st_lat,   # "POI" side = the stations themselves
+            st_lon, st_lat,   # "station" side = the stations themselves
+            d_euc_ss, self.max_dist,
+            st_elev,
+            self._dem_rgi, self._wgs84_to_lv95,
+            n_samples=self.n_barrier_samples,
+            elev_scale=self.elev_scale,
+            elev_diff_scale=self.elev_diff_scale,
+            n_barrier_width_samples=self.n_barrier_width_samples,
+            barrier_width_m=self.barrier_width_m,
+        )
+
+        ned_ss = xr.DataArray(
+            d_eff_ss, dims=["poi", "sta"], coords={"poi": sta_ids, "sta": sta_ids},
+        )
+
+        # Stations stand in as both "sta" and "poi" for the leave-one-out prediction.
+        poi_topo = sta_topo.rename({"sta": "poi"}).assign_coords({"poi": sta_ids})
+
+        # ── Leave-one-out neighbour prediction ──────────────────────────────
+        # No reliability weighting here: the check itself must trust all OTHER
+        # stations equally on this first pass, otherwise a bad station could
+        # suppress the very signal that would flag it.
+        r_hat = ned_interp(
+            sta_res, ned_ss,
+            sta_topo=sta_topo, poi_topo=poi_topo,
+            max_dist=self.max_dist, weight_power=self.weight_power,
+            min_topo_w=self.min_topo_w, lim_effective=self.lim_effective,
+        )
+        r_hat_at_st = r_hat[shortname].rename({"poi": "sta"}).sel(sta=sta_ids).values
+
+        # ── Discrepancy → robust z-score → Tukey biweight reliability ──────
+        # Robust z-score: recentre by median(e), not just rescale by MAD(e) —
+        # otherwise a systematic offset in e (e.g. leave-one-out spatial
+        # smoothing tends to under-predict local extremes even for perfectly
+        # good stations) would shift every station's u by the same amount
+        # instead of being absorbed into the "typical" reference point.
+        e = r_at_st - r_hat_at_st
+
+        # A station with no OTHER station within max_dist gets r_hat=NaN from
+        # ned_interp's leave-one-out call (its min_count=1 makes a fully-masked
+        # POI return NaN rather than 0) — so e is NaN for that station too. With
+        # no neighbours to compare it against, there's no basis to judge it, and
+        # np.median/np.abs(...).median() are NOT NaN-safe: a single NaN would
+        # otherwise silently turn med_e/mad/scale into NaN, which would then
+        # cascade into every OTHER station's u and reliability as well —
+        # collapsing the whole station set to reliability=NaN → station_max_dist
+        # =NaN → ned_interp masks every pair against it (`dist < NaN` is always
+        # False) → zero correction everywhere. Guard against this explicitly:
+        # exclude non-finite e from the median/MAD/scale computation, and leave
+        # an isolated station's own reliability at 1.0 (full trust, full
+        # radius) rather than penalising it for something it can't be judged on.
+        finite = np.isfinite(e)
+        n_isolated = int((~finite).sum())
+        if n_isolated:
+            LOG.warning(
+                "compute_reliability('%s'): %d/%d station(s) have no neighbour "
+                "within max_dist=%.2f km for the leave-one-out check (e=NaN); "
+                "left at reliability=1.0, excluded from the robust median/MAD "
+                "so they don't corrupt every other station's reliability.",
+                shortname, n_isolated, n_sta, self.max_dist,
+            )
+        if finite.any():
+            med_e = float(np.median(e[finite]))
+            mad   = float(np.median(np.abs(e[finite] - med_e)))
+        else:
+            med_e, mad = 0.0, 0.0
+        scale = max(1.4826 * mad, self.reliability_eps)
+
+        u = np.zeros(n_sta, dtype=np.float64)
+        u[finite] = (e[finite] - med_e) / scale
+        reliability_vals = np.ones(n_sta, dtype=np.float64)
+        reliability_vals[finite] = np.clip(1.0 - (u[finite] / self.number_of_std) ** 2, 0.0, None) ** 2
+
+        n_flagged = int((reliability_vals < 0.5).sum())
+        LOG.debug(
+            "compute_reliability('%s'): %d stations, median(e)=%.4f, MAD(e)=%.4f, "
+            "scale=%.4f, %d station(s) with reliability < 0.5",
+            shortname, n_sta, med_e, mad, scale, n_flagged,
+        )
+
+        # Stashed for _plot_reliability_diagnostic(); mirrors RELIABILITY_DIAG in
+        # notebooks/nudging_analysis_v10.ipynb. Purely a side channel for the
+        # optional plot — does not feed back into the reliability computation.
+        self._reliability_diag[shortname] = {
+            "sta_ids": sta_ids, "r_at_st": r_at_st, "r_hat": r_hat_at_st,
+            "e": e, "u": u, "reliability": reliability_vals,
+            "latitude": st_lat, "longitude": st_lon,
+        }
+
+        return xr.DataArray(
+            reliability_vals.astype(np.float32), dims=["sta"], coords={"sta": sta_ids},
+        )
+
+    def _plot_reliability_diagnostic(self, shortname, ref_time, background, corrected) -> None:
+        """Save the 5-panel reliability diagnostic PNG for one variable/ref_time:
+        station residual (holdin AND holdout stations, pre-nudging), station
+        reliability (holdin only — reliability is only defined for stations
+        that participated in the nudging), gridded correction (these three
+        match notebooks/nudging_analysis_v10.ipynb's diagnostic cell), and two
+        production-only panels of pre- and post-nudging station RMSE (holdin
+        circles vs. holdout triangles — see the "Pre/post-nudging station
+        error" block in ``_nudge_field``).
+
+        Opt-in via *plot_dir*; a no-op if it is ``None`` or if
+        ``_compute_reliability`` wasn't called for ``shortname`` this call
+        (i.e. *use_reliability_check* is ``False``). Never raises: any failure
+        (missing matplotlib/cartopy, bad data, ...) is logged and swallowed so
+        it can never affect the nudging correction, which has already been
+        computed and returned by the time this runs.
+        """
+        if shortname not in self._reliability_diag:
+            return
+        try:
+            import matplotlib
+            matplotlib.use("Agg")  # non-interactive backend — safe in headless/batch jobs
+            import matplotlib.pyplot as plt
+            import cartopy.crs as ccrs
+            import cartopy.feature as cfeature
+            from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+            diag = self._reliability_diag[shortname]
+            flagged = diag["reliability"] < 0.5
+            is_ho = diag["err_is_holdout"]
+            station_res = diag["residual_pre_nudge"]  # holdin + holdout, pre-nudging
+
+            extent = self.plot_extent
+            ch_mask = (
+                (self._lon_icon >= extent[0]) & (self._lon_icon <= extent[1]) &
+                (self._lat_icon >= extent[2]) & (self._lat_icon <= extent[3])
+            )
+            residual_full = background - corrected  # the correction actually applied
+            lo_ch, la_ch = self._lon_icon[ch_mask], self._lat_icon[ch_mask]
+            res_ch = residual_full[ch_mask]
+
+            # Shared colour scale for the two residual panels, so they're directly
+            # comparable — same convention as the notebook's diagnostic cell.
+            res_abs = max(float(np.abs(station_res).max()), float(np.abs(res_ch).max()))
+            vmin, vmax = -res_abs, res_abs
+
+            # Shared colour scale for the two RMSE panels, so pre- and post-nudging
+            # station error are directly comparable.
+            err_vmax = max(
+                float(diag["pre_nudge_rmse"].max()) if len(diag["pre_nudge_rmse"]) else 1.0,
+                float(diag["post_nudge_rmse"].max()) if len(diag["post_nudge_rmse"]) else 1.0,
+            )
+
+            def _base(ax):
+                ax.set_extent(extent, crs=ccrs.PlateCarree())
+                ax.add_feature(cfeature.BORDERS, linewidth=0.8, edgecolor="black")
+                ax.add_feature(cfeature.COASTLINE, linewidth=0.8)
+                ax.add_feature(cfeature.LAND, facecolor="whitesmoke", zorder=0)
+                ax.add_feature(cfeature.LAKES, facecolor="lightblue", alpha=0.5)
+
+            def _colorbar(ax, mappable, label):
+                # Colorbar exactly as tall as `ax` — plt.colorbar's fraction/pad
+                # doesn't track a cartopy GeoAxes' actual rendered aspect
+                # (distorted by set_extent).
+                cax = make_axes_locatable(ax).append_axes(
+                    "right", size="5%", pad=0.3, axes_class=plt.Axes
+                )
+                return fig.colorbar(mappable, cax=cax, label=label)
+
+            def _holdin_holdout_scatter(ax, lon, lat, values, s=45, **kwargs):
+                # Shared holdin (circle) / holdout (triangle, 2x the marker size)
+                # scatter used by the station-residual and RMSE panels.
+                sc = ax.scatter(
+                    lon[~is_ho], lat[~is_ho], c=values[~is_ho], s=s,
+                    marker="o", edgecolors="black", linewidths=0.4,
+                    transform=ccrs.PlateCarree(), zorder=5, label="holdin", **kwargs,
+                )
+                if is_ho.any():
+                    ax.scatter(
+                        lon[is_ho], lat[is_ho], c=values[is_ho], s=s * 2,
+                        marker="^", edgecolors="black", linewidths=0.6,
+                        transform=ccrs.PlateCarree(), zorder=6, label="holdout", **kwargs,
+                    )
+                    ax.legend(loc="lower left", fontsize=8)
+                return sc
+
+            fig = plt.figure(figsize=(26, 9))
+
+            ax0 = fig.add_subplot(2, 3, 1, projection=ccrs.PlateCarree())
+            _base(ax0)
+            sc0 = _holdin_holdout_scatter(
+                ax0, diag["err_longitude"], diag["err_latitude"], station_res,
+                cmap="RdBu_r", vmin=vmin, vmax=vmax,
+            )
+            _colorbar(ax0, sc0, "residual (background − obs)")
+            ax0.set_title(f"Station residuals (holdin + holdout) — {shortname} ({ref_time})")
+
+            ax1 = fig.add_subplot(2, 3, 2, projection=ccrs.PlateCarree())
+            _base(ax1)
+            sc1 = ax1.scatter(
+                diag["longitude"][~flagged], diag["latitude"][~flagged],
+                c=diag["reliability"][~flagged], cmap="RdYlGn", vmin=0, vmax=1, s=45,
+                marker="o", edgecolors="black", linewidths=0.4,
+                transform=ccrs.PlateCarree(), zorder=5, label="reliability ≥ 0.5",
+            )
+            if flagged.any():
+                ax1.scatter(
+                    diag["longitude"][flagged], diag["latitude"][flagged],
+                    c=diag["reliability"][flagged], cmap="RdYlGn", vmin=0, vmax=1, s=90,
+                    marker="X", edgecolors="black", linewidths=0.6,
+                    transform=ccrs.PlateCarree(), zorder=6, label="flagged (reliability < 0.5)",
+                )
+                ax1.legend(loc="lower left", fontsize=8)
+            _colorbar(ax1, sc1, "reliability")
+            ax1.set_title(f"Station reliability (holdin only) — {shortname} ({ref_time})")
+
+            ax2 = fig.add_subplot(2, 3, 3, projection=ccrs.PlateCarree())
+            _base(ax2)
+            # levels must be an explicit array spanning [vmin, vmax] — a bare
+            # integer count would make tricontourf compute level *positions*
+            # from res_ch's actual data range instead of from vmin/vmax.
+            levels = np.linspace(vmin, vmax, 51)
+            tcf2 = ax2.tricontourf(
+                lo_ch, la_ch, res_ch, levels=levels, cmap="RdBu_r",
+                vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree(),
+            )
+            _colorbar(ax2, tcf2, "interpolated residual (background − corrected)")
+            ax2.set_title(f"Interpolated residuals — {shortname} ({ref_time})")
+
+            ax3 = fig.add_subplot(2, 3, 4, projection=ccrs.PlateCarree())
+            _base(ax3)
+            sc3 = _holdin_holdout_scatter(
+                ax3, diag["err_longitude"], diag["err_latitude"], diag["pre_nudge_rmse"],
+                cmap="viridis", vmin=0, vmax=err_vmax,
+            )
+            _colorbar(ax3, sc3, "pre-nudging RMSE (station − background)")
+            ax3.set_title(f"Pre-nudging station error — {shortname} ({ref_time})")
+
+            ax4 = fig.add_subplot(2, 3, 5, projection=ccrs.PlateCarree())
+            _base(ax4)
+            sc4 = _holdin_holdout_scatter(
+                ax4, diag["err_longitude"], diag["err_latitude"], diag["post_nudge_rmse"],
+                cmap="viridis", vmin=0, vmax=err_vmax,
+            )
+            _colorbar(ax4, sc4, "post-nudging RMSE (station − corrected)")
+            ax4.set_title(f"Post-nudging station error — {shortname} ({ref_time})")
+
+            plt.tight_layout()
+            ref_time_str = ref_time.strftime("%Y%m%d%H%M") if ref_time is not None else "unknown"
+            out_path = self.plot_dir / f"reliability_diag_{shortname}_{ref_time_str}.png"
+            fig.savefig(out_path, dpi=150, bbox_inches="tight")
+            plt.close(fig)
+            LOG.info("Saved reliability diagnostic plot for '%s' to %s", shortname, out_path)
+        except Exception:
+            LOG.exception(
+                "Reliability diagnostic plot failed for '%s'; continuing without it "
+                "(the nudging correction itself is unaffected).",
+                shortname,
+            )
 
     # ── Holdout and station loading ───────────────────────────────────────────
 

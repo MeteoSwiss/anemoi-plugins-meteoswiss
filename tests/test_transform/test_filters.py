@@ -277,3 +277,136 @@ def test_nudge_toward_observation_mutual_exclusion(tmp_path):
                 holdout_fraction=0.1,
                 exclude_stations=["ABC"],
             )
+
+
+def test_nudge_toward_observation_invalid_reliability_min_dist_frac(tmp_path):
+    """reliability_min_dist_frac outside [0, 1] raises ValueError at construction."""
+    from unittest.mock import patch
+
+    obs = tmp_path / "obs.parquet"
+    obs.touch()
+
+    with patch.object(NudgeTowardObservation, "_load_icon_grid"), \
+         patch.object(NudgeTowardObservation, "_load_topo"), \
+         patch.object(NudgeTowardObservation, "_load_dem"):
+        with pytest.raises(ValueError, match="reliability_min_dist_frac"):
+            NudgeTowardObservation(obs_path=str(obs), reliability_min_dist_frac=1.5)
+
+
+def test_nudge_toward_observation_invalid_number_of_std(tmp_path):
+    """number_of_std <= 0 raises ValueError at construction."""
+    from unittest.mock import patch
+
+    obs = tmp_path / "obs.parquet"
+    obs.touch()
+
+    with patch.object(NudgeTowardObservation, "_load_icon_grid"), \
+         patch.object(NudgeTowardObservation, "_load_topo"), \
+         patch.object(NudgeTowardObservation, "_load_dem"):
+        with pytest.raises(ValueError, match="number_of_std"):
+            NudgeTowardObservation(obs_path=str(obs), number_of_std=0.0)
+
+
+def test_compute_reliability_flags_outlier_station(tmp_path):
+    """Leave-one-out spatial-consistency check: a station whose residual wildly
+    disagrees with its neighbours gets reliability=0; consistent stations stay
+    close to 1. Uses the same mock DEM/transformer as the barrier_distances tests
+    above — no real ICON/DEM/topo files needed."""
+    from unittest.mock import patch
+
+    obs = tmp_path / "obs.parquet"
+    obs.touch()
+
+    with patch.object(NudgeTowardObservation, "_load_icon_grid"), \
+         patch.object(NudgeTowardObservation, "_load_topo"), \
+         patch.object(NudgeTowardObservation, "_load_dem"):
+        filt = NudgeTowardObservation(
+            obs_path=str(obs),
+            max_dist=50.0,
+            weight_power=2.0,
+            min_topo_w=0.2,
+            lim_effective=0.0,
+            number_of_std=4.0,
+            reliability_min_dist_frac=0.1,
+        )
+    filt._dem_rgi = _make_mock_dem_rgi()
+    filt._wgs84_to_lv95 = _make_mock_transformer()
+
+    sta_ids = ["AAA", "BBB", "CCC", "DDD", "BAD"]
+    st_lat = np.array([47.00, 47.02, 46.98, 47.01, 46.99])
+    st_lon = np.array([8.00, 8.02, 7.98, 8.05, 8.01])
+    st_elev = np.full(5, 100.0)  # matches the flat mock DEM → barrier/elev_diff = 0
+    sta_x, sta_y = filt._wgs84_to_lv95.transform(st_lon, st_lat)
+    sta_xy = np.c_[sta_x, sta_y] / 1000.0
+    r_at_st = np.array([0.0, -0.2, 0.2, -0.1, 5.0])  # "BAD" wildly disagrees
+
+    # A single topo descriptor is enough to exercise ned_interp's topo-similarity
+    # branch (its importance normalises to 1 trivially with only one descriptor).
+    sta_topo = xr.Dataset(
+        {"ELEV": xr.DataArray(st_elev.astype(np.float32), dims=["sta"], coords={"sta": sta_ids})}
+    )
+
+    reliability = filt._compute_reliability(
+        "T_2M", sta_ids, st_lon, st_lat, st_elev, sta_xy, r_at_st, sta_topo,
+    )
+
+    assert reliability.dims == ("sta",)
+    assert list(reliability["sta"].values) == sta_ids
+    values = reliability.values
+    assert np.all((values >= 0.0) & (values <= 1.0))
+    assert values[-1] == 0.0, f"BAD station should be fully rejected, got {values[-1]}"
+    assert np.all(values[:-1] > values[-1]), "consistent stations must outrank BAD"
+
+
+def test_compute_reliability_isolated_station_does_not_poison_others(tmp_path):
+    """Regression test: a station with no neighbour within max_dist gets e=NaN
+    from ned_interp's leave-one-out call (min_count=1 makes a fully-masked POI
+    return NaN, not 0). Before the fix, a single NaN silently propagated through
+    np.median/np.abs(...).median() into EVERY station's reliability (all NaN),
+    which then made ned_interp mask every pair (`dist < NaN` is always False),
+    zeroing the correction for the whole field — exactly what was observed in
+    production (see dashboard investigation, 2026-08-19). The isolated station
+    itself should land at reliability=1.0 (no evidence to judge it against);
+    every other, mutually-consistent station should stay finite and high."""
+    from unittest.mock import patch
+
+    obs = tmp_path / "obs.parquet"
+    obs.touch()
+
+    with patch.object(NudgeTowardObservation, "_load_icon_grid"), \
+         patch.object(NudgeTowardObservation, "_load_topo"), \
+         patch.object(NudgeTowardObservation, "_load_dem"):
+        filt = NudgeTowardObservation(
+            obs_path=str(obs),
+            max_dist=50.0,
+            weight_power=2.0,
+            min_topo_w=0.2,
+            lim_effective=0.0,
+            number_of_std=4.0,
+            reliability_min_dist_frac=0.1,
+        )
+    filt._dem_rgi = _make_mock_dem_rgi()
+    filt._wgs84_to_lv95 = _make_mock_transformer()
+
+    # AAA/BBB/CCC/DDD form a consistent cluster; ISO is ~190 km away — well
+    # beyond max_dist=50 km, so it has zero neighbours in the leave-one-out check.
+    sta_ids = ["AAA", "BBB", "CCC", "DDD", "ISO"]
+    st_lat = np.array([47.00, 47.02, 46.98, 47.01, 46.20])
+    st_lon = np.array([8.00, 8.02, 7.98, 8.05, 9.90])
+    st_elev = np.full(5, 100.0)
+    sta_x, sta_y = filt._wgs84_to_lv95.transform(st_lon, st_lat)
+    sta_xy = np.c_[sta_x, sta_y] / 1000.0
+    r_at_st = np.array([0.0, -0.2, 0.2, -0.1, 3.0])  # all mutually plausible values
+
+    sta_topo = xr.Dataset(
+        {"ELEV": xr.DataArray(st_elev.astype(np.float32), dims=["sta"], coords={"sta": sta_ids})}
+    )
+
+    reliability = filt._compute_reliability(
+        "T_2M", sta_ids, st_lon, st_lat, st_elev, sta_xy, r_at_st, sta_topo,
+    )
+    values = reliability.values
+
+    assert not np.any(np.isnan(values)), f"NaN leaked into reliability: {values}"
+    assert values[-1] == 1.0, f"isolated station should default to reliability=1.0, got {values[-1]}"
+    assert np.all(values[:-1] > 0.5), f"consistent cluster stations should stay trusted, got {values[:-1]}"

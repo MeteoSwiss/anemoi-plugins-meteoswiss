@@ -4,6 +4,7 @@ from pathlib import Path
 
 import earthkit.data as ekd
 import numpy as np
+import pandas as pd
 from anemoi.transform.filter import Filter
 
 LOG = logging.getLogger(__name__)
@@ -64,6 +65,26 @@ class RetrieveObservation(Filter):
     run_mode : str
         ``'depl'`` (default): ref_time = minimum valid_time across all
         fields. ``'devt'``: ref_time = valid_time of the first field.
+    station_filter_mode : str, optional
+        Extra trim applied to the retrieved stations, on top of *group*/
+        *bbox* — matches the station selection in
+        ``notebooks/d_eff_generator.ipynb`` so the set of stations
+        retrieved here stays a subset of whatever ``NudgeTowardObservation``'s
+        ``d_eff_file`` cache was built from (a station outside that cache
+        raises an error there rather than silently recomputing). One of:
+
+        - ``None`` (default): no extra trim — retrieves exactly whatever
+          *group*/*bbox* selects, unchanged from before this parameter existed.
+        - ``"domain"``: keep only stations inside *domain_bbox*.
+        - ``"switzerland"``: keep only stations inside the real Swiss
+          national border (Natural Earth ``admin_0_countries``,
+          ``ADM0_A3 == "CHE"``).
+    domain_bbox : list, optional
+        ``[lat_min, lat_max, lon_min, lon_max]`` used to trim stations when
+        *station_filter_mode* is ``"domain"``. Required in that case; unused
+        otherwise. Not the same thing as *bbox* above — *bbox* controls what
+        jretrieve itself queries, *domain_bbox* is a second, independent trim
+        applied afterwards to the stations jretrieve returned.
     """
 
     def __init__(
@@ -75,11 +96,20 @@ class RetrieveObservation(Filter):
         variables: list = None,
         use_limitation: int = None,
         run_mode: str = "depl",
+        station_filter_mode: str = None,
+        domain_bbox: list = None,
     ):
         if run_mode not in ("devt", "depl"):
             raise ValueError(f"run_mode must be 'devt' or 'depl', got {run_mode!r}")
         if group is not None and bbox is not None:
             raise ValueError("Specify at most one of 'group' or 'bbox', not both.")
+        if station_filter_mode not in (None, "domain", "switzerland"):
+            raise ValueError(
+                f"station_filter_mode must be None, 'domain', or 'switzerland', "
+                f"got {station_filter_mode!r}"
+            )
+        if station_filter_mode == "domain" and domain_bbox is None:
+            raise ValueError("domain_bbox is required when station_filter_mode='domain'.")
 
         self.obs_path = obs_path
         self.jretrieve_src_path = str(jretrieve_src_path)
@@ -89,6 +119,8 @@ class RetrieveObservation(Filter):
         )
         self.use_limitation = use_limitation
         self.run_mode = run_mode
+        self.station_filter_mode = station_filter_mode
+        self.domain_bbox = list(domain_bbox) if domain_bbox is not None else None
 
         if variables is not None:
             unknown = set(variables) - _PARAM_TO_COL.keys()
@@ -171,6 +203,9 @@ class RetrieveObservation(Filter):
         df = df.dropna(subset=["nat_abbr"]).set_index("nat_abbr")
         df.index.name = "station"
 
+        if self.station_filter_mode is not None:
+            df = self._trim_stations(df)
+
         if "tre200s0" in df.columns:
             df["2t"] = df["tre200s0"] + 273.15
         if "tde200s0" in df.columns:
@@ -193,6 +228,59 @@ class RetrieveObservation(Filter):
         ]
         df = df[result_cols].copy()
 
+        for col in _PARAM_TO_COL.values():
+            if col in df.columns:
+                n_valid = int(df[col].notna().sum())
+                LOG.info("Stations with valid %s: %d / %d stations", col, n_valid, len(df))
+
         Path(self.obs_path).parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(self.obs_path)
         LOG.info("Saved %d stations to %s", len(df), self.obs_path)
+
+    def _trim_stations(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Trim retrieved stations to *station_filter_mode* — same logic as
+        the station-trim cell in notebooks/d_eff_generator.ipynb, so the
+        stations retrieved here stay in sync with whatever
+        NudgeTowardObservation's d_eff_file cache was built from."""
+        if self.station_filter_mode == "domain":
+            lat_min, lat_max, lon_min, lon_max = self.domain_bbox
+            mask = (
+                (df["latitude"] >= lat_min) & (df["latitude"] <= lat_max) &
+                (df["longitude"] >= lon_min) & (df["longitude"] <= lon_max)
+            )
+            desc = f"domain bbox {self.domain_bbox}"
+
+        elif self.station_filter_mode == "switzerland":
+            import cartopy.io.shapereader as shpreader
+            from shapely.geometry import Point
+
+            shp_path = shpreader.natural_earth(
+                resolution="10m", category="cultural", name="admin_0_countries"
+            )
+            ch_country = next(
+                r for r in shpreader.Reader(shp_path).records()
+                if r.attributes["ADM0_A3"] == "CHE"
+            )
+            swiss_geom = ch_country.geometry
+
+            def _in_switzerland(lat, lon):
+                if pd.isna(lat) or pd.isna(lon):
+                    return False
+                return swiss_geom.contains(Point(lon, lat))
+
+            mask = [
+                _in_switzerland(lat, lon)
+                for lat, lon in zip(df["latitude"], df["longitude"])
+            ]
+            desc = "Swiss national border (Natural Earth)"
+
+        else:
+            raise ValueError(
+                f"Unknown station_filter_mode: {self.station_filter_mode!r} "
+                "(expected None, 'domain', or 'switzerland')"
+            )
+
+        n_before = len(df)
+        df = df[mask]
+        LOG.info("Station filter [%s]: %d -> %d stations", desc, n_before, len(df))
+        return df

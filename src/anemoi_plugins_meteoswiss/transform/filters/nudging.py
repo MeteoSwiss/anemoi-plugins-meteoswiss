@@ -1,10 +1,14 @@
 """
-NudgeTowardObservation — v4 (distances in km; v4 adds per-station reliability-based
+NudgeTowardObservation — v5 (distances in km; v4 adds per-station reliability-based
 influence radius; v4.1 makes the linear taper per-station too — both ported
-unchanged from notebooks/nudging_analysis_v10.ipynb)
+unchanged from notebooks/nudging_analysis_v10.ipynb; v5 stops computing
+barrier-aware effective distances (d_eff) live and instead reads them from a
+precomputed cache file — see *d_eff_file* and step 4 below)
 
 Implements Interpolation of Residuals (IoR) using ned_interp combined with
-barrier-aware effective distances derived from a 1 km-scale DEM.
+barrier-aware effective distances (d_eff), precomputed offline from a
+1 km-scale DEM and read from disk at construction time (*d_eff_file*) rather
+than computed by this filter.
 
 Algorithm per variable
 ----------------------
@@ -17,13 +21,17 @@ Algorithm per variable
     max_dist. LV95 is isotropic metric, so a simple symmetric km buffer
     suffices — no lat/lon asymmetry needed, unlike the old projection.
 3.  Compute Euclidean distance matrix (n_poi × n_sta) in km.
-4.  Inflate distances with a barrier term and an elevation-difference term
-    (barrier_distances): the DEM is sampled along a perpendicular slab at each
-    along-path step; a Gaussian-weighted mean across the corridor width and a
-    95th-percentile along the path give the effective ridge height.
+4.  Look up the barrier- and elevation-aware effective distance for each
+    (POI, station) pair from the precomputed cache (*d_eff_file*) instead of
+    computing it live:
         d_eff = sqrt(d_euc² + (barrier/elev_scale)² + (elev_diff/elev_diff_scale)²)
-    All terms are in km; elev_scale/elev_diff_scale are in m/km (a ridge of
-    elev_scale metres now adds 1 km of effective distance).
+    where the barrier term comes from sampling the DEM along a perpendicular
+    slab at each along-path step (Gaussian-weighted mean across the corridor
+    width, 95th-percentile along the path for the effective ridge height) and
+    elev_diff is the endpoint elevation gap — see barrier_distances() for the
+    full derivation. This filter never calls barrier_distances() itself; that
+    function is only used offline to build the cache (see
+    notebooks/nudging_analysis_v11.ipynb, "Precomputed d_eff cache").
 5.  Compute topographic similarity per (POI, station) pair (TPI, slope
     derivatives, DEM/ICON elevation): each descriptor's importance is
     |Pearson corr| between it and the station residuals, normalised to sum
@@ -43,7 +51,7 @@ Algorithm per variable
 Weight computation, symbolically (per POI p, station s)
 ---------------------------------------------------------------------------
 Step 1 — raw distance (km):     d_euc[p,s]
-Step 2 — elevation-aware (km):  d_eff[p,s]     = barrier_distances(d_euc)          → "ned_sta_poi"
+Step 2 — elevation-aware (km):  d_eff[p,s]     = lookup from precomputed cache (d_eff_file) → "ned_sta_poi"
 Step 3 — descriptor importance: importance[d]  = |corr_s(residual[s], descriptor_d[s])| / Σ_d |corr_s(...)|
                                  (one weight per descriptor d, computed across stations s; recomputed per variable)
 Step 4 — topo similarity:       w_topo[p,s]    = Σ_d importance[d] * (1 - |sta_topo[d,s] - poi_topo[d,p]|), floored at min_topo_w
@@ -63,10 +71,11 @@ uses whichever max_dist[s] applies to that particular station.
 
 Unit history: earlier versions expressed max_dist/elev_scale/elev_diff_scale in
 projected degrees and m/° respectively (1 projected degree ≈ 111.32 km near
-Swiss latitudes). Default values below are those degree-tuned values converted
-to km/m-per-km, so default behaviour is preserved rather than re-tuned;
-deployment configs must supply km/m-per-km values directly (see the YAML
-config for this filter).
+Swiss latitudes). max_dist's default below is the degree-tuned value converted
+to km, so default behaviour is preserved rather than re-tuned; deployment
+configs must supply a km value directly (see the YAML config for this filter).
+elev_scale/elev_diff_scale are no longer parameters of this filter — they are
+baked into the offline-built d_eff cache (see *d_eff_file*).
 
 Station reliability (v4) — optional, ported unchanged from
 notebooks/nudging_analysis_v10.ipynb
@@ -161,6 +170,10 @@ _DEFAULT_TOPO_FILE = (
 _DEFAULT_DEM_BARRIER_FILE = (
     "/store_new/mch/msclim/appclim/data/grids/topodem/v2/topo/radar_100/topo_DEM_1000M.nc"
 )
+# Precomputed barrier- and elevation-aware effective distances (d_eff_poi, d_eff_sta)
+# for the full station catalog — see NudgeTowardObservation's d_eff_file parameter
+# and notebooks/nudging_analysis_v11.ipynb, "Precomputed d_eff cache".
+_DEFAULT_D_EFF_FILE = "/scratch/mch/llanzila/sruc/aux_files/d_eff_cache_v11.nc"
 # ICON's own native orography (extpar, ASTER-derived) on the same R19B08 grid — used
 # only as the elevation *topo descriptor* for ned_interp's similarity weighting, since
 # it is what the model itself "sees" as terrain. The elevation-aware barrier distance
@@ -178,6 +191,14 @@ _DEFAULT_LAPSE_RATE = 0.0065  # K/m
 # TD_2M (dewpoint) does not decrease with elevation at the same fixed rate, so it is
 # excluded by default; pressure is already sea-level-reduced and wind has no lapse rate.
 _DEFAULT_LAPSE_RATE_VARS = frozenset({"T_2M"})
+
+# _plot_reliability_diagnostic's colour-scale percentile for the residual and RMSE
+# panels: the true max is dominated by a handful of outlier stations/cells, which
+# stretches the colour scale so far that the actual spatial pattern (the whole
+# point of these panels) becomes invisible. A high percentile instead saturates
+# those outliers at the colour scale's edge rather than letting them set its
+# range. Purely cosmetic — never affects the nudging correction itself.
+_DIAG_COLORBAR_PERCENTILE = 90
 
 
 # ── ned_interp (adapted from data4web_pipelines/utils.py) ─────────────────────
@@ -518,7 +539,29 @@ class NudgeTowardObservation(Filter):
         ``ICON_OROG``, which is injected separately from *icon_orog_file*.
     dem_barrier_file : str
         Path to the 1 km DEM NetCDF (variable ``DEM_1000M``, coordinates ``x``
-        and ``y`` in LV95 metres) used for barrier path sampling.
+        and ``y`` in LV95 metres). Barrier-aware distances (d_eff) are no
+        longer computed from this DEM at run time — see *d_eff_file* — so
+        this is now used only as a fallback to sample station elevation when
+        it is missing from the observations Parquet.
+    d_eff_file : str
+        Path to a precomputed NetCDF holding barrier- and elevation-aware
+        effective distances (d_eff) for the full station catalog: variables
+        ``d_eff_poi`` (dims ``poi``, ``sta`` — every ICON cell within reach
+        of any station, to every station) and ``d_eff_sta`` (dims ``sta_i``,
+        ``sta`` — station-to-station, for the reliability check's
+        leave-one-out prediction; self-distances are +inf). Built offline
+        once via ``barrier_distances()`` for the full station catalog and a
+        domain buffered around all of them (see
+        notebooks/nudging_analysis_v11.ipynb, "Precomputed d_eff cache") and
+        reused across ref_times/deployments as long as the station catalog,
+        DEM, ICON grid, and barrier hyperparameters it was built with are
+        unchanged. This filter never calls ``barrier_distances()`` itself:
+        each call's (POI, station) or (station, station) subset — which
+        varies per variable since the set of stations with a non-NaN
+        observation differs — is sliced directly from this cache. A POI or
+        station needed by a call but not covered by the cache raises a
+        ``ValueError`` rather than triggering a live recompute; rebuild the
+        cache (with the current station catalog) if that happens.
     icon_orog_file : str
         Path to the ICON extpar NetCDF for the R19B08 grid (variable
         ``topography_c``) providing the model's own native orography. Used
@@ -529,33 +572,38 @@ class NudgeTowardObservation(Filter):
         IDW distance-decay exponent. Higher values concentrate weight on the
         nearest station (notebook: ``WEIGHT_POWER = 4``).
     max_dist : float
-        Station influence radius in km; the barrier-distance cutoff, the base
-        for the domain buffer, and (when *use_reliability_check* is ``False``)
-        the linear taper radius shared by every station. When
-        *use_reliability_check* is ``True``, each station's own taper radius
-        is instead its own reliability-scaled *max_dist* (see "Station
-        reliability" and "Per-station linear taper" below) — this parameter
-        remains the upper bound every station's radius scales down from
-        (notebook v8: ``MAX_DIST_KM``; default here is the historical
-        degree-tuned value (0.35°) converted to km, ≈ 38.96).
-    n_barrier_samples : int
-        DEM sample points along the straight-line path interior (endpoints
-        excluded) (notebook: ``N_BARRIER_SAMPLES = 35``).
-    n_barrier_width_samples : int
-        Perpendicular samples per along-path step; odd values centre the
-        slab on the straight line (notebook: ``N_BARRIER_WIDTH_SAMPLES = 3``).
-    barrier_width_m : float
-        Half-width of the perpendicular DEM corridor in metres
-        (notebook: ``BARRIER_WIDTH_M = 1500``).
-    elev_scale : float
-        Ridge height in metres that adds 1 km to effective distance, i.e. m/km
-        (notebook v8: ``ELEV_SCALE_KM``; default here is the historical
-        degree-tuned value (2000 m/°) converted to m/km, ≈ 17.97).
-    elev_diff_scale : float
-        Endpoint elevation difference in metres that adds 1 km to effective
-        distance — weaker penalty than a ridge, i.e. m/km (notebook v8:
-        ``ELEV_DIFF_SCALE_KM``; default here is the historical degree-tuned
-        value (4000 m/°) converted to m/km, ≈ 35.93).
+        Default station influence radius in km, used for every nudged
+        variable unless overridden per-variable via *variable_overrides*: the
+        barrier-distance cutoff, the base for the domain buffer, and (when
+        *use_reliability_check* is ``False``) the linear taper radius shared
+        by every station. When *use_reliability_check* is ``True``, each
+        station's own taper radius is instead its own reliability-scaled
+        *max_dist* (see "Station reliability" and "Per-station linear taper"
+        below) — this parameter remains the upper bound every station's
+        radius scales down from (notebook v8: ``MAX_DIST_KM``; default here
+        is the historical degree-tuned value (0.35°) converted to km, ≈
+        38.96).
+    variable_overrides : dict, optional
+        Per-variable override of *d_eff_file* and/or *max_dist*, e.g.
+        ``{"U_10M": {"d_eff_file": "...", "max_dist": 20.0}, "V_10M": {...}}``.
+        Keys must be GRIB shortNames present in the active nudge set (see
+        *nudge_variables*); each value is a dict that may set either or both
+        of ``d_eff_file``/``max_dist`` — whichever is omitted falls back to
+        this filter's top-level *d_eff_file*/*max_dist*. Motivation: the
+        barrier-aware effective-distance model (see module docstring) assumes
+        a spatially smooth, terrain-correlated bias, which holds for
+        temperature-like variables but not for near-surface wind (U_10M/
+        V_10M), whose bias is dominated by hyper-local siting/channeling
+        effects with a much shorter decorrelation length — a wind-specific
+        cache built with a smaller ``MAX_DIST_KM``/``ELEV_SCALE_KM`` (see
+        notebooks/d_eff_generator.ipynb) can be supplied here without
+        affecting the variables that use the default cache. This only
+        changes *which* precomputed d_eff cache and radius feed into the
+        (unchanged) IDW/topo-similarity/taper/reliability computation for
+        that variable — every other variable keeps using the top-level
+        defaults. Defaults to ``None`` (no overrides; every variable uses the
+        top-level *d_eff_file*/*max_dist*, reproducing pre-v5.1 behaviour
+        exactly).
     min_topo_w : float
         Minimum topographic similarity weight floor so nearby stations always
         contribute (notebook: ``MIN_TOPO_W = 0.2``).
@@ -658,14 +706,11 @@ class NudgeTowardObservation(Filter):
         icon_grid_dir: str = "/scratch/mch/llanzila/sruc/aux_files",
         topo_file: str = _DEFAULT_TOPO_FILE,
         dem_barrier_file: str = _DEFAULT_DEM_BARRIER_FILE,
+        d_eff_file: str = _DEFAULT_D_EFF_FILE,
         icon_orog_file: str = _DEFAULT_ICON_OROG_FILE,
         weight_power: float = 4.0,
         max_dist: float = 38.962,
-        n_barrier_samples: int = 35,
-        n_barrier_width_samples: int = 3,
-        barrier_width_m: float = 1500.0,
-        elev_scale: float = 17.966,
-        elev_diff_scale: float = 35.932,
+        variable_overrides: Optional[dict] = None,
         min_topo_w: float = 0.2,
         lim_effective: float = 0.0,
         use_reliability_check: bool = False,
@@ -722,14 +767,10 @@ class NudgeTowardObservation(Filter):
         self.icon_grid_dir = Path(icon_grid_dir)
         self.topo_file = Path(topo_file)
         self.dem_barrier_file = Path(dem_barrier_file)
+        self.d_eff_file = Path(d_eff_file)
         self.icon_orog_file = Path(icon_orog_file)
         self.weight_power = weight_power
         self.max_dist = max_dist
-        self.n_barrier_samples = n_barrier_samples
-        self.n_barrier_width_samples = n_barrier_width_samples
-        self.barrier_width_m = barrier_width_m
-        self.elev_scale = elev_scale
-        self.elev_diff_scale = elev_diff_scale
         self.min_topo_w = min_topo_w
         self.lim_effective = lim_effective
         self.use_reliability_check = use_reliability_check
@@ -773,31 +814,64 @@ class NudgeTowardObservation(Filter):
             self.param_map = dict(PARAM_MAP)
         self.param_map = {v: w for v, w in self.param_map.items() if v not in _NO_NUDGE}
 
+        # ── Per-variable d_eff_file/max_dist (variable_overrides) ──────────
+        # Every variable defaults to the top-level d_eff_file/max_dist; an
+        # entry in variable_overrides replaces one or both for that variable
+        # only. This only selects *which* precomputed cache and radius feed
+        # into _nudge_field()/_compute_reliability() for a given variable —
+        # the IDW/topo-similarity/taper/reliability computation itself is
+        # unchanged and unaware that other variables might use a different
+        # cache/radius.
+        self.variable_overrides = dict(variable_overrides) if variable_overrides is not None else {}
+        unknown_override_vars = set(self.variable_overrides) - set(self.param_map)
+        if unknown_override_vars:
+            raise ValueError(
+                f"variable_overrides references variable(s) not in the active "
+                f"nudge set: {sorted(unknown_override_vars)}. Active variables: "
+                f"{list(self.param_map)}"
+            )
+        for _var, _override in self.variable_overrides.items():
+            _unknown_keys = set(_override) - {"d_eff_file", "max_dist"}
+            if _unknown_keys:
+                raise ValueError(
+                    f"variable_overrides[{_var!r}] has unknown key(s) "
+                    f"{sorted(_unknown_keys)}; only 'd_eff_file' and 'max_dist' "
+                    "are supported."
+                )
+
+        self._max_dist_by_var = {
+            var: self.variable_overrides.get(var, {}).get("max_dist", self.max_dist)
+            for var in self.param_map
+        }
+        self._d_eff_file_by_var = {
+            var: Path(self.variable_overrides.get(var, {}).get("d_eff_file", self.d_eff_file))
+            for var in self.param_map
+        }
+
         # Load heavy static data once at construction time to avoid repeated I/O in forward().
         self._load_icon_grid()
         self._load_topo()
         self._load_dem()
+        # Load each distinct d_eff cache file once (several variables may share one).
+        self._d_eff_caches = {
+            path: self._load_d_eff_cache(path) for path in set(self._d_eff_file_by_var.values())
+        }
 
         LOG.info(
-            "NudgeTowardObservation v4 initialised: variables=%s, max_dist=%.2f km, "
-            "weight_power=%.1f, elev_scale=%.2f m/km, elev_diff_scale=%.2f m/km, "
-            "barrier_width_m=%.0f, n_barrier_samples=%d, n_barrier_width_samples=%d, "
+            "NudgeTowardObservation v5 initialised: variables=%s, max_dist=%s km, "
+            "weight_power=%.1f, d_eff_file=%s, "
             "lapse_rate=%.5f K/m (vars=%s), use_reliability_check=%s, number_of_std=%.2f, "
-            "reliability_min_dist_frac=%.3f (min radius = %.2f km)",
+            "reliability_min_dist_frac=%.3f, min radius=%s km",
             list(self.param_map.keys()),
-            self.max_dist,
+            {v: self._max_dist_by_var[v] for v in self.param_map},
             self.weight_power,
-            self.elev_scale,
-            self.elev_diff_scale,
-            self.barrier_width_m,
-            self.n_barrier_samples,
-            self.n_barrier_width_samples,
+            {v: str(self._d_eff_file_by_var[v]) for v in self.param_map},
             self.lapse_rate,
             sorted(self.lapse_rate_vars),
             self.use_reliability_check,
             self.number_of_std,
             self.reliability_min_dist_frac,
-            self.reliability_min_dist_frac * self.max_dist,
+            {v: round(self.reliability_min_dist_frac * self._max_dist_by_var[v], 2) for v in self.param_map},
         )
         super().__init__()
 
@@ -881,6 +955,90 @@ class NudgeTowardObservation(Filter):
             "ICON/topo grids projected to LV95: x=[%.1f, %.1f] km, y=[%.1f, %.1f] km",
             self._grid_xy_km[:, 0].min(), self._grid_xy_km[:, 0].max(),
             self._grid_xy_km[:, 1].min(), self._grid_xy_km[:, 1].max(),
+        )
+
+    def _load_d_eff_cache(self, path: Path) -> dict:
+        """Load one precomputed barrier- and elevation-aware effective-distance
+        (d_eff) cache file for the full station catalog.
+
+        This filter never calls ``barrier_distances()`` itself — see
+        _get_d_eff_poi()/_get_d_eff_sta() below, used by _nudge_field() and
+        _compute_reliability() instead. Each cache is built offline once (see
+        notebooks/nudging_analysis_v11.ipynb, "Precomputed d_eff cache") for
+        the full station catalog and a domain buffered around all of them;
+        every call's own (usually smaller, since stations with a NaN
+        observation for that variable are excluded) POI/station subset is
+        sliced from it.
+
+        Called once per distinct path in *_d_eff_file_by_var* (see __init__):
+        several variables may share the same cache file (e.g. T_2M/TD_2M),
+        in which case it is only loaded once and reused.
+        """
+        if not path.exists():
+            raise FileNotFoundError(
+                f"d_eff cache not found: {path}. This filter no longer "
+                "computes barrier-aware effective distances itself — build "
+                "the cache offline first (see notebooks/nudging_analysis_v11"
+                ".ipynb, 'Precomputed d_eff cache') and point d_eff_file (or "
+                "variable_overrides) at it."
+            )
+        ds = xr.open_dataset(path)
+        d_eff_poi_full = ds["d_eff_poi"].load()
+        d_eff_sta_full = ds["d_eff_sta"].load()
+        ds.close()
+        LOG.info(
+            "d_eff loaded from %s: POI x station %s, station x station %s",
+            path, d_eff_poi_full.shape, d_eff_sta_full.shape,
+        )
+        return {
+            "d_eff_poi_full": d_eff_poi_full,
+            "d_eff_sta_full": d_eff_sta_full,
+            "poi_set": set(d_eff_poi_full["poi"].values.tolist()),
+            "sta_set": set(d_eff_poi_full["sta"].values.tolist()),
+        }
+
+    def _get_d_eff_poi(self, shortname: str, dom_idx: np.ndarray, sta_ids: list) -> xr.DataArray:
+        """POI<->station d_eff for this call's domain/station subset, sliced
+        from the precomputed cache configured for *shortname* (see
+        *d_eff_file*/*variable_overrides* and _load_d_eff_cache)."""
+        d_eff_file = self._d_eff_file_by_var[shortname]
+        cache = self._d_eff_caches[d_eff_file]
+        missing_poi = set(dom_idx) - cache["poi_set"]
+        if missing_poi:
+            raise ValueError(
+                f"{len(missing_poi)} POI(s) not covered by the precomputed "
+                f"d_eff cache ({d_eff_file}) used for '{shortname}' — the "
+                "cache was built for a smaller domain, or the ICON grid "
+                "changed since. Rebuild the cache."
+            )
+        missing_sta = set(sta_ids) - cache["sta_set"]
+        if missing_sta:
+            raise ValueError(
+                f"Station(s) {sorted(missing_sta)} not covered by the "
+                f"precomputed d_eff cache ({d_eff_file}) used for "
+                f"'{shortname}' — the station catalog changed since the "
+                "cache was built. Rebuild the cache."
+            )
+        return cache["d_eff_poi_full"].sel(poi=list(dom_idx), sta=list(sta_ids))
+
+    def _get_d_eff_sta(self, shortname: str, sta_ids: list) -> xr.DataArray:
+        """Station<->station d_eff (for _compute_reliability's leave-one-out
+        check), sliced from the precomputed cache configured for
+        *shortname*."""
+        d_eff_file = self._d_eff_file_by_var[shortname]
+        cache = self._d_eff_caches[d_eff_file]
+        missing = set(sta_ids) - cache["sta_set"]
+        if missing:
+            raise ValueError(
+                f"Station(s) {sorted(missing)} not covered by the "
+                f"precomputed d_eff cache ({d_eff_file}) used for "
+                f"'{shortname}' — the station catalog changed since the "
+                "cache was built. Rebuild the cache."
+            )
+        return (
+            cache["d_eff_sta_full"]
+            .sel(sta_i=list(sta_ids), sta=list(sta_ids))
+            .rename({"sta_i": "poi"})
         )
 
     # ── Filter entry point ────────────────────────────────────────────────────
@@ -972,6 +1130,14 @@ class NudgeTowardObservation(Filter):
         # Background field values on the full ICON grid, shape (n_cells,).
         B_flat = np.asarray(field.values, dtype=float).ravel()
 
+        # This variable's own max_dist (see *variable_overrides*): defaults to
+        # self.max_dist, overridden per-variable when configured. Used below
+        # exactly where a single shared self.max_dist used to be — the domain
+        # buffer, the barrier-distance/ned_interp cutoff, and (together with
+        # its own d_eff cache, see _get_d_eff_poi) the station-reliability
+        # radius scaling.
+        max_dist = self._max_dist_by_var[shortname]
+
         # ── Valid stations ─────────────────────────────────────────────────
         # Filter to stations that have a non-NaN observation for this variable.
         valid   = stations[col].notna()
@@ -1022,10 +1188,10 @@ class NudgeTowardObservation(Filter):
         # LV95 is already isotropic metric (x and y both true km), so a simple
         # symmetric buffer suffices — no lat/lon asymmetry needed, unlike the old
         # cos(lat0)-projected-degree scheme.
-        sta_x_min = sta_xy[:, 0].min() - self.max_dist
-        sta_x_max = sta_xy[:, 0].max() + self.max_dist
-        sta_y_min = sta_xy[:, 1].min() - self.max_dist
-        sta_y_max = sta_xy[:, 1].max() + self.max_dist
+        sta_x_min = sta_xy[:, 0].min() - max_dist
+        sta_x_max = sta_xy[:, 0].max() + max_dist
+        sta_y_min = sta_xy[:, 1].min() - max_dist
+        sta_y_max = sta_xy[:, 1].max() + max_dist
         dom_mask = (
             (grid_xy[:, 0] >= sta_x_min) & (grid_xy[:, 0] <= sta_x_max) &
             (grid_xy[:, 1] >= sta_y_min) & (grid_xy[:, 1] <= sta_y_max)
@@ -1073,27 +1239,11 @@ class NudgeTowardObservation(Filter):
         ).astype(np.float32)
 
         # ── Barrier-aware distances ────────────────────────────────────────
-        # Inflate d_euc for pairs separated by a ridge or a large elevation step.
-        # Pairs pushed beyond max_dist are effectively excluded from ned_interp.
-        dist_mat = barrier_distances(
-            self._lon_icon[dom_idx], self._lat_icon[dom_idx],  # POI WGS84 lon/lat
-            st_lon, st_lat,                                     # station WGS84 lon/lat
-            d_euc_mat, self.max_dist,
-            st_elev,                                            # DWH instrument altitude [m a.s.l.]
-            self._dem_rgi, self._wgs84_to_lv95,
-            n_samples=self.n_barrier_samples,
-            elev_scale=self.elev_scale,
-            elev_diff_scale=self.elev_diff_scale,
-            n_barrier_width_samples=self.n_barrier_width_samples,
-            barrier_width_m=self.barrier_width_m,
-        )
-
-        # Wrap in a DataArray so ned_interp can use named dims for the xarray operations.
-        ned_sta_poi = xr.DataArray(
-            dist_mat,
-            dims=["poi", "sta"],
-            coords={"poi": dom_idx, "sta": sta_ids},
-        )
+        # Read from the precomputed cache instead of computing them live —
+        # see _load_d_eff/_get_d_eff_poi. dom_idx/sta_ids for THIS call are
+        # always a subset of the full catalog/domain the cache was built for
+        # (see _get_d_eff_poi's coverage check).
+        ned_sta_poi = self._get_d_eff_poi(shortname, dom_idx, sta_ids)
 
         # ── Topographic descriptors at POIs and stations ───────────────────
         # POI descriptors: direct lookup by ICON cell index.
@@ -1115,26 +1265,28 @@ class NudgeTowardObservation(Filter):
         )
 
         # ── Station reliability → per-station influence radius (v4) ────────
-        # A fully reliable station (reliability=1) keeps the full self.max_dist
-        # reach; a station near reliability=0 shrinks down to a configurable
-        # floor (self.reliability_min_dist_frac * self.max_dist) rather than
-        # all the way to zero — every station keeps at least some very local
-        # influence. Reliability scales the radius LINEARLY between that floor
-        # and the full self.max_dist. Within whatever radius a station keeps,
-        # its weight is otherwise undiminished (same IDW/topo formula as any
-        # other station); it is excluded entirely beyond that radius. See the
-        # module docstring ("Station reliability") for the full algorithm,
-        # ported unchanged from notebooks/nudging_analysis_v10.ipynb.
+        # A fully reliable station (reliability=1) keeps the full max_dist
+        # (this variable's own — see *variable_overrides* at the top of this
+        # method) reach; a station near reliability=0 shrinks down to a
+        # configurable floor (self.reliability_min_dist_frac * max_dist)
+        # rather than all the way to zero — every station keeps at least some
+        # very local influence. Reliability scales the radius LINEARLY
+        # between that floor and the full max_dist. Within whatever radius a
+        # station keeps, its weight is otherwise undiminished (same IDW/topo
+        # formula as any other station); it is excluded entirely beyond that
+        # radius. See the module docstring ("Station reliability") for the
+        # full algorithm, ported unchanged from
+        # notebooks/nudging_analysis_v10.ipynb.
         # use_reliability_check=False reproduces the pre-v4 (v3) behaviour
         # exactly (a single global max_dist shared by every station).
         if self.use_reliability_check:
             reliability = self._compute_reliability(
-                shortname, sta_ids, st_lon, st_lat, st_elev, sta_xy, r_at_st, sta_topo,
+                shortname, sta_ids, st_lon, st_lat, r_at_st, sta_topo, max_dist,
             )
-            min_dist = self.reliability_min_dist_frac * self.max_dist
-            station_max_dist = min_dist + (self.max_dist - min_dist) * reliability
+            min_dist = self.reliability_min_dist_frac * max_dist
+            station_max_dist = min_dist + (max_dist - min_dist) * reliability
         else:
-            station_max_dist = self.max_dist
+            station_max_dist = max_dist
 
         # ── Per-station linear taper (v4.1) ─────────────────────────────────
         # v3/early-v4 used ONE taper per POI (distance to the nearest station
@@ -1231,6 +1383,21 @@ class NudgeTowardObservation(Filter):
             # an explicit RMS formula in case this is ever extended to aggregate
             # multiple ref_times/variables per station.
             residual_pre_nudge = np.concatenate(err_val_pre)
+
+            # Stations CleanObservation's QC dropped for this variable (see its
+            # "{col}_qc_dropped" flag column — set for both the physical-bounds
+            # and background-check tiers, never for a holdout/excluded station;
+            # see clean_observation.py's "Holdout protection"). `stations` here
+            # is post-_apply_holdout but QC only ever nulls a value, never a
+            # whole row, so lat/lon for a QC-dropped station are still present.
+            # Absent column (e.g. an older cleaned Parquet, or no field found
+            # for the background check) => no QC-dropped stations to show.
+            qc_flag_col = f"{col}_qc_dropped"
+            if qc_flag_col in stations.columns:
+                qc_mask = stations[qc_flag_col].fillna(False).astype(bool)
+            else:
+                qc_mask = pd.Series(False, index=stations.index)
+
             self._reliability_diag.setdefault(shortname, {}).update({
                 "err_latitude": np.concatenate(err_lat),
                 "err_longitude": np.concatenate(err_lon),
@@ -1240,10 +1407,13 @@ class NudgeTowardObservation(Filter):
                 "pre_nudge_rmse": np.sqrt(residual_pre_nudge ** 2),
                 "post_nudge_rmse": np.sqrt(np.concatenate(err_val_post) ** 2),
                 "err_is_holdout": np.concatenate(err_is_holdout),
+                "qc_dropped_latitude": stations.loc[qc_mask, "latitude"].to_numpy(),
+                "qc_dropped_longitude": stations.loc[qc_mask, "longitude"].to_numpy(),
+                "qc_dropped_ids": stations.index[qc_mask].tolist(),
             })
 
         if self.use_reliability_check:
-            n_shrunk = int((station_max_dist < self.max_dist).sum())
+            n_shrunk = int((station_max_dist < max_dist).sum())
             LOG.info(
                 "Nudged '%s': %d stations, %d POIs, max |correction| = %.4f "
                 "(reliability check: number_of_std=%.2f, %d/%d station(s) with a shrunk radius)",
@@ -1270,10 +1440,9 @@ class NudgeTowardObservation(Filter):
         sta_ids: list,
         st_lon: np.ndarray,
         st_lat: np.ndarray,
-        st_elev: np.ndarray,
-        sta_xy: np.ndarray,
         r_at_st: np.ndarray,
         sta_topo: xr.Dataset,
+        max_dist: float,
     ) -> xr.DataArray:
         """Leave-one-out spatial-consistency check (v4; ported unchanged from
         notebooks/nudging_analysis_v10.ipynb — see module docstring, "Station
@@ -1284,13 +1453,16 @@ class NudgeTowardObservation(Filter):
         predict for them, independent of distance/topo similarity to any
         particular POI.
 
-        Reuses ``st_lon``/``st_lat``/``st_elev``/``sta_xy``/``r_at_st``/``sta_topo``
-        already computed by ``_nudge_field`` for the exact same station set,
-        rather than recomputing them — a pure implementation-level
-        deduplication (avoids repeating the elevation-fallback DEM sampling and
-        lapse-rate correction a second time); it does not change any numerical
+        Reuses ``st_lon``/``st_lat``/``r_at_st``/``sta_topo``/``max_dist``
+        already computed by ``_nudge_field`` for the exact same station set
+        and variable, rather than recomputing them — a pure
+        implementation-level deduplication; it does not change any numerical
         result, since these arrays are deterministic given the same station
-        DataFrame and field.
+        DataFrame and field. ``max_dist`` is this variable's own radius (see
+        *variable_overrides*), used here as the single global radius the
+        module docstring's "Station reliability" section refers to — still
+        global across stations, just no longer necessarily the same value
+        for every nudged variable.
 
         Returns an xr.DataArray (dims=["sta"]) of reliability in [0, 1],
         aligned with ``sta_ids``.
@@ -1304,35 +1476,15 @@ class NudgeTowardObservation(Filter):
         )
 
         # ── Station <-> station barrier-aware distances ────────────────────
-        # Same barrier_distances() used for POIs, with the station list
-        # standing in as its own "POI" set. The diagonal (station vs. itself)
-        # is forced to +inf *before* calling barrier_distances so its own
-        # close_mask excludes it outright — never processed, stays +inf —
-        # which ned_interp's max_dist cutoff then masks out, guaranteeing
-        # station s can never be its own neighbour. Always uses the GLOBAL
-        # self.max_dist (not any per-station radius) — reliability itself has
-        # to be computed before any per-station radius can be derived from it.
-        d_euc_ss = np.sqrt(
-            ((sta_xy[:, None, :] - sta_xy[None, :, :]) ** 2).sum(axis=-1)
-        ).astype(np.float32)
-        np.fill_diagonal(d_euc_ss, np.inf)
-
-        d_eff_ss = barrier_distances(
-            st_lon, st_lat,   # "POI" side = the stations themselves
-            st_lon, st_lat,   # "station" side = the stations themselves
-            d_euc_ss, self.max_dist,
-            st_elev,
-            self._dem_rgi, self._wgs84_to_lv95,
-            n_samples=self.n_barrier_samples,
-            elev_scale=self.elev_scale,
-            elev_diff_scale=self.elev_diff_scale,
-            n_barrier_width_samples=self.n_barrier_width_samples,
-            barrier_width_m=self.barrier_width_m,
-        )
-
-        ned_ss = xr.DataArray(
-            d_eff_ss, dims=["poi", "sta"], coords={"poi": sta_ids, "sta": sta_ids},
-        )
+        # Read from the precomputed cache instead of computing them live —
+        # see _load_d_eff_cache/_get_d_eff_sta. The diagonal (station vs.
+        # itself) is already +inf in the cache (see the offline
+        # cache-building step), which ned_interp's max_dist cutoff then masks
+        # out, guaranteeing station s can never be its own neighbour. Always
+        # uses this variable's own GLOBAL max_dist (not any per-station
+        # radius) below — reliability itself has to be computed before any
+        # per-station radius can be derived from it.
+        ned_ss = self._get_d_eff_sta(shortname, sta_ids)
 
         # Stations stand in as both "sta" and "poi" for the leave-one-out prediction.
         poi_topo = sta_topo.rename({"sta": "poi"}).assign_coords({"poi": sta_ids})
@@ -1344,7 +1496,7 @@ class NudgeTowardObservation(Filter):
         r_hat = ned_interp(
             sta_res, ned_ss,
             sta_topo=sta_topo, poi_topo=poi_topo,
-            max_dist=self.max_dist, weight_power=self.weight_power,
+            max_dist=max_dist, weight_power=self.weight_power,
             min_topo_w=self.min_topo_w, lim_effective=self.lim_effective,
         )
         r_hat_at_st = r_hat[shortname].rename({"poi": "sta"}).sel(sta=sta_ids).values
@@ -1378,7 +1530,7 @@ class NudgeTowardObservation(Filter):
                 "within max_dist=%.2f km for the leave-one-out check (e=NaN); "
                 "left at reliability=1.0, excluded from the robust median/MAD "
                 "so they don't corrupt every other station's reliability.",
-                shortname, n_isolated, n_sta, self.max_dist,
+                shortname, n_isolated, n_sta, max_dist,
             )
         if finite.any():
             med_e = float(np.median(e[finite]))
@@ -1413,14 +1565,18 @@ class NudgeTowardObservation(Filter):
         )
 
     def _plot_reliability_diagnostic(self, shortname, ref_time, background, corrected) -> None:
-        """Save the 5-panel reliability diagnostic PNG for one variable/ref_time:
+        """Save the 6-panel reliability diagnostic PNG for one variable/ref_time:
         station residual (holdin AND holdout stations, pre-nudging), station
         reliability (holdin only — reliability is only defined for stations
         that participated in the nudging), gridded correction (these three
-        match notebooks/nudging_analysis_v10.ipynb's diagnostic cell), and two
+        match notebooks/nudging_analysis_v10.ipynb's diagnostic cell), two
         production-only panels of pre- and post-nudging station RMSE (holdin
         circles vs. holdout triangles — see the "Pre/post-nudging station
-        error" block in ``_nudge_field``).
+        error" block in ``_nudge_field``), and a sixth panel marking which
+        stations CleanObservation's QC removed for this variable (see
+        ``qc_dropped_*`` in that same block) — always empty for a
+        holdout/excluded station, by construction (see
+        clean_observation.py's "Holdout protection").
 
         Opt-in via *plot_dir*; a no-op if it is ``None`` or if
         ``_compute_reliability`` wasn't called for ``shortname`` this call
@@ -1455,15 +1611,26 @@ class NudgeTowardObservation(Filter):
 
             # Shared colour scale for the two residual panels, so they're directly
             # comparable — same convention as the notebook's diagnostic cell.
-            res_abs = max(float(np.abs(station_res).max()), float(np.abs(res_ch).max()))
+            # Uses the _DIAG_COLORBAR_PERCENTILE-th percentile of each source's
+            # magnitude rather than its true max (see that constant's docstring):
+            # a few outlier stations/cells no longer stretch the whole scale.
+            # Percentile is taken separately per source (station vs. gridded),
+            # then combined via max — mirroring the previous max-of-two-maxes
+            # structure — so the (usually far more numerous) gridded points don't
+            # dilute the station outliers' influence on the scale, or vice versa.
+            res_abs = max(
+                float(np.percentile(np.abs(station_res), _DIAG_COLORBAR_PERCENTILE)) if len(station_res) else 0.0,
+                float(np.percentile(np.abs(res_ch), _DIAG_COLORBAR_PERCENTILE)) if len(res_ch) else 0.0,
+            ) or 1.0  # guard against an all-zero degenerate case
             vmin, vmax = -res_abs, res_abs
 
             # Shared colour scale for the two RMSE panels, so pre- and post-nudging
-            # station error are directly comparable.
+            # station error are directly comparable. Same percentile-based
+            # rationale as the residual panels above.
             err_vmax = max(
-                float(diag["pre_nudge_rmse"].max()) if len(diag["pre_nudge_rmse"]) else 1.0,
-                float(diag["post_nudge_rmse"].max()) if len(diag["post_nudge_rmse"]) else 1.0,
-            )
+                float(np.percentile(diag["pre_nudge_rmse"], _DIAG_COLORBAR_PERCENTILE)) if len(diag["pre_nudge_rmse"]) else 0.0,
+                float(np.percentile(diag["post_nudge_rmse"], _DIAG_COLORBAR_PERCENTILE)) if len(diag["post_nudge_rmse"]) else 0.0,
+            ) or 1.0
 
             def _base(ax):
                 ax.set_extent(extent, crs=ccrs.PlateCarree())
@@ -1533,10 +1700,17 @@ class NudgeTowardObservation(Filter):
             # levels must be an explicit array spanning [vmin, vmax] — a bare
             # integer count would make tricontourf compute level *positions*
             # from res_ch's actual data range instead of from vmin/vmax.
+            # extend="both": values outside [vmin, vmax] get clamped to the
+            # colormap's over/under color instead of being left unfilled —
+            # without it, tricontourf has no bin for out-of-range points and
+            # silently skips painting them, leaving gaps that show the bare
+            # map background through (easily mistaken for a genuine near-zero
+            # residual when it's actually the opposite: the most extreme
+            # values in the field).
             levels = np.linspace(vmin, vmax, 51)
             tcf2 = ax2.tricontourf(
                 lo_ch, la_ch, res_ch, levels=levels, cmap="RdBu_r",
-                vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree(),
+                vmin=vmin, vmax=vmax, extend="both", transform=ccrs.PlateCarree(),
             )
             _colorbar(ax2, tcf2, "interpolated residual (background − corrected)")
             ax2.set_title(f"Interpolated residuals — {shortname} ({ref_time})")
@@ -1558,6 +1732,28 @@ class NudgeTowardObservation(Filter):
             )
             _colorbar(ax4, sc4, "post-nudging RMSE (station − corrected)")
             ax4.set_title(f"Post-nudging station error — {shortname} ({ref_time})")
+
+            ax5 = fig.add_subplot(2, 3, 6, projection=ccrs.PlateCarree())
+            _base(ax5)
+            # "Kept" here means every station that passed QC and reported this
+            # variable (diag["err_*"] — same population as ax0/ax3/ax4); a
+            # QC-dropped station has NaN for this column by the time _nudge_field
+            # builds err_latitude/err_longitude, so the two sets are disjoint.
+            ax5.scatter(
+                diag["err_longitude"], diag["err_latitude"],
+                s=25, c="lightgrey", marker="o", edgecolors="black", linewidths=0.3,
+                transform=ccrs.PlateCarree(), zorder=4, label="kept",
+            )
+            qc_lon = diag.get("qc_dropped_longitude", np.array([]))
+            qc_lat = diag.get("qc_dropped_latitude", np.array([]))
+            if len(qc_lon):
+                ax5.scatter(
+                    qc_lon, qc_lat,
+                    s=90, c="red", marker="X", edgecolors="black", linewidths=0.6,
+                    transform=ccrs.PlateCarree(), zorder=6, label="removed by QC",
+                )
+            ax5.legend(loc="lower left", fontsize=8)
+            ax5.set_title(f"Stations removed by QC ({len(qc_lon)}) — {shortname} ({ref_time})")
 
             plt.tight_layout()
             ref_time_str = ref_time.strftime("%Y%m%d%H%M") if ref_time is not None else "unknown"

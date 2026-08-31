@@ -1,43 +1,3 @@
-"""anemoi-inference output that emits a zero-valued field at step=0 for
-variables accumulated from the start of the forecast (see the
-``accumulate_from_start_of_forecast`` post-processor), by cloning the GRIB
-metadata of a real reference message rather than re-deriving it.
-
-Why this exists
-----------------
-``Accumulate`` only ever updates fields already present in the state, so an
-accumulated variable (e.g. ``tp``) is never part of the initial state and no
-step-0 message is written. Synthesising it through the normal
-``write_step``/``grib_keys()`` path forces a zero-length accumulation window
-(``startStep == endStep == 0``) to be encoded from scratch for a variable
-that has never appeared in the state before, which is fragile to get exactly
-right for downstream consumers (see anemoi-inference PR #546, discarded for
-this reason).
-
-Instead, this output clones an existing, known-good step-0 GRIB message (the
-operational reference file for this stream) and overrides only the
-run-specific keys (``date``/``time``/``step``). Every other key -- edition,
-packing, table version, product definition template, quantile/percentile
-keys, etc. -- is inherited byte-for-byte from the template, via
-``GribWriter.write()`` / ``encode_message()``.
-
-Usage
------
-Register as a sibling output next to the "real" grib output, once per output
-stream::
-
-    output:
-      tee:
-      - grib:
-          path: ninjo_icon-1e_ctrl_..._alp_{step}.grb2
-          write_initial_state: false
-          ...
-      - zero-step-from-template:
-          path: ninjo_icon-1e_ctrl_..._alp_000.grb2
-          template_path: /opr/osm/inn/wd/*_640/grib/ninjo_icon-1e_ctrl_*_alp_000.grb2
-          accumulations: [tp]   # optional, defaults to metadata.accumulations
-"""
-
 import glob
 import logging
 from functools import cached_property
@@ -59,7 +19,32 @@ LOG = logging.getLogger(__name__)
 class ZeroStepFromTemplate(GribFileOutput):
     """Write a zero-valued, step=0 GRIB message for accumulated variables,
     cloning metadata from a reference GRIB file. Writes nothing at any other
-    step."""
+    step.
+
+    Usage
+    -----
+    Register as a sibling output next to the "real" grib output, once per output
+    stream::
+
+        output:
+            tee:
+                outputs:
+                - grib:
+                    path: outputs/forecaster/{dateTime}_{step:03}.grib
+                    encoding:
+                    typeOfGeneratingProcess: 2
+                    templates:
+                    samples: resources/templates/templates_index_icon.yaml
+                    post_processors:
+                    - extract_from_state: lam_0
+                    - accumulate_from_start_of_forecast:
+                        accumulations: [tp]
+                - zero-step-from-template:
+                    path: outputs/forecaster/{dateTime}_000.grib
+                    template_path: /path/to/reference/*_000.grib2   # a real step-0 reference message per accumulated var
+                    accumulations: [tp]
+                    write_initial_state: true
+    """
 
     def __init__(
         self,

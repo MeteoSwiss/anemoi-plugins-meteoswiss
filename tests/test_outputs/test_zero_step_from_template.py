@@ -62,7 +62,11 @@ def test_write_initial_state_emits_zero_field_from_template(output, data_dir):
 
 
 def test_write_initial_state_skips_field_already_present(output):
-    state = {"date": REFERENCE_DATE, "fields": {"2t": np.zeros(1)}, "step": datetime.timedelta(0)}
+    state = {
+        "date": REFERENCE_DATE,
+        "fields": {"2t": np.zeros(1)},
+        "step": datetime.timedelta(0),
+    }
     output.write_initial_state(state)
     output.close()
 
@@ -71,7 +75,11 @@ def test_write_initial_state_skips_field_already_present(output):
 
 
 def test_write_step_is_a_noop(output):
-    state = {"date": REFERENCE_DATE, "fields": {"2t": np.zeros(1)}, "step": datetime.timedelta(hours=1)}
+    state = {
+        "date": REFERENCE_DATE,
+        "fields": {"2t": np.zeros(1)},
+        "step": datetime.timedelta(hours=1),
+    }
     output.write_step(state)
     output.close()
 

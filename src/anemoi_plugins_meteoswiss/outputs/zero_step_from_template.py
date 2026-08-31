@@ -5,7 +5,6 @@ from typing import Any
 
 import earthkit.data as ekd
 import numpy as np
-
 from anemoi.inference.context import Context
 from anemoi.inference.metadata import Metadata
 from anemoi.inference.outputs import output_registry
@@ -72,7 +71,9 @@ class ZeroStepFromTemplate(GribFileOutput):
         """
         super().__init__(context, metadata, **kwargs)
         self.template_path = template_path
-        self.accumulations = accumulations if accumulations is not None else list(metadata.accumulations)
+        self.accumulations = (
+            accumulations if accumulations is not None else list(metadata.accumulations)
+        )
         LOG.info(
             "[zero-step-from-template] init: template_path=%s accumulations=%s",
             self.template_path,

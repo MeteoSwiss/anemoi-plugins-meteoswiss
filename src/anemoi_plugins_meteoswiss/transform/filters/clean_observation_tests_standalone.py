@@ -529,9 +529,6 @@ def _set_indices(
         if flags[g] != 1:
             indices_global_outer.append(g)
             distances_outer.append(float(d))
-        if g == curr:
-            curr_in_guess = True
-
     # Force curr into outer for the re-check phase
     if curr >= 0 and flags[curr] == 1 and curr not in indices_global_outer:
         for g, d in zip(indices_global_outer_guess, distances):

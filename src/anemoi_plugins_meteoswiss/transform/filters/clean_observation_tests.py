@@ -307,9 +307,9 @@ def spacial_ct_resistant(stations,lats,lons,elevs,values,para,date,background_el
                         inner_radius, outer_radius, num_iterations, num_min_prof, 
                         min_elev_diff, min_horizontal_scale, max_horizontal_scale, 
                         kth_closest_obs_horizontal_scale, vertical_scale, 
-                        values_mina, values_maxa, values_minv, values_maxv, 
+                        values_mina, values_maxa, values_minv, values_maxv,
                         eps2, tpos, tneg, bdebug, bbasic)
-    except:
+    except Exception:
         flags=[]
         scores=[]
         LOG.warning('Spacial_ct_resistant '+'exeption in test')
@@ -367,7 +367,6 @@ def spacial_ct_dual(stations,lats,lons,elevs,values,para,date,num_min_outer=3,nu
     """
     points = titanlib.Points(lats, lons, elevs)
     npoints = len(lats)
-    N=npoints
     obs_to_check = np.repeat(1, npoints)
     test_thresholds = np.repeat(test_thresholds, npoints)
     event_thresholds = np.repeat(event_thresholds, npoints)
@@ -380,7 +379,7 @@ def spacial_ct_dual(stations,lats,lons,elevs,values,para,date,num_min_outer=3,nu
                         num_iterations, min_horizontal_scale, max_horizontal_scale,
                         kth_closest_obs_horizontal_scale, vertical_scale,
                         test_thresholds, debug)
-    except:
+    except Exception:
         flags=[]
         LOG.warning('spacial_ct_dual '+'exeption in sct_resistant test')
     if len(flags)>0:

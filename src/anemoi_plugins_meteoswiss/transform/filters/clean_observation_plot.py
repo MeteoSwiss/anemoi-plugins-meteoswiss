@@ -10,7 +10,7 @@ _EXTENT_CH = (5.9, 10.5, 45.8, 47.8)  # Switzerland
 
 
 def make_qc_map(para, station_names, lats, lons, flagged_set, values, out_path,
-                isolation_set=None, extent=None):
+                isolation_set=None, extent=None, timestamp=None):
     """Save a PNG map for *para* using cartopy for the geographic background.
 
     Stations are drawn as circles colored by observed value (RdYlBu_r colormap).
@@ -202,8 +202,15 @@ def make_qc_map(para, station_names, lats, lons, flagged_set, values, out_path,
     n_ok = int(ok_mask.sum())
     n_isolated = int(iso_mask.sum())
     n_flagged = int(flag_mask.sum())
+    ts_label = ""
+    if timestamp:
+        try:
+            from datetime import datetime as _dt
+            ts_label = "  ·  " + _dt.strptime(timestamp, "%Y%m%d%H%M").strftime("%Y-%m-%d %H:%M UTC")
+        except ValueError:
+            ts_label = "  ·  " + timestamp
     ax.set_title(
-        f"{para} QC map  ·  {n_ok} ok  ·  {n_isolated} isolated  ·  {n_flagged} flagged",
+        f"{para} QC map{ts_label}  ·  {n_ok} ok  ·  {n_isolated} isolated  ·  {n_flagged} flagged",
         fontsize=13, fontweight="bold", pad=8, color="#111111")
 
     legend_elements = [
@@ -329,7 +336,8 @@ def plot_station_maps(flagged, par2check, df, obs_path_out, para_values=None, is
         flagged_by_para.setdefault(entry["qc_parameter"], set()).add(entry["station"])
 
     ts_match = _re.search(r'\d{12}', obs_path_out.stem)
-    ts_prefix = ts_match.group() + "_" if ts_match else ""
+    ts_str    = ts_match.group() if ts_match else None
+    ts_prefix = (ts_str + "_") if ts_str else ""
 
     lats = df["latitude"].to_numpy(dtype=float)
     lons = df["longitude"].to_numpy(dtype=float)
@@ -344,8 +352,8 @@ def plot_station_maps(flagged, par2check, df, obs_path_out, para_values=None, is
 
         out_full = plot_dir / f"{ts_prefix}{para}_qc_map.png"
         make_qc_map(para, station_names, lats, lons, flagged_set, values, out_full,
-                    isolation_set=iso_set, extent=_EXTENT)
+                    isolation_set=iso_set, extent=_EXTENT, timestamp=ts_str)
 
         out_ch = plot_dir / f"{ts_prefix}{para}_qc_map_ch.png"
         make_qc_map(para, station_names, lats, lons, flagged_set, values, out_ch,
-                    isolation_set=iso_set, extent=_EXTENT_CH)
+                    isolation_set=iso_set, extent=_EXTENT_CH, timestamp=ts_str)

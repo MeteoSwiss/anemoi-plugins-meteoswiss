@@ -548,8 +548,8 @@ def _set_indices(
 
     # Position maps for fast lookup
     inner_pos: dict[int, int] = {
-        indices_global_outer[i]: l
-        for l, i in enumerate(indices_outer_inner)
+        indices_global_outer[i]: li
+        for li, i in enumerate(indices_outer_inner)
     }
 
     # Test set
@@ -558,18 +558,18 @@ def _set_indices(
     indices_global_test: list[int] = []
 
     if curr < 0:
-        for l, i in enumerate(indices_outer_inner):
+        for li, i in enumerate(indices_outer_inner):
             g = indices_global_outer[i]
             if obs_test[g] == 1 and flags[g] == NA:
                 indices_outer_test.append(i)
-                indices_inner_test.append(l)
+                indices_inner_test.append(li)
                 indices_global_test.append(g)
     else:
         if curr in inner_pos:
-            l = inner_pos[curr]
-            i = indices_outer_inner[l]
+            li = inner_pos[curr]
+            i = indices_outer_inner[li]
             indices_outer_test.append(i)
-            indices_inner_test.append(l)
+            indices_inner_test.append(li)
             indices_global_test.append(curr)
 
     return (
@@ -623,7 +623,7 @@ def _fgt_core(
     chi_stat: list[float] = []
     chi_stat_alt: list[float] = []
 
-    for l, i in enumerate(indices_outer_inner):
+    for li, i in enumerate(indices_outer_inner):
         # sigma_b == 0 with obs == bg → 0/0 = NaN, treat as chi=0 (no flag).
         # sigma_b == 0 with obs != bg → inf, matching C++ behaviour (always flags).
         with warnings.catch_warnings():
@@ -631,11 +631,11 @@ def _fgt_core(
             raw = abs(yo[i] - yb[i]) / sigma_b[i] if sigma_b[i] != 0.0 else (
                 0.0 if yo[i] == yb[i] else float("inf")
             )
-        chi_inner[l] = raw
-        chi_inner_alt[l] = float(maxv[i] - minv[i])
+        chi_inner[li] = raw
+        chi_inner_alt[li] = float(maxv[i] - minv[i])
         if mina[i] <= yb[i] <= maxa[i]:
-            chi_stat.append(chi_inner[l])
-            chi_stat_alt.append(chi_inner_alt[l])
+            chi_stat.append(chi_inner[li])
+            chi_stat_alt.append(chi_inner_alt[li])
 
     # All backgrounds outside admissible range → flag everything bad
     if not chi_stat:
@@ -662,8 +662,8 @@ def _fgt_core(
     mmx = -1
     for m in range(p_test):
         i = indices_outer_test[m]
-        l = indices_inner_test[m]
-        z = chi_inner[l] if basic else (chi_inner[l] - mu) / (sigma + sigma_mu)
+        li = indices_inner_test[m]
+        z = chi_inner[li] if basic else (chi_inner[li] - mu) / (sigma + sigma_mu)
         if z > zmx and (yb[i] < minv[i] or yb[i] > maxv[i]):
             zmx = z
             mmx = m
@@ -1059,14 +1059,14 @@ def _sct_set_indices(outer_guess, obs_test_arr, flags_arr, distances, inner_radi
 
     for i, (g, d) in enumerate(outer_pairs):
         if d <= inner_radius:
-            l = len(indices_outer_inner)
+            li = len(indices_outer_inner)
             indices_outer_inner.append(i)
             is_test = (g == forced_curr) if forced_curr >= 0 \
                       else (obs_test_arr[g] == 1 and flags_arr[g] < 0)
             if is_test:
                 indices_global_test.append(g)
                 indices_outer_test.append(i)
-                indices_inner_test.append(l)
+                indices_inner_test.append(li)
 
     return (indices_global_outer, indices_global_test,
             indices_outer_inner, indices_outer_test, indices_inner_test)
@@ -1104,21 +1104,21 @@ def _sct_core(
     chi_stat = []
     chi_stat_alt = []
 
-    for l in range(p_inner):
-        i = ioi[l]
+    for li in range(p_inner):
+        i = ioi[li]
         # OI analysis (S_uw = S without eps2 on diagonal)
         ya = float(np.clip(yb[i] + S_uw[i, :] @ Sinv_d, minp, maxp))
         # leave-one-out cross-validation analysis
-        yav[l] = float(np.clip(yo[i] - Sinv_d[i] / Sinv[i, i], minp, maxp))
+        yav[li] = float(np.clip(yo[i] - Sinv_d[i] / Sinv[i, i], minp, maxp))
 
-        prod = (yo[i] - ya) * (yo[i] - yav[l])
-        chi_inner[l] = np.sqrt(max(float(prod), 0.0))
-        chi_inner_alt[l] = (
+        prod = (yo[i] - ya) * (yo[i] - yav[li])
+        chi_inner[li] = np.sqrt(max(float(prod), 0.0))
+        chi_inner_alt[li] = (
             np.sqrt(eps2_o[i] / (1.0 + eps2_o[i])) * (maxv_o[i] - minv_o[i])
         )
-        if mina_o[i] <= yav[l] <= maxa_o[i]:
-            chi_stat.append(chi_inner[l])
-            chi_stat_alt.append(chi_inner_alt[l])
+        if mina_o[i] <= yav[li] <= maxa_o[i]:
+            chi_stat.append(chi_inner[li])
+            chi_stat_alt.append(chi_inner_alt[li])
 
     # All yav outside admissible range → flag all test stations as bad
     if not chi_stat:
@@ -1147,9 +1147,9 @@ def _sct_core(
     mmx = -1
     for m in range(p_test):
         i = iot[m]
-        l = iit[m]
-        z = chi_inner[l] if basic else (chi_inner[l] - mu) / (sigma + sigma_mu)
-        if z > zmx and (yav[l] < minv_o[i] or yav[l] > maxv_o[i]):
+        li = iit[m]
+        z = chi_inner[li] if basic else (chi_inner[li] - mu) / (sigma + sigma_mu)
+        if z > zmx and (yav[li] < minv_o[i] or yav[li] > maxv_o[i]):
             zmx = z
             mmx = m
 

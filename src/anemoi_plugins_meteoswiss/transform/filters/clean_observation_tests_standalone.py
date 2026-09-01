@@ -1273,9 +1273,13 @@ def sct_resistant_raw(
 
         g_arr = np.asarray(igo, dtype=int)
         yo    = values[g_arr]
-        eps2_o = eps2[g_arr];  tpos_o = tpos[g_arr];  tneg_o = tneg[g_arr]
-        mina_o = values_mina[g_arr]; maxa_o = values_maxa[g_arr]
-        minv_o = values_minv[g_arr]; maxv_o = values_maxv[g_arr]
+        eps2_o = eps2[g_arr]
+        tpos_o = tpos[g_arr]
+        tneg_o = tneg[g_arr]
+        mina_o = values_mina[g_arr]
+        maxa_o = values_maxa[g_arr]
+        minv_o = values_minv[g_arr]
+        maxv_o = values_maxv[g_arr]
 
         yb = _compute_background(
             elevs[g_arr], yo, background_elab_type,
@@ -1506,8 +1510,12 @@ def sct_dual_raw(
             dist_b = np.asarray([p[1] for p in pairs])
             g = np.asarray(idx_b, dtype=int)
 
-            lats_b = lats[g]; lons_b = lons[g]; elevs_b = elevs[g]
-            w_b = w_global[g]; eps2_b = eps2_global[g]; t_b = test_thresholds[g]
+            lats_b = lats[g]
+            lons_b = lons[g]
+            elevs_b = elevs[g]
+            w_b = w_global[g]
+            eps2_b = eps2_global[g]
+            t_b = test_thresholds[g]
 
             disth, distz = _compute_pairwise_distances(lats_b, lons_b, elevs_b)
             Dh_mean = _adaptive_dh_mean(
@@ -1522,12 +1530,15 @@ def sct_dual_raw(
             # Split outer circle into w=0 and w=1 sub-groups
             w0_pos = np.where(w_b == 0)[0]
             w1_pos = np.where(w_b == 1)[0]
-            p_w0 = len(w0_pos); p_w1 = len(w1_pos)
+            p_w0 = len(w0_pos)
+            p_w1 = len(w1_pos)
 
             i0_map = np.full(N, -1, dtype=int)
             i1_map = np.full(N, -1, dtype=int)
-            for k, j in enumerate(w0_pos): i0_map[j] = k
-            for k, j in enumerate(w1_pos): i1_map[j] = k
+            for k, j in enumerate(w0_pos):
+                i0_map[j] = k
+            for k, j in enumerate(w1_pos):
+                i1_map[j] = k
 
             Sinv_w0 = Sinv_w1 = Sinv_d_w0 = Sinv_d_w1 = None
 
@@ -1562,12 +1573,15 @@ def sct_dual_raw(
                     continue
                 inner_test_gis.append(gi)
 
-                i0 = i0_map[li]; i1 = i1_map[li]
+                i0 = i0_map[li]
+                i1 = i1_map[li]
 
                 # Cross-class IDI (sum over opposite-class neighbours)
-                w0_idiv_cross = 0.0; w1_idiv_cross = 0.0
+                w0_idiv_cross = 0.0
+                w1_idiv_cross = 0.0
                 for lj in range(N):
-                    j0 = i0_map[lj]; j1 = i1_map[lj]
+                    j0 = i0_map[lj]
+                    j1 = i1_map[lj]
                     if i1 >= 0 and j0 >= 0 and Sinv_d_w0 is not None:
                         w0_idiv_cross += S_uw[li, lj] * Sinv_d_w0[j0]
                     elif i0 >= 0 and j1 >= 0 and Sinv_d_w1 is not None:
@@ -1599,7 +1613,8 @@ def sct_dual_raw(
                     z = z1wrt0
 
                 if np.isfinite(z) and (not np.isfinite(zmx) or z > zmx):
-                    zmx = z; best_gi = gi
+                    zmx = z
+                    best_gi = gi
 
             if best_gi >= 0:
                 flags[best_gi] = 1

@@ -657,7 +657,23 @@ class NudgeTowardObservation(Filter):
         Topographic descriptor variable names, drawn from *topo_file* plus
         the injected ``ICON_OROG`` (see *icon_orog_file*). Defaults to
         ``["TPI_500M", "TPI_4000M_SMTH", "SN_DERIV_2000M",
-        "WE_DERIV_2000M", "ICON_OROG"]``.
+        "WE_DERIV_2000M", "ICON_OROG"]``. Ignored when *use_topo_descriptors*
+        is ``False``.
+    use_topo_descriptors : bool
+        If ``True`` (default), weight each station's contribution by its
+        topographic similarity to each POI (see module docstring, step 5,
+        and ``ned_interp``'s Steps 2-5) on top of the barrier-aware IDW
+        distance weighting. If ``False``, skip topographic-similarity
+        weighting entirely and fall back to pure IDW
+        (``1 / d_eff[p,s]^weight_power``, un-modulated by *topo_vars*/
+        *min_topo_w*) for both the POI spreading step and the station
+        reliability check's leave-one-out prediction — see ``ned_interp``'s
+        "Pure IDW fallback" branch, which this reuses unchanged. *topo_file*/
+        *icon_orog_file* are still read either way: ``ICON_OROG`` (from
+        *icon_orog_file*) is also the source of the model's own elevation
+        used by the lapse-rate correction (see *lapse_rate*), which is
+        independent of topographic-similarity weighting and always applied
+        when relevant regardless of this flag.
     nudge_variables : list of str, optional
         GRIB shortNames to nudge (subset of PARAM_MAP keys). Defaults to all
         non-precipitation variables.
@@ -722,6 +738,7 @@ class NudgeTowardObservation(Filter):
         lapse_rate: float = _DEFAULT_LAPSE_RATE,
         lapse_rate_vars: Optional[list] = None,
         topo_vars: Optional[list] = None,
+        use_topo_descriptors: bool = True,
         nudge_variables: Optional[list] = None,
         run_mode: str = "depl",
         holdout_fraction: Optional[float] = None,
@@ -784,6 +801,7 @@ class NudgeTowardObservation(Filter):
             frozenset(lapse_rate_vars) if lapse_rate_vars is not None else _DEFAULT_LAPSE_RATE_VARS
         )
         self.topo_vars = list(topo_vars) if topo_vars is not None else _DEFAULT_TOPO_VARS
+        self.use_topo_descriptors = use_topo_descriptors
         self.run_mode = run_mode
         self.holdout_fraction = holdout_fraction
         self.holdout_seed = holdout_seed
@@ -859,13 +877,14 @@ class NudgeTowardObservation(Filter):
 
         LOG.info(
             "NudgeTowardObservation v5 initialised: variables=%s, max_dist=%s km, "
-            "weight_power=%.1f, d_eff_file=%s, "
+            "weight_power=%.1f, d_eff_file=%s, use_topo_descriptors=%s, "
             "lapse_rate=%.5f K/m (vars=%s), use_reliability_check=%s, number_of_std=%.2f, "
             "reliability_min_dist_frac=%.3f, min radius=%s km",
             list(self.param_map.keys()),
             {v: self._max_dist_by_var[v] for v in self.param_map},
             self.weight_power,
             {v: str(self._d_eff_file_by_var[v]) for v in self.param_map},
+            self.use_topo_descriptors,
             self.lapse_rate,
             sorted(self.lapse_rate_vars),
             self.use_reliability_check,
@@ -889,8 +908,20 @@ class NudgeTowardObservation(Filter):
         )
 
     def _load_topo(self) -> None:
+        # Loaded unconditionally, even when use_topo_descriptors=False: ICON_OROG
+        # (injected below by _load_icon_orog) is also the source of the model's
+        # own elevation used by the lapse-rate correction (see *lapse_rate*),
+        # which is independent of topographic-similarity weighting.
         self._ds_topo = xr.open_dataset(self.topo_file)
         self._load_icon_orog()
+        if not self.use_topo_descriptors:
+            LOG.info(
+                "use_topo_descriptors=False: topo descriptors from %s will not be "
+                "used for similarity weighting (ICON_OROG from %s is still loaded "
+                "for the lapse-rate correction).",
+                self.topo_file, self.icon_orog_file,
+            )
+            return
         missing = [v for v in self.topo_vars if v not in self._ds_topo]
         if missing:
             raise ValueError(
@@ -1246,23 +1277,30 @@ class NudgeTowardObservation(Filter):
         ned_sta_poi = self._get_d_eff_poi(shortname, dom_idx, sta_ids)
 
         # ── Topographic descriptors at POIs and stations ───────────────────
-        # POI descriptors: direct lookup by ICON cell index.
-        poi_topo = (
-            self._ds_topo[self.topo_vars]
-            .isel(cell=dom_idx)
-            .rename({"cell": "poi"})
-            .assign_coords({"poi": dom_idx})
-        )
-        # Station descriptors: snap each station to the nearest ICON cell using
-        # the same LV95-km projection as grid_xy/sta_xy (precomputed once in
-        # _load_dem()) so the distance metric is consistent.
-        _, topo_gi = cKDTree(self._topo_xy_km).query(sta_xy, k=1)
-        sta_topo = (
-            self._ds_topo[self.topo_vars]
-            .isel(cell=topo_gi)
-            .rename({"cell": "sta"})
-            .assign_coords({"sta": sta_ids})
-        )
+        # Skipped entirely when use_topo_descriptors=False: ned_interp() and
+        # _compute_reliability() both fall back to pure IDW (1 / d_eff^weight_power)
+        # when sta_topo/poi_topo are None — see ned_interp's docstring.
+        if self.use_topo_descriptors:
+            # POI descriptors: direct lookup by ICON cell index.
+            poi_topo = (
+                self._ds_topo[self.topo_vars]
+                .isel(cell=dom_idx)
+                .rename({"cell": "poi"})
+                .assign_coords({"poi": dom_idx})
+            )
+            # Station descriptors: snap each station to the nearest ICON cell using
+            # the same LV95-km projection as grid_xy/sta_xy (precomputed once in
+            # _load_dem()) so the distance metric is consistent.
+            _, topo_gi = cKDTree(self._topo_xy_km).query(sta_xy, k=1)
+            sta_topo = (
+                self._ds_topo[self.topo_vars]
+                .isel(cell=topo_gi)
+                .rename({"cell": "sta"})
+                .assign_coords({"sta": sta_ids})
+            )
+        else:
+            poi_topo = None
+            sta_topo = None
 
         # ── Station reliability → per-station influence radius (v4) ────────
         # A fully reliable station (reliability=1) keeps the full max_dist
@@ -1441,7 +1479,7 @@ class NudgeTowardObservation(Filter):
         st_lon: np.ndarray,
         st_lat: np.ndarray,
         r_at_st: np.ndarray,
-        sta_topo: xr.Dataset,
+        sta_topo: Optional[xr.Dataset],
         max_dist: float,
     ) -> xr.DataArray:
         """Leave-one-out spatial-consistency check (v4; ported unchanged from
@@ -1452,6 +1490,10 @@ class NudgeTowardObservation(Filter):
         stations whose residual disagrees with what their own neighbours would
         predict for them, independent of distance/topo similarity to any
         particular POI.
+
+        ``sta_topo`` is ``None`` when *use_topo_descriptors* is ``False``
+        (see ``_nudge_field``), in which case the leave-one-out prediction
+        below falls back to pure IDW, same as ``ned_interp``'s own fallback.
 
         Reuses ``st_lon``/``st_lat``/``r_at_st``/``sta_topo``/``max_dist``
         already computed by ``_nudge_field`` for the exact same station set
@@ -1487,7 +1529,10 @@ class NudgeTowardObservation(Filter):
         ned_ss = self._get_d_eff_sta(shortname, sta_ids)
 
         # Stations stand in as both "sta" and "poi" for the leave-one-out prediction.
-        poi_topo = sta_topo.rename({"sta": "poi"}).assign_coords({"poi": sta_ids})
+        poi_topo = (
+            sta_topo.rename({"sta": "poi"}).assign_coords({"poi": sta_ids})
+            if sta_topo is not None else None
+        )
 
         # ── Leave-one-out neighbour prediction ──────────────────────────────
         # No reliability weighting here: the check itself must trust all OTHER

@@ -7,6 +7,7 @@ authors = [{ name = "MeteoSwiss" }]
 requires-python = ">=3.11"
 dependencies = [
     "anemoi-datasets",
+    "anemoi-inference",
     "anemoi-plugins==0.2.0",
     "anemoi-transform",
     "earthkit-meteo==1.0.0",
@@ -34,6 +35,9 @@ gaussian-smoother = "anemoi_plugins_meteoswiss.transform.filters:GaussianSmoothe
 icon-remap-to-reg-lat-lon = "anemoi_plugins_meteoswiss.transform.filters:IconRemapToRegLatLon"
 retrieve-observation = "anemoi_plugins_meteoswiss.transform.filters:RetrieveObservation"
 clean-observation = "anemoi_plugins_meteoswiss.transform.filters:CleanObservation"
+
+[project.entry-points."anemoi.inference.outputs"]
+zero-step-from-template = "anemoi_plugins_meteoswiss.outputs:ZeroStepFromTemplate"
 
 [project.entry-points."anemoi.datasets.create.sources"]
 rea-l-ch1-precip = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1Precip"

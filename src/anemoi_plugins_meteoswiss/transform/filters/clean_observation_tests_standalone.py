@@ -523,7 +523,6 @@ def _set_indices(
     indices_global_outer: list[int] = []
     distances_outer: list[float] = []
 
-    curr_in_guess = False
     for g, d in zip(indices_global_outer_guess, distances):
         g = int(g)
         if flags[g] != 1:

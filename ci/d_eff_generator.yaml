@@ -1,0 +1,124 @@
+# ci/d_eff_generator.yaml — CSCS HPC pipeline "d_eff_generator". On-demand only.
+# Trigger:  PR comment `cscs-ci run d_eff_generator`  or the trigger API.
+#
+# Runs scripts/generate_d_eff_cache.py on a Balfrin compute node to (re)build
+# the barrier- and elevation-aware effective-distance cache consumed by
+# NudgeTowardObservation's d_eff_file parameter. See that script's docstring
+# for the full algorithm; this file only handles environment setup and
+# invocation, matching ci/tests.yaml's role for pytest.
+#
+# Requires DWH access (via jretrieve) from the Balfrin runner for the station
+# catalog step — unverified as of writing (evalml's own Snakemake pipeline
+# depends on the same access from Balfrin, so it's plausible, but this
+# pipeline hasn't actually been run yet). If it fails at the "Retrieved N
+# stations from jretrieve" log line, that's the first thing to check.
+#
+# Writes its output under the CI job's own workspace (output/d_eff_cache/,
+# published as a pipeline artifact below) rather than directly to the shared
+# production aux_files/ location every deployment's d_eff_file points at —
+# promoting a newly generated cache into production (copying the artifact,
+# updating the relevant nudge_toward_observation config's d_eff_file) is a
+# deliberate, separate step, not an automatic side effect of running this
+# pipeline. Pass --output-dir explicitly below to change that.
+include:
+  - remote: 'https://gitlab.com/cscs-ci/recipes/-/raw/master/templates/v2/.ci-ext.yml'
+
+stages:
+  - generate
+
+.baremetal-runner-balfrin:
+  extends: [.baremetal-runner-santis-gh200]
+  variables:
+    F7T_URL: 'https://api.cscs.ch/mch/firecrest/v2'
+    FIRECREST_SYSTEM: 'balfrin'
+    ARCH: 'x86_64'
+    SLURM_JOB_NUM_NODES: 1
+    SLURM_NTASKS: 1
+    # barrier_distances() over ~1900 stations and a --max-dist-km-scaled POI
+    # domain is a real compute job, not a smoke test (unlike ci/tests.yaml's
+    # 20-minute allocation) — this is a starting point; tune it once you've
+    # seen how long an actual run takes for the chosen hyperparameters (the
+    # larger --max-dist-km/--n-barrier-samples combos will need more).
+    SLURM_TIMELIMIT: '05:00:00'
+
+# ── reusable script fragments (hidden jobs) ──────────────────────────────────
+# .sh_preamble/.log_ci_context/.install_uv/.uv_sync are duplicated from
+# ci/tests.yaml rather than shared via `include:`, so this stays a fully
+# self-contained ci/*.yaml file — matching the CSCS-CI convention that each
+# file here is one independently-triggerable pipeline.
+
+.sh_preamble:
+  script:
+    - |
+      set -euo pipefail
+      banner() { printf '\n\033[1;36m==== %s ====\033[0m\n' "$*"; }
+
+.log_ci_context:
+  script:
+    - |
+      banner "CI context"
+      echo "host=$(hostname -f 2>/dev/null || hostname)  user=$(whoami)"
+      echo "project=${CI_PROJECT_PATH:-?}  ref=${CI_COMMIT_REF_NAME:-?}  sha=${CI_COMMIT_SHA:-?}"
+
+# The runner already checked the repo out into $PWD. HOME is repointed there
+# since the compute node has no mounted home directory.
+.install_uv:
+  script:
+    - |
+      banner "Install uv"
+      export UV_CACHE_DIR="$SCRATCH/.cache/uv"  # wheel cache, persistent across pipelines
+      export HOME="$PWD/home"
+      export PATH="$PWD/.local/bin:$PATH"
+      # uv: bare metal assumes a user-managed env, so we install it ourselves
+      export UV_INSTALL_DIR="$PWD/.local/bin"
+      UV_VERSION='0.11.32'
+      curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | env INSTALLER_NO_MODIFY_PATH=1 sh
+      uv --version
+
+.uv_sync:
+  script:
+    - |
+      banner "uv sync"
+      uv sync --dev
+
+.generate_d_eff_cache:
+  script:
+    - |
+      banner "generate_d_eff_cache"
+      # Every generate_d_eff_cache.py flag spelled out explicitly (values below
+      # match that script's own argparse defaults) so a specific CI-triggered
+      # run's full parameter set is visible and editable here, without needing
+      # to open the script itself. Editing a value here does NOT change the
+      # script's own default for other callers (manual runs, other pipelines).
+      uv run python scripts/generate_d_eff_cache.py \
+        --jretrieve-src-path "/scratch/mch/llanzila/sruc/evalml/src" \
+        --dwh-params tre200s0 tde200s0 pp0qffs0 prestas0 rre150h0 fkl010z0 dkl010z0 fkl010z1 \
+        --seq-type surface \
+        --stations-bbox 40.5 53.0 0.0 17.5 \
+        --station-filter-mode domain \
+        --domain-bbox 45.7 48.0 5.8 10.8 \
+        --icon-grid-file "/scratch/mch/llanzila/sruc/aux_files/icon_grid_0001_R19B08_mch.nc" \
+        --dem-barrier-file "/store_new/mch/msclim/appclim/data/grids/topodem/v2/topo/radar_100/topo_DEM_1000M.nc" \
+        --n-barrier-samples 50 \
+        --n-barrier-width-samples 3 \
+        --barrier-width-m 1500 \
+        --elev-scale-km 50 \
+        --elev-diff-scale-km 100 \
+        --max-dist-km 50 \
+        --output-dir "$CI_PROJECT_DIR/output/d_eff_cache" \
+        --plot-out "$CI_PROJECT_DIR/output/d_eff_cache/stations.png"
+
+# ── pipeline ─────────────────────────────────────────────────────────────────
+
+d_eff_generator:
+  extends: [.baremetal-runner-balfrin]
+  stage: generate
+  script:
+    - !reference [.sh_preamble, script]
+    - !reference [.log_ci_context, script]
+    - !reference [.install_uv, script]
+    - !reference [.uv_sync, script]
+    - !reference [.generate_d_eff_cache, script]
+  artifacts:
+    paths:
+      - output/d_eff_cache/

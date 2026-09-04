@@ -1,137 +1,68 @@
 """
-NudgeTowardObservation — v5 (distances in km; v4 adds per-station reliability-based
-influence radius; v4.1 makes the linear taper per-station too — both ported
-unchanged from notebooks/nudging_analysis_v10.ipynb; v5 stops computing
-barrier-aware effective distances (d_eff) live and instead reads them from a
-precomputed cache file — see *d_eff_file* and step 4 below)
-
-Implements Interpolation of Residuals (IoR) using ned_interp combined with
-barrier-aware effective distances (d_eff), precomputed offline from a
-1 km-scale DEM and read from disk at construction time (*d_eff_file*) rather
-than computed by this filter.
+NudgeTowardObservation — Interpolation of Residuals (IoR): spreads station
+residuals (background − observation) onto the ICON grid via ned_interp
+(barrier-aware IDW + topographic similarity) and subtracts the result,
+nudging the background toward observations.
 
 Algorithm per variable
 ----------------------
-1.  Project ICON grid and station coordinates to Swiss LV95 (EPSG:2056) — the
-    same exact metric CRS already used for the barrier-distance DEM — and
-    express distances in km. This replaces the (lon * cos(lat0), lat)
-    equirectangular approximation used by earlier versions, which was only
-    exactly isotropic near the domain's mean latitude.
-2.  Restrict POIs to a buffer around the station bounding box derived from
-    max_dist. LV95 is isotropic metric, so a simple symmetric km buffer
-    suffices — no lat/lon asymmetry needed, unlike the old projection.
-3.  Compute Euclidean distance matrix (n_poi × n_sta) in km.
-4.  Look up the barrier- and elevation-aware effective distance for each
-    (POI, station) pair from the precomputed cache (*d_eff_file*) instead of
-    computing it live:
-        d_eff = sqrt(d_euc² + (barrier/elev_scale)² + (elev_diff/elev_diff_scale)²)
-    where the barrier term comes from sampling the DEM along a perpendicular
-    slab at each along-path step (Gaussian-weighted mean across the corridor
-    width, 95th-percentile along the path for the effective ridge height) and
-    elev_diff is the endpoint elevation gap — see barrier_distances() for the
-    full derivation. This filter never calls barrier_distances() itself; that
-    function is only used offline to build the cache (see
-    notebooks/nudging_analysis_v11.ipynb, "Precomputed d_eff cache").
-5.  Compute topographic similarity per (POI, station) pair (TPI, slope
-    derivatives, DEM/ICON elevation): each descriptor's importance is
-    |Pearson corr| between it and the station residuals, normalised to sum
-    to 1 per variable — a descriptor uncorrelated with this variable's
-    residuals contributes ~nothing, one that tracks the bias pattern
-    dominates the blend.
-6.  Spread station residuals to the POI grid via ned_interp: IDW
-    (1 / d_eff^weight_power) weighted by the topographic similarity from
-    step 5, floored at min_topo_w so nearby stations always contribute.
-7.  Multiply each station's own normalised weight by a linear taper that
-    fades to zero at THAT station's own max_dist (v4.1 — see the
-    "Per-station linear taper" note in _nudge_field: each station may have
-    its own reliability-scaled max_dist, so a single taper shared by every
-    station would no longer coincide with each one's own cutoff).
-8.  Subtract the resulting correction from the background field.
+1. Project ICON grid + station coords to Swiss LV95 (EPSG:2056, exact
+   metric CRS, km) rather than an equirectangular approximation.
+2. Restrict POIs to a buffer around the station bounding box (max_dist).
+3. Compute the Euclidean distance matrix (n_poi x n_sta), km.
+4. Look up each (POI, station) pair's barrier- and elevation-aware
+   effective distance (d_eff) from the precomputed cache (d_eff_file) —
+   never computed live; see barrier_distances(), run offline to build it
+   (notebooks/nudging_analysis_v11.ipynb, "Precomputed d_eff cache").
+5. Compute topographic similarity per (POI, station) pair from TPI/slope/
+   elevation descriptors, weighted by each descriptor's |Pearson corr|
+   with the station residuals (see ned_interp).
+6. Spread residuals to the POI grid via ned_interp: IDW
+   (1 / d_eff^weight_power) x topographic similarity, floored at
+   min_topo_w.
+7. Multiply each station's normalised weight by a linear taper fading to
+   zero at THAT station's own max_dist (v4.1, see _nudge_field).
+8. Subtract the resulting correction from the background field.
 
-Weight computation, symbolically (per POI p, station s)
+The taper (step 7) uses raw Euclidean distance, not d_eff, and is applied
+AFTER ned_interp's weight normalisation, not merged into the raw weights:
+with only one contributing station the normalised weight is always exactly
+1 regardless of the raw weight, so a pre-normalisation taper would cancel
+out silently (see ned_interp's "v4.1" note).
+
+Units: max_dist is given in **meters** at the constructor boundary and
+converted to km once in __init__ (self.max_dist / self._max_dist_by_var are
+km from then on — everywhere else in this file, including barrier_distances
+and the d_eff cache, stays km-only, unaffected by this input-side conversion).
+elev_scale/elev_diff_scale are no longer parameters here — they're baked
+into the offline-built d_eff cache.
+
+Station reliability (v4, optional; ported unchanged from
+notebooks/nudging_analysis_v10.ipynb)
 ---------------------------------------------------------------------------
-Step 1 — raw distance (km):     d_euc[p,s]
-Step 2 — elevation-aware (km):  d_eff[p,s]     = lookup from precomputed cache (d_eff_file) → "ned_sta_poi"
-Step 3 — descriptor importance: importance[d]  = |corr_s(residual[s], descriptor_d[s])| / Σ_d |corr_s(...)|
-                                 (one weight per descriptor d, computed across stations s; recomputed per variable)
-Step 4 — topo similarity:       w_topo[p,s]    = Σ_d importance[d] * (1 - |sta_topo[d,s] - poi_topo[d,p]|), floored at min_topo_w
-Step 5 — combine:               raw_w[p,s]     = w_topo[p,s] * (1 / d_eff[p,s]^weight_power)   [NaN if d_eff ≥ max_dist[s]]
-Step 6 — normalize per POI:     w_ned[p,s]     = raw_w[p,s] / (Σ_s raw_w[p,s] + lim_effective)
-Step 7 — per-station taper:     taper[p,s]     = 1 - clip(d_euc[p,s] / max_dist[s], 0, 1)   (v4.1; applied
-                                 AFTER Step 6's normalisation — see ned_interp's "v4.1" docstring
-                                 note for why applying it before normalisation would not work)
-Step 8 — interpolate:           correction[p] = Σ_s w_ned[p,s] * taper[p,s] * residual[s]
-Step 9 — apply:                 background[p] -= correction[p]
+Before spreading residuals, each station's influence radius may be scaled
+by a leave-one-out spatial-consistency check (_compute_reliability): each
+station's residual is predicted from every OTHER station (self-distance
+forced to +inf); the discrepancy e = actual − predicted is turned into a
+robust z-score u = (e − median(e)) / (1.4826 * MAD(e)) — median/MAD so a
+few bad stations can't skew the reference point — and then into a Tukey
+biweight reliability = clip(1 − (u/number_of_std)^2, 0, None)^2 in [0, 1].
+A station with no neighbour within max_dist gets e=NaN, is excluded from
+median(e)/MAD(e) (np.median is not NaN-safe), and is left at reliability=1.
+Each station's max_dist is then scaled to
+min_dist + (max_dist − min_dist) * reliability, min_dist =
+reliability_min_dist_frac * max_dist, so influence never drops to zero.
 
-Note taper (step 7) uses raw d_euc (km), not d_eff — the geographic fade-out is
-deliberately independent of the barrier logic (see barrier_distances docstring).
-max_dist[s] may be a single global value shared by every station (use_reliability_check=False)
-or per-station (use_reliability_check=True; see "Station reliability" below) — the taper always
-uses whichever max_dist[s] applies to that particular station.
-
-Unit history: earlier versions expressed max_dist/elev_scale/elev_diff_scale in
-projected degrees and m/° respectively (1 projected degree ≈ 111.32 km near
-Swiss latitudes). max_dist's default below is the degree-tuned value converted
-to km, so default behaviour is preserved rather than re-tuned; deployment
-configs must supply a km value directly (see the YAML config for this filter).
-elev_scale/elev_diff_scale are no longer parameters of this filter — they are
-baked into the offline-built d_eff cache (see *d_eff_file*).
-
-Station reliability (v4) — optional, ported unchanged from
-notebooks/nudging_analysis_v10.ipynb
----------------------------------------------------------------------------
-Before step 6 (spreading residuals via ned_interp), each station's own
-influence radius may be scaled by a leave-one-out spatial-consistency check
-(NudgeTowardObservation._compute_reliability), independent of any particular
-POI:
-  1. r_hat[s] = ned_interp(residuals of all OTHER stations j != s,
-                            station<->station d_eff(s, j), sta_topo, sta_topo)
-     i.e. the same barrier-aware distance + topographic-similarity weighting
-     used for POIs, evaluated at station s's own location with s excluded
-     from its own neighbour set (self-distance forced to +inf beforehand).
-  2. e[s]      = r_at_st[s] - r_hat[s]         (self-reported minus neighbour consensus)
-  3. u[s]      = (e[s] - median(e)) / (1.4826 * MAD(e))   (robust z-score;
-     median/MAD instead of mean/std for BOTH the centre and the spread, so a
-     few bad stations don't drag either one toward themselves)
-  4. reliability[s] = clip(1 - (u[s]/number_of_std)^2, 0, None)^2   (Tukey
-     biweight: 1 when u[s]=0, smoothly falling to 0 once |u[s]| >= number_of_std)
-     A station with no neighbour at all within max_dist gets e[s]=NaN (step 1's
-     ned_interp returns NaN, not 0, for a fully-masked POI) and is excluded from
-     the median(e)/MAD(e) in step 3 — otherwise a single NaN would silently
-     poison every OTHER station's u/reliability too (np.median is not NaN-safe).
-     Such a station is left at reliability[s]=1 (full radius) since there is no
-     neighbour evidence to judge it against.
-  5. min_dist         = reliability_min_dist_frac * max_dist
-     station_max_dist[s] = min_dist + (max_dist - min_dist) * reliability[s]
-     used in place of the single global max_dist in ned_interp's Step 1 mask,
-     for THIS station's column only (max_dist there may be a per-station array;
-     ned_interp needs no change to support this — xarray broadcasts a (sta,)
-     array against the (poi, sta) distance matrix automatically).
-
-reliability[s]=1 (fully consistent with its neighbours) keeps station s's full
-max_dist reach; reliability[s]=0 (>= number_of_std robust sigmas off) shrinks
-it down to the configurable floor (reliability_min_dist_frac * max_dist),
-never all the way to zero — every station keeps at least some very local
-influence. Within whatever radius a station keeps, its weight is otherwise
-undiminished (same IDW/topo formula as any other station); it is excluded
-entirely beyond that radius. use_reliability_check=False reproduces the pre-v4
-(v3) behaviour exactly (a single global max_dist shared by every station).
-
-The leave-one-out neighbour search in step 1, and the domain buffer computed
-in _nudge_field, always use the GLOBAL max_dist — never a per-station radius
-— since reliability must be computed before any per-station radius can be
-derived from it, and the domain buffer only needs to be large enough to
-contain every station's largest possible reach. The final linear taper, by
-contrast, is reliability-DEPENDENT as of v4.1 (see "Per-station linear
-taper" in _nudge_field): each station's own taper fades out at its own
-(possibly reliability-shrunk) max_dist, not a single radius shared by every
-station.
+The leave-one-out search and the domain buffer always use the GLOBAL
+max_dist (reliability must be computed before any per-station radius can
+be derived from it); only the final taper is reliability-dependent (v4.1).
+use_reliability_check=False reproduces the pre-v4 (v3) behaviour exactly.
 """
 
 import logging
-import warnings
 from pathlib import Path
 from typing import Optional
+from typing import Union
 
 import earthkit.data as ekd
 import numpy as np
@@ -149,14 +80,14 @@ LOG = logging.getLogger(__name__)
 # Variables that are fetched for reference but must never be nudged.
 _NO_NUDGE = frozenset({"TOT_PREC"})
 
-# Maps GRIB shortName (COSMO/ICON) → (station Parquet column, unit offset applied to obs).
-# The offset is added to the raw observation value before computing residuals.
+# GRIB shortName (COSMO/ICON) -> (station Parquet column, offset added to obs before residuals).
 PARAM_MAP = {
     "T_2M":    ("2t",   0.0),   # 2 m temperature         [K]
     "TD_2M":   ("2d",   0.0),   # 2 m dewpoint            [K]
     "U_10M":   ("10u",  0.0),   # 10 m U wind component   [m/s]
     "V_10M":   ("10v",  0.0),   # 10 m V wind component   [m/s]
     "PMSL":    ("msl",  0.0),   # mean sea-level pressure  [Pa]
+    "PS":      ("sp",   0.0),   # station-level (unreduced) surface pressure [Pa]
     "TOT_PREC":("tp",   0.0),   # hourly precipitation     [kg m-2]
     "VMAX_10M":("vmax", 0.0),   # 10 m wind gust           [m/s]
 }
@@ -170,40 +101,22 @@ _DEFAULT_TOPO_FILE = (
 _DEFAULT_DEM_BARRIER_FILE = (
     "/store_new/mch/msclim/appclim/data/grids/topodem/v2/topo/radar_100/topo_DEM_1000M.nc"
 )
-# Precomputed barrier- and elevation-aware effective distances (d_eff_poi, d_eff_sta)
-# for the full station catalog — see NudgeTowardObservation's d_eff_file parameter
-# and notebooks/nudging_analysis_v11.ipynb, "Precomputed d_eff cache".
+# Precomputed d_eff cache — see NudgeTowardObservation's d_eff_file parameter.
 _DEFAULT_D_EFF_FILE = "/scratch/mch/llanzila/sruc/aux_files/d_eff_cache_v11.nc"
-# ICON's own native orography (extpar, ASTER-derived) on the same R19B08 grid — used
-# only as the elevation *topo descriptor* for ned_interp's similarity weighting, since
-# it is what the model itself "sees" as terrain. The elevation-aware barrier distance
-# (barrier_distances) intentionally keeps using the finer external DEM (dem_barrier_file)
-# instead, since that term needs the true terrain, not the model's (smoothed) view of it.
+# ICON's own native orography (extpar); barrier_distances itself keeps using the
+# finer external DEM (dem_barrier_file) for the barrier term.
 _DEFAULT_ICON_OROG_FILE = (
     "/scratch/mch/icontest/testing-input-data/c2sm/icon-1/"
     "external_parameter_icon_grid_0001_R19B08_mch.nc"
 )
 
-# Standard-atmosphere lapse rate, applied to reduce station observations to the
-# model's elevation before differencing (see NudgeTowardObservation.lapse_rate).
-_DEFAULT_LAPSE_RATE = 0.0065  # K/m
-# T_2M only: dry-bulb temperature follows the standard-atmosphere lapse rate closely.
-# TD_2M (dewpoint) does not decrease with elevation at the same fixed rate, so it is
-# excluded by default; pressure is already sea-level-reduced and wind has no lapse rate.
-_DEFAULT_LAPSE_RATE_VARS = frozenset({"T_2M"})
+_DEFAULT_TEMPERATURE_LAPSE_RATE = 0.0065  # K/m
+_DEFAULT_TEMPERATURE_LAPSE_RATE_VARS = frozenset({"T_2M"})
+_DEFAULT_PRESSURE_LAPSE_RATE = 11.5  # Pa/m
+_DEFAULT_PRESSURE_LAPSE_RATE_VARS = frozenset({"PS"})
 
-# _plot_reliability_diagnostic's colour-scale percentile for the residual and RMSE
-# panels: the true max is dominated by a handful of outlier stations/cells, which
-# stretches the colour scale so far that the actual spatial pattern (the whole
-# point of these panels) becomes invisible. A high percentile instead saturates
-# those outliers at the colour scale's edge rather than letting them set its
-# range. Purely cosmetic — never affects the nudging correction itself.
+# Cosmetic only — never affects the nudging correction itself.
 _DIAG_COLORBAR_PERCENTILE = 90
-
-
-# ── ned_interp (adapted from data4web_pipelines/utils.py) ─────────────────────
-# Direct import is not possible because data4web_pipelines depends on
-# internal MeteoSwiss libraries not available in the production environment.
 
 
 def _cast_astype(ds: xr.Dataset, dtypes: dict) -> xr.Dataset:
@@ -233,7 +146,7 @@ def ned_interp(
     ned_sta_poi: xr.DataArray,
     sta_topo: Optional[xr.Dataset] = None,
     poi_topo: Optional[xr.Dataset] = None,
-    max_dist: Optional[float] = None,
+    max_dist: Optional[Union[float, xr.DataArray]] = None,
     weight_power: float = 1,
     min_topo_w: float = 0.2,
     lim_effective: float = 0,
@@ -241,68 +154,40 @@ def ned_interp(
 ) -> xr.Dataset:
     """Spread station residuals to POIs via IDW with optional topographic similarity.
 
-    Source: data4web_pipelines/utils.py.
+    Adapted from data4web_pipelines/utils.py; the "ned" prefix (``ned_interp``,
+    ``ned_sta_poi``, ``ned_ss``) is inherited naming from that module (expansion
+    unknown), kept verbatim for continuity with the notebooks this was ported from.
 
-    Steps when topo descriptors are provided
-    ----------------------------------------
-    1.  Mask stations beyond max_dist: set their distance to NaN so their
-        inverse-distance weight becomes NaN (effectively 0 after normalisation).
-    2.  Separate normalisation: scale sta_topo and poi_topo to [0, 1] EACH using its
-        own min/max (data4web_pipelines/utils.py::normalize) — not a combined min/max
-        over both sets. The ~150 station values and the ~400 k POI values therefore
-        each get stretched to fill their own [0, 1] scale independently; this is
-        data4web's actual reference behaviour, kept here for exact equivalence.
-    3.  Descriptor importance: |Pearson corr(residuals, descriptor)| across stations,
-        normalised so descriptor weights sum to 1. Data-driven: if a descriptor has
-        no correlation with the residuals it receives zero importance.
-    4.  Topographic similarity per (POI, station) pair: weighted average of
-        (1 − |sta_val − poi_val|) across descriptors.
-    5.  Floor topo similarity at min_topo_w so IDW still applies to nearby stations
-        even when they are topographically dissimilar (e.g. valley vs. ridge).
-    6.  Normalise final weights so they sum to 1 per POI. lim_effective > 0 adds a
-        virtual zero-residual station to the denominator, shrinking corrections in
-        data-sparse regions.
-    7.  Multiply by `taper` (if given) — see the v4.1 note below.
+    With topo descriptors: stations beyond max_dist are masked out (NaN distance);
+    sta_topo/poi_topo are each separately scaled to [0, 1] using their own min/max
+    (data4web's reference behaviour, kept for exact equivalence); descriptor
+    importance is |Pearson corr(residuals, descriptor)| across stations, normalised
+    to sum to 1; per-(POI, station) topo similarity is the importance-weighted
+    average of (1 − |sta_val − poi_val|), floored at min_topo_w; the result multiplies
+    the IDW weight. Weights are then normalised to sum to 1 per POI (lim_effective > 0
+    adds a virtual zero-residual station to the denominator, shrinking corrections in
+    data-sparse regions), and finally `taper` is applied — see the v4.1 note below.
+    Without topo descriptors (sta_topo/poi_topo None), falls back to pure IDW.
 
-    v4.1: `taper`, if given, is a per-(poi, sta) DataArray in [0, 1] (e.g. a linear
-    fade based on each station's own distance and its own max_dist — see
-    NudgeTowardObservation._nudge_field's "Per-station linear taper" section)
-    multiplied into the weights AFTER Step 6's normalisation, not merged into the
-    raw weights beforehand. This ordering matters: if a POI has only one
-    contributing station, that station's normalised weight is always exactly 1
-    regardless of its raw (pre-normalisation) weight's magnitude — so a taper
-    applied before Step 6 would be exactly cancelled out by the division and have
-    no effect at all in that (common, e.g. an isolated low-reliability station)
-    case. Applying it after Step 6 avoids this: it independently dampens each
-    station's own contribution without disturbing the relative blend between
-    multiple contributing stations at the same POI.
+    v4.1: `taper`, if given, is a per-(poi, sta) DataArray in [0, 1] multiplied into
+    the weights AFTER normalisation, not merged into the raw weights beforehand —
+    if a POI has only one contributing station, its normalised weight is always
+    exactly 1 regardless of the raw weight, so a pre-normalisation taper would be
+    exactly cancelled out by the division and have no effect in that (common, e.g.
+    an isolated low-reliability station) case.
     """
-    # Step 1 — exclude stations beyond the cutoff radius.
-    # ned_sta_poi has dims (poi, sta). Where the condition is False (distance ≥ max_dist),
-    # the value is replaced by NaN. NaN distances → NaN IDW weights → effectively excluded.
+    # NaN distance -> NaN IDW weight -> effectively excluded after normalisation.
     if max_dist is not None:
         ned_sta_poi = ned_sta_poi.where(ned_sta_poi < max_dist)
 
     if sta_topo is None or poi_topo is None:
-        # Pure IDW fallback when no topographic descriptors are available.
         w_ned = 1 / np.power(ned_sta_poi, weight_power)
     else:
-        # Step 2 — separate normalisation: each dataset scaled to [0, 1] using its
-        # OWN min/max, exactly as data4web_pipelines/utils.py::ned_interp.
         sta_topo = _normalize(sta_topo)
         poi_topo = _normalize(poi_topo)
 
-        # Topographic similarity per (poi, sta, descriptor): 1 = identical, 0 = opposite extremes.
-        # xarray broadcasts (sta,) and (poi,) dimensions automatically, yielding shape (poi, sta)
-        # per variable — one entry for each POI–station pair.
         delta_topo = 1 - abs(sta_topo - poi_topo)
 
-        # Step 3 — descriptor importance: |Pearson corr| across stations, normalised to sum = 1.
-        # sta_res.to_array("data_var") → DataArray(data_var, sta)
-        # sta_topo.to_array("topo")   → DataArray(topo, sta)
-        # xr.corr(..., dim="sta")     → DataArray(data_var, topo), one corr value per (var, topo)
-        # After abs and transpose: shape (topo, data_var). Converted back to Dataset so that
-        # downstream multiplication with delta_topo (a Dataset) works per-variable.
         w_topo = (
             abs(
                 xr.corr(
@@ -311,34 +196,32 @@ def ned_interp(
                     dim="sta",
                 ).astype(np.float32)
             )
-            .transpose("topo", ...)   # ensure "topo" leads for the division below
-            .to_dataset("data_var")   # Dataset{var: DataArray(topo,)} — one weight per descriptor
+            .transpose("topo", ...)
+            .to_dataset("data_var")
         )
-        w_topo /= w_topo.sum("topo")  # normalise: descriptor importances sum to 1 per variable
+        w_topo /= w_topo.sum("topo")
 
-        # Step 4 — weighted-average topo similarity across descriptors → shape (poi, sta) per var.
-        # delta_topo.to_array("topo") → DataArray(topo, poi, sta).
-        # w_topo is Dataset{var: DataArray(topo,)}. The product broadcasts topo over (poi, sta),
-        # then .sum("topo") collapses the descriptor axis.
+        for _var in w_topo.data_vars:
+            if bool(w_topo[_var].isnull().all()):
+                LOG.warning(
+                    "ned_interp: descriptor importance is entirely NaN for "
+                    "'%s' (likely zero-variance topo descriptors across too "
+                    "few stations) — topographic similarity weighting "
+                    "contributes nothing for this variable this call.",
+                    _var,
+                )
+
         w_topo = (w_topo * delta_topo.to_array("topo")).sum("topo")
 
-        # Step 5 — floor and combine: clip topo similarity from below so that nearby stations
-        # always contribute even when topographically dissimilar; multiply by the IDW weight.
         w_ned = w_topo.clip(min=min_topo_w) * (1 / np.power(ned_sta_poi, weight_power))
 
-    # Step 6 — normalise weights across stations so they sum to 1 per POI.
-    # Adding lim_effective to the denominator introduces a virtual zero-residual station,
-    # which shrinks the total correction in regions with few real stations.
     w_ned /= w_ned.sum("sta") + lim_effective
 
-    # Step 7 (v4.1) — per-(poi, sta) taper, applied AFTER normalisation. See the
-    # docstring note above for why applying it before Step 6 would not work.
     if taper is not None:
         w_ned = w_ned * taper
 
-    # Weighted sum of residuals over stations → Dataset{var: DataArray(poi,)}.
-    # min_count=1: POIs whose every station is masked (NaN weight) return NaN instead of 0.
-    # The caller converts NaN to 0 via nan_to_num, giving zero correction for those POIs.
+    # min_count=1: a POI with every station masked returns NaN, not 0; the caller
+    # nan_to_num's this to a zero correction for those POIs.
     return (w_ned * sta_res).sum("sta", min_count=1)
 
 
@@ -352,148 +235,105 @@ def barrier_distances(
     sta_elev: np.ndarray,
     dem_rgi: RegularGridInterpolator,
     wgs84_to_lv95: Transformer,
-    n_samples: int = 35,
-    elev_scale: float = 17.966,
-    elev_diff_scale: float = 35.932,
+    n_samples: int = 50,
+    elev_scale: float = 50,  # fit offline; see generate_d_eff_cache.py, not derived analytically
+    elev_diff_scale: float = 100,  # fit offline; see generate_d_eff_cache.py, not derived analytically
     n_barrier_width_samples: int = 3,
-    barrier_width_m: float = 1500.0,
+    barrier_width: float = 1500.0,
 ) -> np.ndarray:
     """Replace Euclidean distances with elevation-aware effective distances.
 
     For each (POI, station) pair with d_euc < max_dist:
         d_eff = sqrt(d_euc² + (barrier / elev_scale)² + (elev_diff / elev_diff_scale)²)
 
-    d_euc/max_dist are expected in km; elev_scale/elev_diff_scale in m/km (a
-    ridge of elev_scale metres adds 1 km of effective distance). The function
-    itself is unit-agnostic — whatever consistent distance unit d_euc/max_dist
-    are given in is what d_eff comes out in — but NudgeTowardObservation always
-    calls this with km.
+    d_euc/max_dist are expected in km; elev_scale/elev_diff_scale in m/km. The
+    function is unit-agnostic (output unit matches input), but
+    NudgeTowardObservation always calls this with km.
 
-    Barrier term
-    ------------
-    At each of n_samples interior points along the straight-line path (endpoints
-    excluded — see note below), n_barrier_width_samples DEM points span a
-    ±barrier_width_m corridor perpendicular to the path. A Gaussian-weighted mean
-    (sigma = barrier_width_m / 2, centre-weighted) across the corridor is taken at
-    each step. The 95th percentile of those means along the path gives the effective
-    ridge height (robust to DEM spikes):
+    Barrier term: at each of n_samples interior points along the straight-line
+    path (endpoints excluded — at t=0/1 the perpendicular sample grid would be
+    centred on the POI/station itself, sampling terrain beside it rather than
+    between the two points), n_barrier_width_samples DEM points span a
+    ±barrier_width corridor perpendicular to the path, combined via a
+    Gaussian-weighted mean (sigma = barrier_width / 2, so off-axis terrain is
+    down-weighted and the direct path stays dominant). The 95th percentile of
+    those means along the path (robust to DEM spikes) gives the effective ridge
+    height above the higher endpoint:
         barrier = max(0, percentile_95(gauss_mean_cross) − max(elev_poi, elev_sta))
 
-    Why exclude endpoints: t = 0 and t = 1 place the perpendicular sample grid
-    centred on the POI or station itself. The resulting DEM samples would represent
-    terrain beside the endpoint (in a direction perpendicular to the path) rather than
-    terrain between the two points, potentially counting a nearby hill as a barrier.
+    elev_diff term: |elev_poi − elev_sta| penalises pairs at very different
+    altitudes even with no intervening ridge (different vertical atmospheric
+    regimes, e.g. valley station vs. high-altitude POI). The two terms are
+    added in quadrature, so a large ridge and a large elevation gap compound.
 
-    Why Gaussian weighting: a uniform corridor would weight off-axis terrain equally.
-    The Gaussian down-weights terrain at the corridor edges so the direct path remains
-    dominant; sigma = barrier_width_m / 2 keeps ~95 % of the weight within the corridor.
-
-    elev_diff term
-    --------------
-    |elev_poi − elev_sta| penalises pairs at very different altitudes even when no
-    ridge intervenes, capturing different vertical atmospheric regimes (e.g. a valley
-    station vs. a high-altitude POI).
-
-    The two terms are added in quadrature (Pythagorean combination), so a large ridge
-    and a large elevation difference compound each other.
-
-    Implementation notes
-    --------------------
-    - Coordinates are projected to LV95 (Swiss metric CRS, EPSG:2056) so that path
-      lengths and perpendicular offsets are in metres.
-    - elev_poi is read from the 1 km DEM; sta_elev should come from DWH station
-      metadata (more accurate than DEM interpolation at station locations).
-    - Only pairs with d_euc < max_dist are processed; all others keep their d_euc.
-    - Unique endpoints are projected only once (deduplication before the transform).
+    sta_elev should come from DWH station metadata (more accurate than DEM
+    interpolation at station locations); elev_poi is read from the 1 km DEM.
+    Not called by ``NudgeTowardObservation`` at runtime — invoked offline by
+    ``generate_d_eff_cache.py`` to precompute the ``d_eff_file`` cache.
     """
-    # Boolean mask of pairs to process; pi_idx/si_idx are the row/col flat indices.
     close_mask = d_euc < max_dist
-    pi_idx, si_idx = np.where(close_mask)  # shape: (n_close,) each
+    pi_idx, si_idx = np.where(close_mask)
 
     if len(pi_idx) == 0:
         return d_euc
 
-    # Deduplicate before the expensive WGS84 → LV95 transform.
-    # Many pairs share the same POI (one ICON cell near many stations) or the same station.
-    # u_poi/u_sta: unique POI row indices / unique station col indices
-    # inv_poi/inv_sta: mapping from unique back to the flat pair list
     u_poi, inv_poi = np.unique(pi_idx, return_inverse=True)
     u_sta, inv_sta = np.unique(si_idx, return_inverse=True)
-
-    # Project unique WGS84 coordinates to LV95 (easting x, northing y) in metres.
-    # always_xy=True means input is (longitude, latitude), output is (easting, northing).
+    
     poi_x_u, poi_y_u = wgs84_to_lv95.transform(poi_lon[u_poi], poi_lat[u_poi])
     sta_x_u, sta_y_u = wgs84_to_lv95.transform(sta_lon[u_sta], sta_lat[u_sta])
 
-    # POI elevation from DEM; DEM is more reliable than nearest-cell interpolation.
-    # Station elevation from DWH metadata — instrument altitude, more accurate than DEM.
-    elev_poi = dem_rgi(np.c_[poi_y_u, poi_x_u])[inv_poi]  # (n_close,)
-    elev_sta = sta_elev[si_idx]                             # (n_close,)
+    elev_poi = dem_rgi(np.c_[poi_y_u, poi_x_u])[inv_poi]
+    elev_sta = sta_elev[si_idx]
 
-    # Barrier is terrain above the *higher* endpoint (a peak below the higher end is not a barrier).
     ref_elev = np.maximum(elev_poi, elev_sta)
 
-    # Expand unique LV95 coords to one entry per pair, matching pi_idx/si_idx order.
-    poi_xp = poi_x_u[inv_poi]   # (n_close,)
+    poi_xp = poi_x_u[inv_poi]
     poi_yp = poi_y_u[inv_poi]
     sta_xp = sta_x_u[inv_sta]
     sta_yp = sta_y_u[inv_sta]
 
-    # ── Along-path grid (interior points only) ────────────────────────────────
-    t = np.linspace(0, 1, n_samples + 2)[1:-1]  # (n_samples,), excludes t=0 and t=1
+    t = np.linspace(0, 1, n_samples + 2)[1:-1]
     x_path = poi_xp[None, :] + t[:, None] * (sta_xp - poi_xp)[None, :]  # (n_samples, n_close)
     y_path = poi_yp[None, :] + t[:, None] * (sta_yp - poi_yp)[None, :]
 
-    # ── Perpendicular-slab grid ───────────────────────────────────────────────
-    # Unit vector 90° to the path direction: rotate (dx, dy) by 90° → (-dy, dx), then normalise.
-    dx = sta_xp - poi_xp  # (n_close,)
+    # Unit vector 90° to the path: rotate (dx, dy) -> (-dy, dx), then normalise.
+    dx = sta_xp - poi_xp
     dy = sta_yp - poi_yp
     path_len = np.sqrt(dx ** 2 + dy ** 2)
     safe_len = np.where(path_len > 0, path_len, 1.0)  # avoid /0 for co-located pairs
-    perp_x = -dy / safe_len  # (n_close,) unit perpendicular, x-component
-    perp_y =  dx / safe_len  # (n_close,) unit perpendicular, y-component
+    perp_x = -dy / safe_len
+    perp_y =  dx / safe_len
 
-    # Symmetric offsets across the corridor in metres: centred on the straight-line path.
-    perp_offsets = np.linspace(-barrier_width_m, barrier_width_m, n_barrier_width_samples)
+    perp_offsets = np.linspace(-barrier_width, barrier_width, n_barrier_width_samples)
 
-    # Gaussian weights: centre-weighted so off-axis terrain contributes less.
-    # When barrier_width_m = 0 (single centre sample), sigma = 0 → uniform weight of 1.
-    sigma = barrier_width_m / 2.0
+    # sigma=0 (barrier_width=0, single centre sample) -> uniform weight of 1.
+    sigma = barrier_width / 2.0
     if sigma > 0:
         gauss_w = np.exp(-0.5 * (perp_offsets / sigma) ** 2)
     else:
         gauss_w = np.ones(n_barrier_width_samples)
-    gauss_w /= gauss_w.sum()  # (n_perp,), normalised to sum = 1
+    gauss_w /= gauss_w.sum()
 
-    # Slab coordinates: for each along-path step and each corridor offset, compute the
-    # LV95 position of the DEM sample point.
-    # x_slab shape: (n_samples, n_perp, n_close)
+    # (n_samples, n_perp, n_close): LV95 position of each along-path/corridor sample point.
     x_slab = x_path[:, None, :] + perp_offsets[None, :, None] * perp_x[None, None, :]
     y_slab = y_path[:, None, :] + perp_offsets[None, :, None] * perp_y[None, None, :]
 
-    # Evaluate DEM at all slab points in one vectorised RGI call.
-    # RGI expects (northing, easting) = (y, x) as the first axis.
+    # RGI expects (northing, easting).
     n_perp  = n_barrier_width_samples
     n_close = len(pi_idx)
     elev_slab = dem_rgi(
         np.c_[y_slab.ravel(), x_slab.ravel()]
     ).reshape(n_samples, n_perp, n_close)
 
-    # Gaussian-weighted mean across the perpendicular corridor at each along-path step.
-    # gauss_w broadcast: (n_perp,) → (1, n_perp, 1) to multiply over the middle axis.
-    elev_mean_cross = (elev_slab * gauss_w[None, :, None]).sum(axis=1)  # (n_samples, n_close)
+    elev_mean_cross = (elev_slab * gauss_w[None, :, None]).sum(axis=1)
 
-    # 95th percentile along the path direction: robust to DEM spikes while still
-    # capturing the dominant ridge. Subtract ref_elev; clamp to ≥ 0 (a pass lower than
-    # both endpoints is not a barrier).
     barrier = np.maximum(
         0.0, np.percentile(elev_mean_cross, 95, axis=0) - ref_elev
     ).astype(np.float32)
 
-    # Elevation-difference term: altitude gap between endpoints, independent of terrain.
     elev_diff = np.abs(elev_poi - elev_sta).astype(np.float32)
 
-    # Pythagorean combination: barrier and elevation-difference contribute independently.
     d_eff = d_euc.copy()
     d_eff[pi_idx, si_idx] = np.sqrt(
         d_euc[pi_idx, si_idx] ** 2
@@ -509,101 +349,67 @@ def barrier_distances(
     return d_eff
 
 
-# ── Production filter ─────────────────────────────────────────────────────────
-
-
 class NudgeTowardObservation(Filter):
     """Nudge the forecast initial condition toward surface station observations.
 
     Implements v3 Interpolation of Residuals using ned_interp with topographic
     similarity weighting and barrier-aware effective distances (DEM path sampling).
 
-    The filter reads pre-fetched station observations from a Parquet file written
-    by RetrieveObservation (which must include ``elevation`` as produced by the
-    current version of that filter). Nudging is applied once — to the
-    initial-condition time step — and the filter passes all fields through
-    unchanged on subsequent calls.
+    Reads pre-fetched station observations from a Parquet file written by
+    RetrieveObservation (must include ``elevation``, as produced by the current
+    version of that filter). Nudging is applied once, to the initial-condition
+    time step; later calls pass all fields through unchanged.
 
     Parameters
     ----------
     obs_path : str
-        Path to the cleaned station observations Parquet file.
-        Required columns: ``latitude``, ``longitude``, ``elevation``, and one
-        column per nudged variable (e.g. ``2t``, ``10u``), all in SI units.
+        Cleaned station observations Parquet file. Required columns:
+        ``latitude``, ``longitude``, ``elevation``, and one column per nudged
+        variable (e.g. ``2t``, ``10u``), all in SI units.
     icon_grid_dir : str
         Directory containing ``icon_grid_0001_R19B08_mch.nc``.
     topo_file : str
-        Path to the topographic descriptor NetCDF on the ICON R19B08 grid
-        (``topo_descriptors_icon_R19B08.nc``). Must contain ``lon`` and ``lat``
-        coordinate variables and all variables listed in *topo_vars* except
-        ``ICON_OROG``, which is injected separately from *icon_orog_file*.
+        Topographic descriptor NetCDF on the ICON R19B08 grid. Must contain
+        ``lon``/``lat`` and all of *topo_vars* except ``ICON_OROG``, which is
+        injected separately from *icon_orog_file*.
     dem_barrier_file : str
-        Path to the 1 km DEM NetCDF (variable ``DEM_1000M``, coordinates ``x``
-        and ``y`` in LV95 metres). Barrier-aware distances (d_eff) are no
-        longer computed from this DEM at run time — see *d_eff_file* — so
-        this is now used only as a fallback to sample station elevation when
-        it is missing from the observations Parquet.
+        1 km DEM NetCDF (variable ``DEM_1000M``, coords ``x``/``y`` in LV95
+        metres). No longer used to compute d_eff at run time (see
+        *d_eff_file*) — only as a fallback to sample station elevation when
+        missing from the observations Parquet.
     d_eff_file : str
-        Path to a precomputed NetCDF holding barrier- and elevation-aware
-        effective distances (d_eff) for the full station catalog: variables
-        ``d_eff_poi`` (dims ``poi``, ``sta`` — every ICON cell within reach
-        of any station, to every station) and ``d_eff_sta`` (dims ``sta_i``,
-        ``sta`` — station-to-station, for the reliability check's
-        leave-one-out prediction; self-distances are +inf). Built offline
-        once via ``barrier_distances()`` for the full station catalog and a
-        domain buffered around all of them (see
-        notebooks/nudging_analysis_v11.ipynb, "Precomputed d_eff cache") and
-        reused across ref_times/deployments as long as the station catalog,
-        DEM, ICON grid, and barrier hyperparameters it was built with are
-        unchanged. This filter never calls ``barrier_distances()`` itself:
-        each call's (POI, station) or (station, station) subset — which
-        varies per variable since the set of stations with a non-NaN
-        observation differs — is sliced directly from this cache. A POI or
-        station needed by a call but not covered by the cache raises a
-        ``ValueError`` rather than triggering a live recompute; rebuild the
-        cache (with the current station catalog) if that happens.
+        Precomputed NetCDF of barrier- and elevation-aware effective
+        distances (d_eff) for the full station catalog: ``d_eff_poi`` (dims
+        ``poi``, ``sta``) and ``d_eff_sta`` (dims ``sta_i``, ``sta``,
+        self-distances +inf, for the reliability check). Built offline via
+        ``barrier_distances()`` and reused as long as the station catalog,
+        DEM, ICON grid, and barrier hyperparameters are unchanged. This
+        filter never calls ``barrier_distances()`` itself — a POI/station not
+        covered by the cache raises ``ValueError``; rebuild the cache.
     icon_orog_file : str
-        Path to the ICON extpar NetCDF for the R19B08 grid (variable
-        ``topography_c``) providing the model's own native orography. Used
-        only as the ``ICON_OROG`` topo descriptor for ned_interp's
-        topographic-similarity weighting — distinct from *dem_barrier_file*,
-        which continues to drive the elevation-aware barrier distance.
+        ICON extpar NetCDF (variable ``topography_c``), the model's own
+        native orography. Used only as the ``ICON_OROG`` topo descriptor —
+        distinct from *dem_barrier_file*, which drives the barrier distance.
     weight_power : float
-        IDW distance-decay exponent. Higher values concentrate weight on the
+        IDW distance-decay exponent; higher concentrates weight on the
         nearest station (notebook: ``WEIGHT_POWER = 4``).
     max_dist : float
-        Default station influence radius in km, used for every nudged
-        variable unless overridden per-variable via *variable_overrides*: the
-        barrier-distance cutoff, the base for the domain buffer, and (when
-        *use_reliability_check* is ``False``) the linear taper radius shared
-        by every station. When *use_reliability_check* is ``True``, each
-        station's own taper radius is instead its own reliability-scaled
-        *max_dist* (see "Station reliability" and "Per-station linear taper"
-        below) — this parameter remains the upper bound every station's
-        radius scales down from (notebook v8: ``MAX_DIST_KM``; default here
-        is the historical degree-tuned value (0.35°) converted to km, ≈
-        38.96).
+        Default station influence radius, in **meters** (converted to km
+        once here in __init__; every other use of this radius in the file —
+        barrier-distance cutoff, domain-buffer size, and — when
+        *use_reliability_check* is ``False`` — the shared taper radius — is
+        km, unaffected by this input-side unit), overridable per-variable via
+        *variable_overrides*. When *use_reliability_check* is ``True``, this
+        is the upper bound each station's reliability-scaled radius shrinks
+        from. Default: 50000 (50 km).
     variable_overrides : dict, optional
-        Per-variable override of *d_eff_file* and/or *max_dist*, e.g.
-        ``{"U_10M": {"d_eff_file": "...", "max_dist": 20.0}, "V_10M": {...}}``.
-        Keys must be GRIB shortNames present in the active nudge set (see
-        *nudge_variables*); each value is a dict that may set either or both
-        of ``d_eff_file``/``max_dist`` — whichever is omitted falls back to
-        this filter's top-level *d_eff_file*/*max_dist*. Motivation: the
-        barrier-aware effective-distance model (see module docstring) assumes
-        a spatially smooth, terrain-correlated bias, which holds for
-        temperature-like variables but not for near-surface wind (U_10M/
-        V_10M), whose bias is dominated by hyper-local siting/channeling
-        effects with a much shorter decorrelation length — a wind-specific
-        cache built with a smaller ``MAX_DIST_KM``/``ELEV_SCALE_KM`` (see
-        notebooks/d_eff_generator.ipynb) can be supplied here without
-        affecting the variables that use the default cache. This only
-        changes *which* precomputed d_eff cache and radius feed into the
-        (unchanged) IDW/topo-similarity/taper/reliability computation for
-        that variable — every other variable keeps using the top-level
-        defaults. Defaults to ``None`` (no overrides; every variable uses the
-        top-level *d_eff_file*/*max_dist*, reproducing pre-v5.1 behaviour
-        exactly).
+        Per-variable override of *d_eff_file* and/or *max_dist* (also in
+        meters, converted the same way), e.g.
+        ``{"U_10M": {"d_eff_file": "...", "max_dist": 20000.0}}``. Keys must be
+        GRIB shortNames in the active nudge set; near-surface wind bias has a
+        shorter decorrelation length than other variables, so wind typically
+        uses a smaller-radius cache (notebooks/d_eff_generator.ipynb).
+        Defaults to ``None`` (every variable uses the top-level default).
     min_topo_w : float
         Minimum topographic similarity weight floor so nearby stations always
         contribute (notebook: ``MIN_TOPO_W = 0.2``).
@@ -611,69 +417,54 @@ class NudgeTowardObservation(Filter):
         Virtual zero-residual station weight added to the normalisation
         denominator; 0 = pure IDW (notebook: ``LIM_EFFECTIVE = 0.0``).
     use_reliability_check : bool
-        If ``True``, scale each station's own influence radius by a
-        leave-one-out spatial-consistency check (see module docstring,
-        "Station reliability"), so non-representative stations (bad sensors,
-        siting issues, local micro-effects the model can't resolve) reach a
-        smaller area. Defaults to ``False``, reproducing the pre-v4 (v3)
-        behaviour exactly (a single global *max_dist* shared by every
-        station) — existing deployment configs are unaffected unless they
-        explicitly opt in (notebook: ``USE_RELIABILITY_CHECK``, which
-        defaults to ``True`` there since the notebook is the exploratory
-        context this was validated in).
+        If ``True``, scale each station's influence radius by a leave-one-out
+        spatial-consistency check (see module docstring, "Station
+        reliability"). Defaults to ``False`` (pre-v4/v3 behaviour: a single
+        global *max_dist* for every station; notebook default is ``True``).
     number_of_std : float
-        Tukey biweight rejection threshold, in robust (median/MAD-based)
-        standard deviations: a station whose leave-one-out residual
-        discrepancy is at or beyond this many robust sigmas from the
-        network's typical discrepancy gets reliability=0 (its influence
-        radius shrinks to the configured floor). Only used when
-        *use_reliability_check* is ``True`` (notebook: ``RELIABILITY_REJECT_C``,
-        default 4.0).
+        Tukey biweight rejection threshold in robust (median/MAD) standard
+        deviations — a station at or beyond this many robust sigmas gets
+        reliability=0. Only used when *use_reliability_check* is ``True``
+        (notebook: ``RELIABILITY_REJECT_C``, default 4.0).
     reliability_min_dist_frac : float
-        Minimum fraction of *max_dist* every station keeps as its influence
-        radius, even at reliability=0 — the radius never shrinks all the way
-        to zero, so every station retains at least some very local influence.
-        Must be in [0, 1]. Only used when *use_reliability_check* is ``True``
-        (notebook: ``RELIABILITY_MIN_DIST_FRAC``, default 0.1, i.e. 10%).
+        Minimum fraction of *max_dist* every station keeps even at
+        reliability=0 (never shrinks to zero). Must be in [0, 1]. Only used
+        when *use_reliability_check* is ``True`` (notebook:
+        ``RELIABILITY_MIN_DIST_FRAC``, default 0.1).
     reliability_eps : float
-        Numerical floor on the robust (MAD-based) scale estimate used by the
-        reliability check, avoiding division by zero when stations agree with
-        their neighbours almost exactly (notebook: ``RELIABILITY_EPS``,
-        default 1e-6). Only used when *use_reliability_check* is ``True``.
-    lapse_rate : float
-        Standard-atmosphere lapse rate [K/m] used to reduce station observations
-        to the model's elevation before computing the residual, so the residual
-        reflects model bias rather than the elevation mismatch between the true
-        station altitude and ICON's (smoothed) orography at the nearest grid
-        cell: ``obs_corrected = obs - lapse_rate * (elev_model_at_cell - elev_sta)``.
-        Only applied to variables in *lapse_rate_vars* (default: 0.0065, i.e. 6.5 K/km).
-    lapse_rate_vars : list of str, optional
-        GRIB shortNames to which *lapse_rate* is applied. Restricted to
-        ``T_2M`` by default: dry-bulb temperature follows the standard-atmosphere
-        lapse rate closely, whereas dewpoint (``TD_2M``) does not decrease with
-        elevation at the same fixed rate, pressure is already sea-level-reduced,
-        and wind has no lapse rate. Defaults to ``["T_2M"]``.
+        Numerical floor on the robust (MAD-based) scale estimate, avoiding
+        division by zero (notebook: ``RELIABILITY_EPS``, default 1e-6). Only
+        used when *use_reliability_check* is ``True``.
+    temperature_lapse_rate : float
+        Standard-atmosphere lapse rate [K/m] reducing station observations to
+        the model's elevation before differencing:
+        ``obs_corrected = obs - temperature_lapse_rate * (elev_model_at_cell - elev_sta)``.
+        Applied only to *temperature_lapse_rate_vars* (default: 0.0065, i.e. 6.5 K/km).
+    temperature_lapse_rate_vars : list of str, optional
+        GRIB shortNames *temperature_lapse_rate* applies to. Defaults to
+        ``["T_2M"]``: dewpoint doesn't follow a fixed lapse rate, pressure/wind
+        don't apply here (see *pressure_lapse_rate_vars*).
+    pressure_lapse_rate : float
+        Same idea as *temperature_lapse_rate* but for ``PS`` (station-level, unreduced
+        pressure); a separate parameter since pressure's near-surface
+        gradient (~10-12 Pa/m) is ~3 orders of magnitude steeper than
+        temperature's (default: 11.5 Pa/m — see
+        *_DEFAULT_PRESSURE_LAPSE_RATE*). Applied only to
+        *pressure_lapse_rate_vars*.
+    pressure_lapse_rate_vars : list of str, optional
+        GRIB shortNames *pressure_lapse_rate* applies to. Defaults to
+        ``["PS"]``; ``PMSL`` is excluded as it's already sea-level-reduced.
     topo_vars : list of str, optional
-        Topographic descriptor variable names, drawn from *topo_file* plus
-        the injected ``ICON_OROG`` (see *icon_orog_file*). Defaults to
-        ``["TPI_500M", "TPI_4000M_SMTH", "SN_DERIV_2000M",
-        "WE_DERIV_2000M", "ICON_OROG"]``. Ignored when *use_topo_descriptors*
-        is ``False``.
+        Topographic descriptor names, from *topo_file* plus the injected
+        ``ICON_OROG``. Defaults to ``["TPI_500M", "TPI_4000M_SMTH",
+        "SN_DERIV_2000M", "WE_DERIV_2000M", "ICON_OROG"]``. Ignored when
+        *use_topo_descriptors* is ``False``.
     use_topo_descriptors : bool
-        If ``True`` (default), weight each station's contribution by its
-        topographic similarity to each POI (see module docstring, step 5,
-        and ``ned_interp``'s Steps 2-5) on top of the barrier-aware IDW
-        distance weighting. If ``False``, skip topographic-similarity
-        weighting entirely and fall back to pure IDW
-        (``1 / d_eff[p,s]^weight_power``, un-modulated by *topo_vars*/
-        *min_topo_w*) for both the POI spreading step and the station
-        reliability check's leave-one-out prediction — see ``ned_interp``'s
-        "Pure IDW fallback" branch, which this reuses unchanged. *topo_file*/
-        *icon_orog_file* are still read either way: ``ICON_OROG`` (from
-        *icon_orog_file*) is also the source of the model's own elevation
-        used by the lapse-rate correction (see *lapse_rate*), which is
-        independent of topographic-similarity weighting and always applied
-        when relevant regardless of this flag.
+        If ``True`` (default), weight stations by topographic similarity to
+        each POI on top of the barrier-aware IDW distance; if ``False``, fall
+        back to pure IDW for both POI spreading and the reliability check.
+        *topo_file*/*icon_orog_file* are still read either way, since
+        ``ICON_OROG`` also feeds the lapse-rate correction.
     nudge_variables : list of str, optional
         GRIB shortNames to nudge (subset of PARAM_MAP keys). Defaults to all
         non-precipitation variables.
@@ -681,39 +472,29 @@ class NudgeTowardObservation(Filter):
         ``'depl'``: ref_time = minimum valid_time across all fields.
         ``'devt'``: ref_time = valid_time of the first field.
     holdout_fraction : float, optional
-        Fraction of stations to withhold from nudging for cross-validation.
-        Mutually exclusive with *exclude_stations*.
+        Fraction of stations to withhold for cross-validation. Mutually
+        exclusive with *exclude_stations*.
     holdout_seed : int
         RNG seed for station holdout (default 42).
     exclude_stations : list of str, optional
-        Station nat_abbr identifiers to unconditionally exclude.
-        Mutually exclusive with *holdout_fraction*.
+        Station nat_abbr identifiers to unconditionally exclude. Mutually
+        exclusive with *holdout_fraction*.
+    enable_plotting : bool
+        Master on/off switch for the reliability diagnostic plot, independent
+        of *plot_dir* (lets a deployment keep *plot_dir* set while skipping
+        the matplotlib/cartopy rendering cost). ``True`` by default; when
+        ``False``, *plot_dir* is not even created.
     plot_dir : str, optional
-        If given, save a 5-panel reliability diagnostic PNG (station residual
-        — holdin AND holdout stations, pre-nudging; station reliability
-        — holdin only, since reliability is only defined for stations that
-        participated in the nudging; gridded correction; pre-nudging station
-        RMSE; post-nudging station RMSE, the last two split by holdin/holdout
-        — the station-residual, reliability, and gridded-correction panels
-        are the same figure produced interactively in
-        notebooks/nudging_analysis_v10.ipynb; the two RMSE panels are
-        production-only) for every nudged variable at every call, one file
-        per (variable, ref_time):
+        If given (and *enable_plotting*), save a 6-panel reliability
+        diagnostic PNG per (variable, ref_time) — see
+        ``_plot_reliability_diagnostic``:
         ``{plot_dir}/reliability_diag_{shortname}_{ref_time:%Y%m%d%H%M}.png``.
-        Only has an effect when *use_reliability_check* is ``True`` — there is
-        no reliability to plot otherwise. Defaults to ``None`` (no plotting).
-        Plotting failures (including matplotlib/cartopy not being installed)
-        are logged and skipped; they never affect the nudging correction
-        itself, which is computed and returned identically either way.
+        Only effective when *use_reliability_check* is ``True``. Defaults to
+        ``None``. Plotting failures are logged and swallowed.
     plot_extent : list of float, optional
-        ``[lon_min, lon_max, lat_min, lat_max]`` map extent for the diagnostic
-        plot. Defaults to ``[5.8, 10.8, 45.7, 47.9]`` (Switzerland). Only used
-        when *plot_dir* is set.
-    power : float, optional
-        Deprecated alias for *weight_power*. Will be removed in a future version.
-    k : int, optional
-        Deprecated and ignored. The v3 algorithm uses all stations within
-        *max_dist* rather than a fixed k-nearest subset.
+        ``[lon_min, lon_max, lat_min, lat_max]`` map extent for the
+        diagnostic plot. Defaults to ``[5.8, 10.8, 45.7, 47.9]``
+        (Switzerland).
     """
 
     def __init__(
@@ -724,19 +505,22 @@ class NudgeTowardObservation(Filter):
         dem_barrier_file: str = _DEFAULT_DEM_BARRIER_FILE,
         d_eff_file: str = _DEFAULT_D_EFF_FILE,
         icon_orog_file: str = _DEFAULT_ICON_OROG_FILE,
-        weight_power: float = 4.0,
-        max_dist: float = 38.962,
+        weight_power: float = 2.0,
+        max_dist: float = 50000.0,  # m
         variable_overrides: Optional[dict] = None,
         min_topo_w: float = 0.2,
         lim_effective: float = 0.0,
         use_reliability_check: bool = False,
-        number_of_std: float = 4.0,
-        reliability_min_dist_frac: float = 0.1,
+        number_of_std: float = 5.0,
+        reliability_min_dist_frac: float = 0.05,
         reliability_eps: float = 1e-6,
+        enable_plotting: bool = True,
         plot_dir: Optional[str] = None,
         plot_extent: Optional[list] = None,
-        lapse_rate: float = _DEFAULT_LAPSE_RATE,
-        lapse_rate_vars: Optional[list] = None,
+        temperature_lapse_rate: float = _DEFAULT_TEMPERATURE_LAPSE_RATE,
+        temperature_lapse_rate_vars: Optional[list] = None,
+        pressure_lapse_rate: float = _DEFAULT_PRESSURE_LAPSE_RATE,
+        pressure_lapse_rate_vars: Optional[list] = None,
         topo_vars: Optional[list] = None,
         use_topo_descriptors: bool = True,
         nudge_variables: Optional[list] = None,
@@ -744,9 +528,6 @@ class NudgeTowardObservation(Filter):
         holdout_fraction: Optional[float] = None,
         holdout_seed: int = 42,
         exclude_stations: Optional[list] = None,
-        # Deprecated parameters kept for backward compatibility
-        power: Optional[float] = None,
-        k: Optional[int] = None,
     ):
         if run_mode not in ("devt", "depl"):
             raise ValueError(f"run_mode must be 'devt' or 'depl', got {run_mode!r}")
@@ -765,20 +546,14 @@ class NudgeTowardObservation(Filter):
         if number_of_std <= 0:
             raise ValueError(f"number_of_std must be > 0, got {number_of_std!r}")
 
-        if power is not None:
-            warnings.warn(
-                "The 'power' parameter is deprecated; use 'weight_power' instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            weight_power = power
-        if k is not None:
-            warnings.warn(
-                "The 'k' parameter is deprecated and ignored in v3. "
-                "All stations within max_dist are used.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+        if max_dist <= 0:
+            raise ValueError(f"max_dist must be > 0, got {max_dist!r}")
+        if weight_power <= 0:
+            raise ValueError(f"weight_power must be > 0, got {weight_power!r}")
+        if min_topo_w < 0:
+            raise ValueError(f"min_topo_w must be >= 0, got {min_topo_w!r}")
+        if lim_effective < 0:
+            raise ValueError(f"lim_effective must be >= 0, got {lim_effective!r}")
 
         self.obs_path = Path(obs_path)
         self.icon_grid_dir = Path(icon_grid_dir)
@@ -787,18 +562,27 @@ class NudgeTowardObservation(Filter):
         self.d_eff_file = Path(d_eff_file)
         self.icon_orog_file = Path(icon_orog_file)
         self.weight_power = weight_power
-        self.max_dist = max_dist
+        self.max_dist = max_dist / 1000.0  # max_dist is given in meters (see docstring); converted to km once here
         self.min_topo_w = min_topo_w
         self.lim_effective = lim_effective
         self.use_reliability_check = use_reliability_check
         self.number_of_std = number_of_std
         self.reliability_min_dist_frac = reliability_min_dist_frac
         self.reliability_eps = reliability_eps
+        self.enable_plotting = enable_plotting
         self.plot_dir = Path(plot_dir) if plot_dir is not None else None
         self.plot_extent = list(plot_extent) if plot_extent is not None else [5.8, 10.8, 45.7, 47.9]
-        self.lapse_rate = lapse_rate
-        self.lapse_rate_vars = (
-            frozenset(lapse_rate_vars) if lapse_rate_vars is not None else _DEFAULT_LAPSE_RATE_VARS
+        self.temperature_lapse_rate = temperature_lapse_rate
+        self.temperature_lapse_rate_vars = (
+            frozenset(temperature_lapse_rate_vars)
+            if temperature_lapse_rate_vars is not None
+            else _DEFAULT_TEMPERATURE_LAPSE_RATE_VARS
+        )
+        self.pressure_lapse_rate = pressure_lapse_rate
+        self.pressure_lapse_rate_vars = (
+            frozenset(pressure_lapse_rate_vars)
+            if pressure_lapse_rate_vars is not None
+            else _DEFAULT_PRESSURE_LAPSE_RATE_VARS
         )
         self.topo_vars = list(topo_vars) if topo_vars is not None else _DEFAULT_TOPO_VARS
         self.use_topo_descriptors = use_topo_descriptors
@@ -807,12 +591,9 @@ class NudgeTowardObservation(Filter):
         self.holdout_seed = holdout_seed
         self.exclude_stations = list(exclude_stations) if exclude_stations is not None else None
         self._nudging_done = False
-        # param -> dict of diagnostic arrays from the last _compute_reliability() call,
-        # consumed by _plot_reliability_diagnostic(). Mirrors RELIABILITY_DIAG in
-        # notebooks/nudging_analysis_v10.ipynb.
         self._reliability_diag = {}
 
-        if self.plot_dir is not None:
+        if self.plot_dir is not None and self.enable_plotting:
             self.plot_dir.mkdir(parents=True, exist_ok=True)
             if not self.use_reliability_check:
                 LOG.warning(
@@ -820,6 +601,12 @@ class NudgeTowardObservation(Filter):
                     "reliability to plot, so no diagnostic plots will be produced.",
                     self.plot_dir,
                 )
+        elif self.plot_dir is not None and not self.enable_plotting:
+            LOG.info(
+                "plot_dir=%s is set but enable_plotting=False — no diagnostic plots "
+                "will be produced (the directory is not created).",
+                self.plot_dir,
+            )
 
         if nudge_variables is not None:
             unknown = set(nudge_variables) - PARAM_MAP.keys()
@@ -833,13 +620,6 @@ class NudgeTowardObservation(Filter):
         self.param_map = {v: w for v, w in self.param_map.items() if v not in _NO_NUDGE}
 
         # ── Per-variable d_eff_file/max_dist (variable_overrides) ──────────
-        # Every variable defaults to the top-level d_eff_file/max_dist; an
-        # entry in variable_overrides replaces one or both for that variable
-        # only. This only selects *which* precomputed cache and radius feed
-        # into _nudge_field()/_compute_reliability() for a given variable —
-        # the IDW/topo-similarity/taper/reliability computation itself is
-        # unchanged and unaware that other variables might use a different
-        # cache/radius.
         self.variable_overrides = dict(variable_overrides) if variable_overrides is not None else {}
         unknown_override_vars = set(self.variable_overrides) - set(self.param_map)
         if unknown_override_vars:
@@ -857,10 +637,20 @@ class NudgeTowardObservation(Filter):
                     "are supported."
                 )
 
+        # variable_overrides' max_dist 
         self._max_dist_by_var = {
-            var: self.variable_overrides.get(var, {}).get("max_dist", self.max_dist)
+            var: (
+                self.variable_overrides[var]["max_dist"] / 1000.0
+                if "max_dist" in self.variable_overrides.get(var, {})
+                else self.max_dist
+            )
             for var in self.param_map
         }
+        for _var, _md in self._max_dist_by_var.items():
+            if _md <= 0:
+                raise ValueError(
+                    f"variable_overrides[{_var!r}]['max_dist'] must be > 0, got {_md!r}"
+                )
         self._d_eff_file_by_var = {
             var: Path(self.variable_overrides.get(var, {}).get("d_eff_file", self.d_eff_file))
             for var in self.param_map
@@ -878,15 +668,18 @@ class NudgeTowardObservation(Filter):
         LOG.info(
             "NudgeTowardObservation v5 initialised: variables=%s, max_dist=%s km, "
             "weight_power=%.1f, d_eff_file=%s, use_topo_descriptors=%s, "
-            "lapse_rate=%.5f K/m (vars=%s), use_reliability_check=%s, number_of_std=%.2f, "
+            "temperature_lapse_rate=%.5f K/m (vars=%s), pressure_lapse_rate=%.2f Pa/m (vars=%s), "
+            "use_reliability_check=%s, number_of_std=%.2f, "
             "reliability_min_dist_frac=%.3f, min radius=%s km",
             list(self.param_map.keys()),
             {v: self._max_dist_by_var[v] for v in self.param_map},
             self.weight_power,
             {v: str(self._d_eff_file_by_var[v]) for v in self.param_map},
             self.use_topo_descriptors,
-            self.lapse_rate,
-            sorted(self.lapse_rate_vars),
+            self.temperature_lapse_rate,
+            sorted(self.temperature_lapse_rate_vars),
+            self.pressure_lapse_rate,
+            sorted(self.pressure_lapse_rate_vars),
             self.use_reliability_check,
             self.number_of_std,
             self.reliability_min_dist_frac,
@@ -894,13 +687,25 @@ class NudgeTowardObservation(Filter):
         )
         super().__init__()
 
+    def _elevation_rate(self, shortname: str) -> Optional[float]:
+        """Elevation-reduction rate for *shortname*'s observations (see
+        *temperature_lapse_rate_vars*/*pressure_lapse_rate_vars*), or ``None`` if this
+        variable gets no elevation correction. *temperature_lapse_rate_vars* is checked
+        first if a config were to make the two sets overlap."""
+        if shortname in self.temperature_lapse_rate_vars:
+            return self.temperature_lapse_rate
+        if shortname in self.pressure_lapse_rate_vars:
+            return self.pressure_lapse_rate
+        return None
+
     # ── Static data loaders ───────────────────────────────────────────────────
 
     def _load_icon_grid(self) -> None:
         ds = xr.open_dataset(self.icon_grid_dir / "icon_grid_0001_R19B08_mch.nc")
-        # clat/clon are cell-centre coordinates stored in radians in the ICON grid file.
-        self._lat_icon = np.degrees(ds["clat"].values).ravel()  # (n_cells,)
-        self._lon_icon = np.degrees(ds["clon"].values).ravel()  # (n_cells,)
+        # clat/clon are stored in radians in the ICON grid file.
+        self._lat_icon = np.degrees(ds["clat"].values).ravel()
+        self._lon_icon = np.degrees(ds["clon"].values).ravel()
+        ds.close()
         LOG.info(
             "ICON grid loaded: %d cells from %s",
             len(self._lat_icon),
@@ -908,11 +713,18 @@ class NudgeTowardObservation(Filter):
         )
 
     def _load_topo(self) -> None:
-        # Loaded unconditionally, even when use_topo_descriptors=False: ICON_OROG
-        # (injected below by _load_icon_orog) is also the source of the model's
-        # own elevation used by the lapse-rate correction (see *lapse_rate*),
-        # which is independent of topographic-similarity weighting.
         self._ds_topo = xr.open_dataset(self.topo_file)
+        # This only catches a cell-COUNT mismatch; a same-count-different-ORDER
+        # mismatch would silently misalign descriptors (_nudge_field's dom_idx
+        # later indexes this dataset positionally) — partial safety net only.
+        if self._ds_topo.sizes.get("cell") != len(self._lat_icon):
+            raise ValueError(
+                f"topo_file {self.topo_file} has "
+                f"{self._ds_topo.sizes.get('cell')} 'cell' entries but the "
+                f"ICON grid ({self.icon_grid_dir}) has {len(self._lat_icon)} "
+                "cells — topo_file must be on the exact same grid as "
+                "icon_grid_dir."
+            )
         self._load_icon_orog()
         if not self.use_topo_descriptors:
             LOG.info(
@@ -933,22 +745,22 @@ class NudgeTowardObservation(Filter):
     def _load_icon_orog(self) -> None:
         """Inject ICON's native orography as the 'ICON_OROG' topo descriptor.
 
-        The 'cell' ordering matches topo_file / icon_grid_dir exactly (same source
-        grid file), so the array can be attached positionally without reindexing.
+        'cell' ordering matches topo_file/icon_grid_dir exactly (same source grid
+        file), so the array is attached positionally, without reindexing.
         """
         ds_orog = xr.open_dataset(self.icon_orog_file)
         self._ds_topo["ICON_OROG"] = ("cell", ds_orog["topography_c"].values.astype(np.float32))
+        ds_orog.close()
         LOG.info("ICON native orography loaded from %s: ICON_OROG", self.icon_orog_file)
 
     def _load_dem(self) -> None:
         dem_ds = xr.open_dataset(self.dem_barrier_file)
-        # Replace NaN (ocean / no-data cells) with 0 m so that out-of-domain path
-        # segments don't produce NaN barriers.
+        dem_shape = dem_ds["DEM_1000M"].shape
+        # NaN (ocean/no-data) -> 0 m so out-of-domain path segments don't produce NaN barriers.
         dem_z = np.where(
             np.isnan(dem_ds["DEM_1000M"].values), 0.0, dem_ds["DEM_1000M"].values
         )
-        # RGI axes must match the DEM array layout: first axis = y (northing/rows),
-        # second axis = x (easting/cols). Query points must be passed as (y, x) = (northing, easting).
+        # RGI axes: first=y (northing/rows), second=x (easting/cols); query as (y, x).
         self._dem_rgi = RegularGridInterpolator(
             (dem_ds["y"].values, dem_ds["x"].values),
             dem_z,
@@ -956,31 +768,32 @@ class NudgeTowardObservation(Filter):
             bounds_error=False,
             fill_value=0.0,  # extrapolate as 0 m for points outside the DEM extent
         )
-        # always_xy=True: transform(lon, lat) → (easting, northing), matching the (x, y) convention.
+        dem_ds.close()
+        # always_xy=True: transform(lon, lat) -> (easting, northing).
         self._wgs84_to_lv95 = Transformer.from_crs(
             "EPSG:4326", "EPSG:2056", always_xy=True
         )
         LOG.info(
             "DEM loaded from %s: shape=%s",
             self.dem_barrier_file,
-            dem_ds["DEM_1000M"].shape,
+            dem_shape,
         )
 
         # ── Project the ICON grid and topo-descriptor grid to LV95 km, once ────
-        # Computed here (not per-nudge-call, and not in a separate method) since
-        # self._lon_icon/self._lat_icon (from _load_icon_grid) and self._ds_topo
-        # (from _load_topo) are already set by this point in __init__, and
-        # self._wgs84_to_lv95 was just created above. Replaces the
-        # (lon * cos(lat0), lat) equirectangular approximation used by earlier
-        # versions with this exact metric projection, reused by every
-        # _nudge_field() call instead of being re-projected each time.
+        # Computed once here and reused by every _nudge_field() call instead of
+        # re-projecting each time.
         grid_x, grid_y = self._wgs84_to_lv95.transform(self._lon_icon, self._lat_icon)
-        self._grid_xy_km = np.c_[grid_x, grid_y] / 1000.0  # (n_cells, 2), km
+        self._grid_xy_km = np.c_[grid_x, grid_y] / 1000.0
 
         topo_x, topo_y = self._wgs84_to_lv95.transform(
             self._ds_topo["lon"].values, self._ds_topo["lat"].values
         )
-        self._topo_xy_km = np.c_[topo_x, topo_y] / 1000.0  # (n_topo_cells, 2), km
+        self._topo_xy_km = np.c_[topo_x, topo_y] / 1000.0
+
+        # Built once and reused by every _nudge_field() call (these never change
+        # after __init__), rather than rebuilding per call.
+        self._grid_tree = cKDTree(self._grid_xy_km)
+        self._topo_tree = cKDTree(self._topo_xy_km)
 
         LOG.info(
             "ICON/topo grids projected to LV95: x=[%.1f, %.1f] km, y=[%.1f, %.1f] km",
@@ -989,21 +802,13 @@ class NudgeTowardObservation(Filter):
         )
 
     def _load_d_eff_cache(self, path: Path) -> dict:
-        """Load one precomputed barrier- and elevation-aware effective-distance
-        (d_eff) cache file for the full station catalog.
+        """Load one precomputed d_eff cache file for the full station catalog.
 
-        This filter never calls ``barrier_distances()`` itself — see
-        _get_d_eff_poi()/_get_d_eff_sta() below, used by _nudge_field() and
-        _compute_reliability() instead. Each cache is built offline once (see
-        notebooks/nudging_analysis_v11.ipynb, "Precomputed d_eff cache") for
-        the full station catalog and a domain buffered around all of them;
-        every call's own (usually smaller, since stations with a NaN
-        observation for that variable are excluded) POI/station subset is
-        sliced from it.
-
-        Called once per distinct path in *_d_eff_file_by_var* (see __init__):
-        several variables may share the same cache file (e.g. T_2M/TD_2M),
-        in which case it is only loaded once and reused.
+        Built offline (notebooks/nudging_analysis_v11.ipynb, "Precomputed d_eff
+        cache"); every call's own POI/station subset is sliced from it via
+        _get_d_eff_poi()/_get_d_eff_sta(). Called once per distinct path in
+        *_d_eff_file_by_var* — variables sharing a cache file (e.g. T_2M/TD_2M)
+        only load it once.
         """
         if not path.exists():
             raise FileNotFoundError(
@@ -1024,6 +829,10 @@ class NudgeTowardObservation(Filter):
         return {
             "d_eff_poi_full": d_eff_poi_full,
             "d_eff_sta_full": d_eff_sta_full,
+            # Precomputed so _get_d_eff_poi can use pandas' get_indexer instead
+            # of xarray's label-based .sel on every call.
+            "poi_index": pd.Index(d_eff_poi_full["poi"].values),
+            "sta_index": pd.Index(d_eff_poi_full["sta"].values),
             "poi_set": set(d_eff_poi_full["poi"].values.tolist()),
             "sta_set": set(d_eff_poi_full["sta"].values.tolist()),
         }
@@ -1050,7 +859,14 @@ class NudgeTowardObservation(Filter):
                 f"'{shortname}' — the station catalog changed since the "
                 "cache was built. Rebuild the cache."
             )
-        return cache["d_eff_poi_full"].sel(poi=list(dom_idx), sta=list(sta_ids))
+        # Positional lookup instead of xarray's label-based .sel; get_indexer
+        # preserves the requested order, matching .sel's ordering exactly.
+        poi_pos = cache["poi_index"].get_indexer(dom_idx)
+        sta_pos = cache["sta_index"].get_indexer(sta_ids)
+        values = cache["d_eff_poi_full"].values[np.ix_(poi_pos, sta_pos)]
+        return xr.DataArray(
+            values, dims=["poi", "sta"], coords={"poi": dom_idx, "sta": sta_ids}
+        )
 
     def _get_d_eff_sta(self, shortname: str, sta_ids: list) -> xr.DataArray:
         """Station<->station d_eff (for _compute_reliability's leave-one-out
@@ -1079,9 +895,6 @@ class NudgeTowardObservation(Filter):
         if self._nudging_done:
             return data
 
-        # Reference time: the time step to which nudging is applied.
-        # devt: first field's valid_time (useful for single-step development runs).
-        # depl: earliest valid_time across the fieldlist (the true initial condition).
         ref_time = (
             data[0].datetime()["valid_time"]
             if self.run_mode == "devt"
@@ -1093,16 +906,13 @@ class NudgeTowardObservation(Filter):
         LOG.info("Stations loaded: %d", len(all_stations))
         stations = self._apply_holdout(all_stations)
         LOG.info("Stations after holdout: %d", len(stations))
-        # Stations removed by _apply_holdout, kept around only for the optional
-        # post-nudging error panel (_plot_reliability_diagnostic) — they never
-        # participate in the nudging correction itself.
+        # Kept only for the optional diagnostic plot; never used in the correction.
         held_out_stations = all_stations.drop(index=stations.index)
 
         nudged = {}
         for field in data.sel(shortName=list(self.param_map.keys())):
             shortname = field.metadata("shortName")
 
-            # Only nudge the initial-condition time step; later steps pass through unchanged.
             if field.datetime()["valid_time"] != ref_time:
                 continue
 
@@ -1128,7 +938,6 @@ class NudgeTowardObservation(Filter):
                 int(stations[col].notna().sum()),
             )
 
-        # Rebuild the fieldlist: replace nudged fields at ref_time; keep all others unchanged.
         result = [
             nudged.get(f.metadata("shortName"), f)
             if f.datetime()["valid_time"] == ref_time
@@ -1140,6 +949,78 @@ class NudgeTowardObservation(Filter):
         return new_fieldlist_from_list(result)
 
     # ── Core algorithm ────────────────────────────────────────────────────────
+
+    def _station_elevation(
+        self,
+        df: pd.DataFrame,
+        mask: pd.Series,
+        lon: np.ndarray,
+        lat: np.ndarray,
+        *,
+        log: bool = False,
+    ) -> np.ndarray:
+        """Station elevation for the `mask`-selected rows of `df` (with
+        `lon`/`lat` already extracted for that same subset, same order).
+
+        Uses DWH metadata (`df`'s ``elevation`` column) when available — more
+        accurate than DEM interpolation at station locations — falling back to
+        DEM sampling for individual NaN entries, or every row when the column
+        is absent (e.g. an older Parquet predating ``RetrieveObservation``
+        adding it). `log=False` keeps the holdout/diagnostic call site silent.
+        """
+        if "elevation" in df.columns:
+            elev = df.loc[mask, "elevation"].to_numpy(dtype=float)
+            nan_mask = np.isnan(elev)
+            if nan_mask.any():
+                x, y = self._wgs84_to_lv95.transform(lon[nan_mask], lat[nan_mask])
+                elev[nan_mask] = self._dem_rgi(np.c_[y, x])
+                if log:
+                    LOG.debug(
+                        "Filled %d/%d station elevations from DEM (NaN in metadata)",
+                        int(nan_mask.sum()), len(elev),
+                    )
+        else:
+            if log:
+                LOG.warning(
+                    "Station Parquet missing 'elevation' column; sampling DEM at "
+                    "station locations. Upgrade RetrieveObservation to include "
+                    "elevation."
+                )
+            x, y = self._wgs84_to_lv95.transform(lon, lat)
+            elev = self._dem_rgi(np.c_[y, x])
+        return elev
+
+    def _reduce_obs_to_model_elevation(
+        self,
+        shortname: str,
+        obs: np.ndarray,
+        grid_index: np.ndarray,
+        sta_elev: np.ndarray,
+        *,
+        log: bool = False,
+    ) -> np.ndarray:
+        """Reduce `obs` to the model's elevation at each station's snapped ICON
+        cell (`grid_index`) via *temperature_lapse_rate*/*pressure_lapse_rate* (see
+        *_elevation_rate*), so the residual reflects model bias rather than the
+        elevation mismatch between station and ICON's (smoothed) orography.
+        Returns `obs` unchanged for variables with no configured rate.
+        `log=False` keeps the holdout call site silent.
+        """
+        obs_lr = obs
+        rate = self._elevation_rate(shortname)
+        if rate is not None:
+            elev_model = self._ds_topo["ICON_OROG"].values[grid_index]
+            obs_lr = obs - rate * (elev_model - sta_elev)
+            if log:
+                LOG.debug(
+                    "Elevation-reduction correction for '%s' (rate=%.5f): mean "
+                    "elev_model−elev_sta = %.0f m, mean |correction| = %.3f",
+                    shortname,
+                    rate,
+                    float(np.mean(elev_model - sta_elev)),
+                    float(np.mean(np.abs(obs_lr - obs))),
+                )
+        return obs_lr
 
     def _nudge_field(
         self,
@@ -1154,71 +1035,33 @@ class NudgeTowardObservation(Filter):
         """Apply v3 IoR nudging to a single field; return the corrected 1-D array.
 
         ``ref_time`` and ``held_out_stations`` are only used for the optional
-        reliability diagnostic plot (see *plot_dir*); neither plays any role
-        in the nudging computation itself and both may be omitted when not
-        plotting.
+        reliability diagnostic plot (see *plot_dir*) and play no role in the
+        nudging computation itself.
         """
-        # Background field values on the full ICON grid, shape (n_cells,).
-        B_flat = np.asarray(field.values, dtype=float).ravel()
+        # float32: matches sta_res/d_eff elsewhere in this pipeline and is far
+        # finer than physically meaningful for these variables — drops unused
+        # precision, not signal.
+        B_flat = np.asarray(field.values, dtype=np.float32).ravel()
 
-        # This variable's own max_dist (see *variable_overrides*): defaults to
-        # self.max_dist, overridden per-variable when configured. Used below
-        # exactly where a single shared self.max_dist used to be — the domain
-        # buffer, the barrier-distance/ned_interp cutoff, and (together with
-        # its own d_eff cache, see _get_d_eff_poi) the station-reliability
-        # radius scaling.
         max_dist = self._max_dist_by_var[shortname]
 
         # ── Valid stations ─────────────────────────────────────────────────
-        # Filter to stations that have a non-NaN observation for this variable.
         valid   = stations[col].notna()
         st_lat  = stations.loc[valid, "latitude"].to_numpy()
         st_lon  = stations.loc[valid, "longitude"].to_numpy()
         st_obs  = stations.loc[valid, col].to_numpy() + offset
         sta_ids = stations.loc[valid].index.tolist()
 
-        # Station elevation: use DWH metadata when available (more accurate than DEM).
-        # Falls back to DEM sampling for missing values or when the column is absent entirely.
-        if "elevation" in stations.columns:
-            st_elev = stations.loc[valid, "elevation"].to_numpy(dtype=float)
-            nan_mask = np.isnan(st_elev)
-            if nan_mask.any():
-                # Fill individual NaN entries by sampling the DEM at the station location.
-                sta_x, sta_y = self._wgs84_to_lv95.transform(
-                    st_lon[nan_mask], st_lat[nan_mask]
-                )
-                st_elev[nan_mask] = self._dem_rgi(np.c_[sta_y, sta_x])
-                LOG.debug(
-                    "Filled %d/%d station elevations from DEM (NaN in metadata)",
-                    int(nan_mask.sum()), len(st_elev),
-                )
-        else:
-            # Old Parquet files written before elevation was added to RetrieveObservation.
-            LOG.warning(
-                "Station Parquet missing 'elevation' column; sampling DEM at station "
-                "locations. Upgrade RetrieveObservation to include elevation."
-            )
-            sta_x, sta_y = self._wgs84_to_lv95.transform(st_lon, st_lat)
-            st_elev = self._dem_rgi(np.c_[sta_y, sta_x])
+        st_elev = self._station_elevation(stations, valid, st_lon, st_lat, log=True)
 
         # ── Coordinate projection ──────────────────────────────────────────
-        # True metric LV95 projection (km): reuses the grid precomputed once in
-        # _load_dem() and the same transformer used there for the DEM. This is
-        # an exact projection — 1 km in x equals 1 km in y everywhere in the
-        # domain — replacing the (lon * cos(lat0), lat) equirectangular
-        # approximation used by earlier versions, which was only exactly
-        # isotropic near the domain's mean latitude.
-        grid_xy = self._grid_xy_km                                     # (n_cells, 2), km
+        grid_xy = self._grid_xy_km
         sta_x, sta_y = self._wgs84_to_lv95.transform(st_lon, st_lat)
-        sta_xy = np.c_[sta_x, sta_y] / 1000.0                           # (n_sta, 2), km
+        sta_xy = np.c_[sta_x, sta_y] / 1000.0
 
         # ── POI domain ─────────────────────────────────────────────────────
-        # Restrict processing to ICON cells within a buffer of the station bounding box.
-        # This reduces the n_poi × n_sta distance matrix from ~1.1 M × n_sta to ~100 k × n_sta.
-        #
-        # LV95 is already isotropic metric (x and y both true km), so a simple
-        # symmetric buffer suffices — no lat/lon asymmetry needed, unlike the old
-        # cos(lat0)-projected-degree scheme.
+        # LV95 is an isotropic metric CRS, so a simple symmetric km buffer suffices;
+        # this cuts the n_poi x n_sta distance matrix from ~1.1M to ~100k rows.
         sta_x_min = sta_xy[:, 0].min() - max_dist
         sta_x_max = sta_xy[:, 0].max() + max_dist
         sta_y_min = sta_xy[:, 1].min() - max_dist
@@ -1227,35 +1070,17 @@ class NudgeTowardObservation(Filter):
             (grid_xy[:, 0] >= sta_x_min) & (grid_xy[:, 0] <= sta_x_max) &
             (grid_xy[:, 1] >= sta_y_min) & (grid_xy[:, 1] <= sta_y_max)
         )
-        dom_idx = np.where(dom_mask)[0]  # ICON cell indices inside the domain, shape (n_poi,)
-        poi_xy  = grid_xy[dom_idx]       # (n_poi, 2), km
+        dom_idx = np.where(dom_mask)[0]
+        poi_xy  = grid_xy[dom_idx]
         n_poi   = len(dom_idx)
 
         # ── Residuals at stations ──────────────────────────────────────────
-        # For each station, snap to the nearest ICON cell (k=1 nearest neighbour)
-        # and compute background_at_cell − observation.
-        # Positive residual: model is too high → we subtract a positive correction later.
-        _, gi   = cKDTree(grid_xy).query(sta_xy, k=1)
+        # self._grid_tree was built once in _load_dem(), reused across every call.
+        _, gi   = self._grid_tree.query(sta_xy, k=1)
 
-        # Lapse-rate correction: reduce the observation to the model's elevation at
-        # that cell before differencing, so the residual reflects model bias rather
-        # than the elevation mismatch between the true station altitude and ICON's
-        # (smoothed) orography. gi indexes directly into _ds_topo (same source grid
-        # as the ICON grid — see _load_icon_orog). Only applied to temperature-like
-        # variables (self.lapse_rate_vars); other variables use the raw observation.
-        st_obs_lr = st_obs
-        if shortname in self.lapse_rate_vars:
-            elev_model_at_sta = self._ds_topo["ICON_OROG"].values[gi]
-            st_obs_lr = st_obs - self.lapse_rate * (elev_model_at_sta - st_elev)
-            LOG.debug(
-                "Lapse-rate correction for '%s': mean elev_model−elev_sta = %.0f m, "
-                "mean |correction| = %.3f",
-                shortname,
-                float(np.mean(elev_model_at_sta - st_elev)),
-                float(np.mean(np.abs(st_obs_lr - st_obs))),
-            )
+        st_obs_lr = self._reduce_obs_to_model_elevation(shortname, st_obs, gi, st_elev, log=True)
 
-        r_at_st = B_flat[gi] - st_obs_lr  # (n_sta,): positive when model > observation
+        r_at_st = B_flat[gi] - st_obs_lr  # positive when model > observation
 
         sta_res = xr.Dataset(
             {shortname: xr.DataArray(
@@ -1264,34 +1089,28 @@ class NudgeTowardObservation(Filter):
         )
 
         # ── Euclidean distance matrix ──────────────────────────────────────
-        # Shape: (n_poi, n_sta), in km.
+        # float32 only for this broadcast (poi_xy/sta_xy stay float64, still needed
+        # below for the topo cKDTree query) — halves transient size; precision is
+        # ample for a continuous IDW/taper weight.
         d_euc_mat = np.sqrt(
-            ((poi_xy[:, None, :] - sta_xy[None, :, :]) ** 2).sum(axis=-1)
+            (
+                (poi_xy[:, None, :].astype(np.float32) - sta_xy[None, :, :].astype(np.float32)) ** 2
+            ).sum(axis=-1)
         ).astype(np.float32)
 
         # ── Barrier-aware distances ────────────────────────────────────────
-        # Read from the precomputed cache instead of computing them live —
-        # see _load_d_eff/_get_d_eff_poi. dom_idx/sta_ids for THIS call are
-        # always a subset of the full catalog/domain the cache was built for
-        # (see _get_d_eff_poi's coverage check).
         ned_sta_poi = self._get_d_eff_poi(shortname, dom_idx, sta_ids)
 
         # ── Topographic descriptors at POIs and stations ───────────────────
-        # Skipped entirely when use_topo_descriptors=False: ned_interp() and
-        # _compute_reliability() both fall back to pure IDW (1 / d_eff^weight_power)
-        # when sta_topo/poi_topo are None — see ned_interp's docstring.
         if self.use_topo_descriptors:
-            # POI descriptors: direct lookup by ICON cell index.
             poi_topo = (
                 self._ds_topo[self.topo_vars]
                 .isel(cell=dom_idx)
                 .rename({"cell": "poi"})
                 .assign_coords({"poi": dom_idx})
             )
-            # Station descriptors: snap each station to the nearest ICON cell using
-            # the same LV95-km projection as grid_xy/sta_xy (precomputed once in
-            # _load_dem()) so the distance metric is consistent.
-            _, topo_gi = cKDTree(self._topo_xy_km).query(sta_xy, k=1)
+            # self._topo_tree, like self._grid_tree, was built once in _load_dem().
+            _, topo_gi = self._topo_tree.query(sta_xy, k=1)
             sta_topo = (
                 self._ds_topo[self.topo_vars]
                 .isel(cell=topo_gi)
@@ -1303,23 +1122,9 @@ class NudgeTowardObservation(Filter):
             sta_topo = None
 
         # ── Station reliability → per-station influence radius (v4) ────────
-        # A fully reliable station (reliability=1) keeps the full max_dist
-        # (this variable's own — see *variable_overrides* at the top of this
-        # method) reach; a station near reliability=0 shrinks down to a
-        # configurable floor (self.reliability_min_dist_frac * max_dist)
-        # rather than all the way to zero — every station keeps at least some
-        # very local influence. Reliability scales the radius LINEARLY
-        # between that floor and the full max_dist. Within whatever radius a
-        # station keeps, its weight is otherwise undiminished (same IDW/topo
-        # formula as any other station); it is excluded entirely beyond that
-        # radius. See the module docstring ("Station reliability") for the
-        # full algorithm, ported unchanged from
-        # notebooks/nudging_analysis_v10.ipynb.
-        # use_reliability_check=False reproduces the pre-v4 (v3) behaviour
-        # exactly (a single global max_dist shared by every station).
         if self.use_reliability_check:
             reliability = self._compute_reliability(
-                shortname, sta_ids, st_lon, st_lat, r_at_st, sta_topo, max_dist,
+                shortname, sta_ids, st_lon, st_lat, r_at_st, sta_res, sta_topo, max_dist,
             )
             min_dist = self.reliability_min_dist_frac * max_dist
             station_max_dist = min_dist + (max_dist - min_dist) * reliability
@@ -1327,29 +1132,14 @@ class NudgeTowardObservation(Filter):
             station_max_dist = max_dist
 
         # ── Per-station linear taper (v4.1) ─────────────────────────────────
-        # v3/early-v4 used ONE taper per POI (distance to the nearest station
-        # overall, fading out at the single global max_dist) — that coincided
-        # exactly with ned_interp's hard cutoff back when every station shared
-        # the same max_dist. Once each station got its OWN (possibly much
-        # smaller) max_dist above (station reliability), a single global-radius
-        # taper no longer coincides with THAT station's own cutoff: its
-        # contribution jumped straight from ~full strength to exactly zero right
-        # at its own (small) radius — a sharp-edged "blob" instead of a smooth
-        # fade. Fix: one taper factor per (POI, station) pair, using RAW
-        # Euclidean distance (d_euc_mat — not barrier-inflated d_eff, same
-        # "independent of barrier logic" principle as the original taper) and
-        # THAT station's own station_max_dist. Passed into ned_interp, which
-        # applies it AFTER weight normalisation (see ned_interp's "v4.1"
-        # docstring note for why applying it before normalisation would not work).
         d_euc_da = xr.DataArray(
             d_euc_mat, dims=["poi", "sta"], coords={"poi": dom_idx, "sta": sta_ids}
         )
         pair_taper = (1.0 - (d_euc_da / station_max_dist).clip(min=0.0, max=1.0)).astype(np.float32)
 
         # ── ned_interp ─────────────────────────────────────────────────────
-        # Spreads residuals to POIs using IDW weighted by topographic similarity.
-        # The max_dist cutoff here acts on barrier-aware distances, so a POI that is
-        # geographically close but behind a ridge may receive zero correction.
+        # max_dist cuts on barrier-aware distance here, so a POI that is
+        # geographically close but behind a ridge may get zero correction.
         result = ned_interp(
             sta_res, ned_sta_poi,
             sta_topo=sta_topo, poi_topo=poi_topo,
@@ -1360,117 +1150,108 @@ class NudgeTowardObservation(Filter):
             taper=pair_taper,
         )
 
-        # POIs with no station within their radius return NaN from ned_interp → no correction.
+        # POIs with no station within their radius return NaN from ned_interp -> no correction.
         correction = np.nan_to_num(result[shortname].values, nan=0.0)
 
-        # ── Apply correction ───────────────────────────────────────────────
-        # corrected ≈ background − (background − obs) = obs near stations.
-        # Only POIs within the domain are modified; the rest of the field is unchanged.
         corrected_flat = B_flat.copy()
         corrected_flat[dom_idx] -= correction
 
-        # ── Pre/post-nudging station error (holdin + holdout), for the
-        # diagnostic plot's station-residual and RMSE panels only — never
-        # feeds back into the correction above. Holdin stations (gi/
-        # st_obs_lr/st_lat/st_lon already computed above) validate the fit at
-        # stations that DID influence the correction; holdout stations
-        # (excluded by _apply_holdout, passed in separately since `stations`
-        # no longer contains them) give an independent check at locations the
-        # correction never saw.
-        if self.plot_dir is not None and self.use_reliability_check:
-            err_lat = [st_lat]
-            err_lon = [st_lon]
-            err_val_pre = [B_flat[gi] - st_obs_lr]
-            err_val_post = [corrected_flat[gi] - st_obs_lr]
-            err_is_holdout = [np.zeros(len(st_lat), dtype=bool)]
-
-            if held_out_stations is not None and len(held_out_stations):
-                ho_valid = held_out_stations[col].notna() if col in held_out_stations.columns else pd.Series(dtype=bool)
-                if ho_valid.any():
-                    ho_lat = held_out_stations.loc[ho_valid, "latitude"].to_numpy()
-                    ho_lon = held_out_stations.loc[ho_valid, "longitude"].to_numpy()
-                    ho_obs = held_out_stations.loc[ho_valid, col].to_numpy() + offset
-
-                    if "elevation" in held_out_stations.columns:
-                        ho_elev = held_out_stations.loc[ho_valid, "elevation"].to_numpy(dtype=float)
-                        nan_mask = np.isnan(ho_elev)
-                        if nan_mask.any():
-                            hx, hy = self._wgs84_to_lv95.transform(ho_lon[nan_mask], ho_lat[nan_mask])
-                            ho_elev[nan_mask] = self._dem_rgi(np.c_[hy, hx])
-                    else:
-                        hx, hy = self._wgs84_to_lv95.transform(ho_lon, ho_lat)
-                        ho_elev = self._dem_rgi(np.c_[hy, hx])
-
-                    ho_x, ho_y = self._wgs84_to_lv95.transform(ho_lon, ho_lat)
-                    ho_xy = np.c_[ho_x, ho_y] / 1000.0
-                    _, ho_gi = cKDTree(grid_xy).query(ho_xy, k=1)
-
-                    ho_obs_lr = ho_obs
-                    if shortname in self.lapse_rate_vars:
-                        elev_model_at_ho = self._ds_topo["ICON_OROG"].values[ho_gi]
-                        ho_obs_lr = ho_obs - self.lapse_rate * (elev_model_at_ho - ho_elev)
-
-                    err_lat.append(ho_lat)
-                    err_lon.append(ho_lon)
-                    err_val_pre.append(B_flat[ho_gi] - ho_obs_lr)
-                    err_val_post.append(corrected_flat[ho_gi] - ho_obs_lr)
-                    err_is_holdout.append(np.ones(len(ho_lat), dtype=bool))
-
-            # Squared-error rooted per station: a single ref_time gives a single
-            # sample per station, so this is algebraically just |error| — kept as
-            # an explicit RMS formula in case this is ever extended to aggregate
-            # multiple ref_times/variables per station.
-            residual_pre_nudge = np.concatenate(err_val_pre)
-
-            # Stations CleanObservation's QC dropped for this variable (see its
-            # "{col}_qc_dropped" flag column — set for both the physical-bounds
-            # and background-check tiers, never for a holdout/excluded station;
-            # see clean_observation.py's "Holdout protection"). `stations` here
-            # is post-_apply_holdout but QC only ever nulls a value, never a
-            # whole row, so lat/lon for a QC-dropped station are still present.
-            # Absent column (e.g. an older cleaned Parquet, or no field found
-            # for the background check) => no QC-dropped stations to show.
-            qc_flag_col = f"{col}_qc_dropped"
-            if qc_flag_col in stations.columns:
-                qc_mask = stations[qc_flag_col].fillna(False).astype(bool)
-            else:
-                qc_mask = pd.Series(False, index=stations.index)
-
-            self._reliability_diag.setdefault(shortname, {}).update({
-                "err_latitude": np.concatenate(err_lat),
-                "err_longitude": np.concatenate(err_lon),
-                # Signed pre-nudging residual (background − obs) at every station,
-                # holdin and holdout alike — feeds the "all stations" residual panel.
-                "residual_pre_nudge": residual_pre_nudge,
-                "pre_nudge_rmse": np.sqrt(residual_pre_nudge ** 2),
-                "post_nudge_rmse": np.sqrt(np.concatenate(err_val_post) ** 2),
-                "err_is_holdout": np.concatenate(err_is_holdout),
-                "qc_dropped_latitude": stations.loc[qc_mask, "latitude"].to_numpy(),
-                "qc_dropped_longitude": stations.loc[qc_mask, "longitude"].to_numpy(),
-                "qc_dropped_ids": stations.index[qc_mask].tolist(),
-            })
+        if self.enable_plotting and self.plot_dir is not None and self.use_reliability_check:
+            self._record_reliability_diagnostics(
+                shortname, col, offset, stations, held_out_stations,
+                B_flat, corrected_flat, st_lat, st_lon, gi, st_obs_lr,
+            )
 
         if self.use_reliability_check:
             n_shrunk = int((station_max_dist < max_dist).sum())
-            LOG.info(
-                "Nudged '%s': %d stations, %d POIs, max |correction| = %.4f "
-                "(reliability check: number_of_std=%.2f, %d/%d station(s) with a shrunk radius)",
-                shortname, len(st_lat), n_poi, float(np.abs(correction).max()),
-                self.number_of_std, n_shrunk, len(st_lat),
+            reliability_note = (
+                f"reliability check: number_of_std={self.number_of_std:.2f}, "
+                f"{n_shrunk}/{len(st_lat)} station(s) with a shrunk radius"
             )
         else:
-            LOG.info(
-                "Nudged '%s': %d stations, %d POIs, max |correction| = %.4f "
-                "(reliability check: disabled)",
-                shortname, len(st_lat), n_poi, float(np.abs(correction).max()),
-            )
+            reliability_note = "reliability check: disabled"
+        LOG.info(
+            "Nudged '%s': %d stations, %d POIs, max |correction| = %.4f (%s)",
+            shortname, len(st_lat), n_poi, float(np.abs(correction).max()), reliability_note,
+        )
 
-        # Diagnostic plot (opt-in, never affects the correction above — see
-        # _plot_reliability_diagnostic's own try/except).
-        if self.plot_dir is not None and self.use_reliability_check:
+        if self.enable_plotting and self.plot_dir is not None and self.use_reliability_check:
             self._plot_reliability_diagnostic(shortname, ref_time, B_flat, corrected_flat)
 
         return corrected_flat
+
+    def _record_reliability_diagnostics(
+        self,
+        shortname: str,
+        col: str,
+        offset: float,
+        stations: pd.DataFrame,
+        held_out_stations: Optional[pd.DataFrame],
+        B_flat: np.ndarray,
+        corrected_flat: np.ndarray,
+        st_lat: np.ndarray,
+        st_lon: np.ndarray,
+        gi: np.ndarray,
+        st_obs_lr: np.ndarray,
+    ) -> None:
+        """Record pre/post-nudging station error (holdin + holdout) into
+        ``self._reliability_diag[shortname]``, for the diagnostic plot's
+        residual/RMSE panels only — never feeds back into the correction,
+        which has already been returned by the time this runs. Holdin
+        stations validate the fit where it influenced the correction; holdout
+        stations (excluded by ``_apply_holdout``) give an independent check.
+        Only called when *enable_plotting*, *plot_dir*, and
+        *use_reliability_check* are all set.
+        """
+        err_lat = [st_lat]
+        err_lon = [st_lon]
+        err_val_pre = [B_flat[gi] - st_obs_lr]
+        err_val_post = [corrected_flat[gi] - st_obs_lr]
+        err_is_holdout = [np.zeros(len(st_lat), dtype=bool)]
+
+        if held_out_stations is not None and len(held_out_stations):
+            ho_valid = held_out_stations[col].notna() if col in held_out_stations.columns else pd.Series(dtype=bool)
+            if ho_valid.any():
+                ho_lat = held_out_stations.loc[ho_valid, "latitude"].to_numpy()
+                ho_lon = held_out_stations.loc[ho_valid, "longitude"].to_numpy()
+                ho_obs = held_out_stations.loc[ho_valid, col].to_numpy() + offset
+
+                ho_elev = self._station_elevation(held_out_stations, ho_valid, ho_lon, ho_lat, log=False)
+
+                ho_x, ho_y = self._wgs84_to_lv95.transform(ho_lon, ho_lat)
+                ho_xy = np.c_[ho_x, ho_y] / 1000.0
+                _, ho_gi = self._grid_tree.query(ho_xy, k=1)
+
+                ho_obs_lr = self._reduce_obs_to_model_elevation(shortname, ho_obs, ho_gi, ho_elev, log=False)
+
+                err_lat.append(ho_lat)
+                err_lon.append(ho_lon)
+                err_val_pre.append(B_flat[ho_gi] - ho_obs_lr)
+                err_val_post.append(corrected_flat[ho_gi] - ho_obs_lr)
+                err_is_holdout.append(np.ones(len(ho_lat), dtype=bool))
+
+        # One sample per station here, so this is algebraically just |error| — kept
+        # as an explicit RMS formula in case this later aggregates multiple ref_times.
+        residual_pre_nudge = np.concatenate(err_val_pre)
+
+        # QC only nulls a value, never drops the row, so lat/lon are still present.
+        qc_flag_col = f"{col}_qc_dropped"
+        if qc_flag_col in stations.columns:
+            qc_mask = stations[qc_flag_col].fillna(False).astype(bool)
+        else:
+            qc_mask = pd.Series(False, index=stations.index)
+
+        self._reliability_diag.setdefault(shortname, {}).update({
+            "err_latitude": np.concatenate(err_lat),
+            "err_longitude": np.concatenate(err_lon),
+            "residual_pre_nudge": residual_pre_nudge,
+            "pre_nudge_rmse": np.sqrt(residual_pre_nudge ** 2),
+            "post_nudge_rmse": np.sqrt(np.concatenate(err_val_post) ** 2),
+            "err_is_holdout": np.concatenate(err_is_holdout),
+            "qc_dropped_latitude": stations.loc[qc_mask, "latitude"].to_numpy(),
+            "qc_dropped_longitude": stations.loc[qc_mask, "longitude"].to_numpy(),
+            "qc_dropped_ids": stations.index[qc_mask].tolist(),
+        })
 
     def _compute_reliability(
         self,
@@ -1479,53 +1260,27 @@ class NudgeTowardObservation(Filter):
         st_lon: np.ndarray,
         st_lat: np.ndarray,
         r_at_st: np.ndarray,
+        sta_res: xr.Dataset,
         sta_topo: Optional[xr.Dataset],
         max_dist: float,
     ) -> xr.DataArray:
-        """Leave-one-out spatial-consistency check (v4; ported unchanged from
+        """Leave-one-out spatial-consistency check (v4, ported unchanged from
         notebooks/nudging_analysis_v10.ipynb — see module docstring, "Station
-        reliability", for the full algorithm description).
+        reliability", for the full algorithm).
 
         Down-weights (via a shrunk influence radius, applied by the caller)
-        stations whose residual disagrees with what their own neighbours would
-        predict for them, independent of distance/topo similarity to any
-        particular POI.
+        stations whose residual disagrees with what their own neighbours
+        predict, independent of any particular POI. ``sta_topo`` is ``None``
+        when *use_topo_descriptors* is ``False``, in which case the
+        leave-one-out prediction falls back to pure IDW. Reuses arrays already
+        computed by ``_nudge_field`` for the same station set/variable rather
+        than recomputing them (a pure dedup, no numerical effect).
 
-        ``sta_topo`` is ``None`` when *use_topo_descriptors* is ``False``
-        (see ``_nudge_field``), in which case the leave-one-out prediction
-        below falls back to pure IDW, same as ``ned_interp``'s own fallback.
-
-        Reuses ``st_lon``/``st_lat``/``r_at_st``/``sta_topo``/``max_dist``
-        already computed by ``_nudge_field`` for the exact same station set
-        and variable, rather than recomputing them — a pure
-        implementation-level deduplication; it does not change any numerical
-        result, since these arrays are deterministic given the same station
-        DataFrame and field. ``max_dist`` is this variable's own radius (see
-        *variable_overrides*), used here as the single global radius the
-        module docstring's "Station reliability" section refers to — still
-        global across stations, just no longer necessarily the same value
-        for every nudged variable.
-
-        Returns an xr.DataArray (dims=["sta"]) of reliability in [0, 1],
-        aligned with ``sta_ids``.
+        Returns an xr.DataArray (dims=["sta"]) of reliability in [0, 1].
         """
         n_sta = len(sta_ids)
 
-        sta_res = xr.Dataset(
-            {shortname: xr.DataArray(
-                r_at_st.astype(np.float32), dims=["sta"], coords={"sta": sta_ids}
-            )}
-        )
-
         # ── Station <-> station barrier-aware distances ────────────────────
-        # Read from the precomputed cache instead of computing them live —
-        # see _load_d_eff_cache/_get_d_eff_sta. The diagonal (station vs.
-        # itself) is already +inf in the cache (see the offline
-        # cache-building step), which ned_interp's max_dist cutoff then masks
-        # out, guaranteeing station s can never be its own neighbour. Always
-        # uses this variable's own GLOBAL max_dist (not any per-station
-        # radius) below — reliability itself has to be computed before any
-        # per-station radius can be derived from it.
         ned_ss = self._get_d_eff_sta(shortname, sta_ids)
 
         # Stations stand in as both "sta" and "poi" for the leave-one-out prediction.
@@ -1535,9 +1290,8 @@ class NudgeTowardObservation(Filter):
         )
 
         # ── Leave-one-out neighbour prediction ──────────────────────────────
-        # No reliability weighting here: the check itself must trust all OTHER
-        # stations equally on this first pass, otherwise a bad station could
-        # suppress the very signal that would flag it.
+        # No reliability weighting here: this first pass must trust every OTHER
+        # station equally, or a bad station could suppress its own signal.
         r_hat = ned_interp(
             sta_res, ned_ss,
             sta_topo=sta_topo, poi_topo=poi_topo,
@@ -1545,28 +1299,8 @@ class NudgeTowardObservation(Filter):
             min_topo_w=self.min_topo_w, lim_effective=self.lim_effective,
         )
         r_hat_at_st = r_hat[shortname].rename({"poi": "sta"}).sel(sta=sta_ids).values
-
-        # ── Discrepancy → robust z-score → Tukey biweight reliability ──────
-        # Robust z-score: recentre by median(e), not just rescale by MAD(e) —
-        # otherwise a systematic offset in e (e.g. leave-one-out spatial
-        # smoothing tends to under-predict local extremes even for perfectly
-        # good stations) would shift every station's u by the same amount
-        # instead of being absorbed into the "typical" reference point.
         e = r_at_st - r_hat_at_st
 
-        # A station with no OTHER station within max_dist gets r_hat=NaN from
-        # ned_interp's leave-one-out call (its min_count=1 makes a fully-masked
-        # POI return NaN rather than 0) — so e is NaN for that station too. With
-        # no neighbours to compare it against, there's no basis to judge it, and
-        # np.median/np.abs(...).median() are NOT NaN-safe: a single NaN would
-        # otherwise silently turn med_e/mad/scale into NaN, which would then
-        # cascade into every OTHER station's u and reliability as well —
-        # collapsing the whole station set to reliability=NaN → station_max_dist
-        # =NaN → ned_interp masks every pair against it (`dist < NaN` is always
-        # False) → zero correction everywhere. Guard against this explicitly:
-        # exclude non-finite e from the median/MAD/scale computation, and leave
-        # an isolated station's own reliability at 1.0 (full trust, full
-        # radius) rather than penalising it for something it can't be judged on.
         finite = np.isfinite(e)
         n_isolated = int((~finite).sum())
         if n_isolated:
@@ -1596,9 +1330,7 @@ class NudgeTowardObservation(Filter):
             shortname, n_sta, med_e, mad, scale, n_flagged,
         )
 
-        # Stashed for _plot_reliability_diagnostic(); mirrors RELIABILITY_DIAG in
-        # notebooks/nudging_analysis_v10.ipynb. Purely a side channel for the
-        # optional plot — does not feed back into the reliability computation.
+        # Side channel for the optional plot only; does not feed back into reliability.
         self._reliability_diag[shortname] = {
             "sta_ids": sta_ids, "r_at_st": r_at_st, "r_hat": r_hat_at_st,
             "e": e, "u": u, "reliability": reliability_vals,
@@ -1611,24 +1343,15 @@ class NudgeTowardObservation(Filter):
 
     def _plot_reliability_diagnostic(self, shortname, ref_time, background, corrected) -> None:
         """Save the 6-panel reliability diagnostic PNG for one variable/ref_time:
-        station residual (holdin AND holdout stations, pre-nudging), station
-        reliability (holdin only — reliability is only defined for stations
-        that participated in the nudging), gridded correction (these three
-        match notebooks/nudging_analysis_v10.ipynb's diagnostic cell), two
-        production-only panels of pre- and post-nudging station RMSE (holdin
-        circles vs. holdout triangles — see the "Pre/post-nudging station
-        error" block in ``_nudge_field``), and a sixth panel marking which
-        stations CleanObservation's QC removed for this variable (see
-        ``qc_dropped_*`` in that same block) — always empty for a
-        holdout/excluded station, by construction (see
-        clean_observation.py's "Holdout protection").
+        station residual (holdin+holdout, pre-nudging), station reliability
+        (holdin only), gridded correction (these three match
+        notebooks/nudging_analysis_v10.ipynb's diagnostic cell), pre-/
+        post-nudging station RMSE (holdin circles vs. holdout triangles), and
+        stations CleanObservation's QC removed for this variable.
 
-        Opt-in via *plot_dir*; a no-op if it is ``None`` or if
-        ``_compute_reliability`` wasn't called for ``shortname`` this call
-        (i.e. *use_reliability_check* is ``False``). Never raises: any failure
-        (missing matplotlib/cartopy, bad data, ...) is logged and swallowed so
-        it can never affect the nudging correction, which has already been
-        computed and returned by the time this runs.
+        Opt-in via *plot_dir* and *enable_plotting* (see ``_nudge_field``'s
+        call site). Never raises: any failure is logged and swallowed so it
+        can't affect the nudging correction, already computed by this point.
         """
         if shortname not in self._reliability_diag:
             return
@@ -1654,24 +1377,15 @@ class NudgeTowardObservation(Filter):
             lo_ch, la_ch = self._lon_icon[ch_mask], self._lat_icon[ch_mask]
             res_ch = residual_full[ch_mask]
 
-            # Shared colour scale for the two residual panels, so they're directly
-            # comparable — same convention as the notebook's diagnostic cell.
-            # Uses the _DIAG_COLORBAR_PERCENTILE-th percentile of each source's
-            # magnitude rather than its true max (see that constant's docstring):
-            # a few outlier stations/cells no longer stretch the whole scale.
-            # Percentile is taken separately per source (station vs. gridded),
-            # then combined via max — mirroring the previous max-of-two-maxes
-            # structure — so the (usually far more numerous) gridded points don't
-            # dilute the station outliers' influence on the scale, or vice versa.
+            # Percentile per source, combined via max, so gridded points don't dilute
+            # station outliers' influence on the scale, or vice versa.
             res_abs = max(
                 float(np.percentile(np.abs(station_res), _DIAG_COLORBAR_PERCENTILE)) if len(station_res) else 0.0,
                 float(np.percentile(np.abs(res_ch), _DIAG_COLORBAR_PERCENTILE)) if len(res_ch) else 0.0,
             ) or 1.0  # guard against an all-zero degenerate case
             vmin, vmax = -res_abs, res_abs
 
-            # Shared colour scale for the two RMSE panels, so pre- and post-nudging
-            # station error are directly comparable. Same percentile-based
-            # rationale as the residual panels above.
+            # Shared colour scale for the two RMSE panels (same rationale as above).
             err_vmax = max(
                 float(np.percentile(diag["pre_nudge_rmse"], _DIAG_COLORBAR_PERCENTILE)) if len(diag["pre_nudge_rmse"]) else 0.0,
                 float(np.percentile(diag["post_nudge_rmse"], _DIAG_COLORBAR_PERCENTILE)) if len(diag["post_nudge_rmse"]) else 0.0,
@@ -1685,17 +1399,13 @@ class NudgeTowardObservation(Filter):
                 ax.add_feature(cfeature.LAKES, facecolor="lightblue", alpha=0.5)
 
             def _colorbar(ax, mappable, label):
-                # Colorbar exactly as tall as `ax` — plt.colorbar's fraction/pad
-                # doesn't track a cartopy GeoAxes' actual rendered aspect
-                # (distorted by set_extent).
+                # plt.colorbar's fraction/pad doesn't track a cartopy GeoAxes' rendered aspect.
                 cax = make_axes_locatable(ax).append_axes(
                     "right", size="5%", pad=0.3, axes_class=plt.Axes
                 )
                 return fig.colorbar(mappable, cax=cax, label=label)
 
             def _holdin_holdout_scatter(ax, lon, lat, values, s=45, **kwargs):
-                # Shared holdin (circle) / holdout (triangle, 2x the marker size)
-                # scatter used by the station-residual and RMSE panels.
                 sc = ax.scatter(
                     lon[~is_ho], lat[~is_ho], c=values[~is_ho], s=s,
                     marker="o", edgecolors="black", linewidths=0.4,
@@ -1742,16 +1452,7 @@ class NudgeTowardObservation(Filter):
 
             ax2 = fig.add_subplot(2, 3, 3, projection=ccrs.PlateCarree())
             _base(ax2)
-            # levels must be an explicit array spanning [vmin, vmax] — a bare
-            # integer count would make tricontourf compute level *positions*
-            # from res_ch's actual data range instead of from vmin/vmax.
-            # extend="both": values outside [vmin, vmax] get clamped to the
-            # colormap's over/under color instead of being left unfilled —
-            # without it, tricontourf has no bin for out-of-range points and
-            # silently skips painting them, leaving gaps that show the bare
-            # map background through (easily mistaken for a genuine near-zero
-            # residual when it's actually the opposite: the most extreme
-            # values in the field).
+
             levels = np.linspace(vmin, vmax, 51)
             tcf2 = ax2.tricontourf(
                 lo_ch, la_ch, res_ch, levels=levels, cmap="RdBu_r",
@@ -1780,10 +1481,7 @@ class NudgeTowardObservation(Filter):
 
             ax5 = fig.add_subplot(2, 3, 6, projection=ccrs.PlateCarree())
             _base(ax5)
-            # "Kept" here means every station that passed QC and reported this
-            # variable (diag["err_*"] — same population as ax0/ax3/ax4); a
-            # QC-dropped station has NaN for this column by the time _nudge_field
-            # builds err_latitude/err_longitude, so the two sets are disjoint.
+
             ax5.scatter(
                 diag["err_longitude"], diag["err_latitude"],
                 s=25, c="lightgrey", marker="o", edgecolors="black", linewidths=0.3,
@@ -1839,6 +1537,13 @@ class NudgeTowardObservation(Filter):
                 stations = stations.iloc[0:0]
             else:
                 n_holdout = round(len(stations) * self.holdout_fraction)
+                if n_holdout == 0:
+                    LOG.warning(
+                        "holdout_fraction=%.4f rounds to 0 station(s) held out "
+                        "of %d — no cross-validation holdout set will be "
+                        "available this run.",
+                        self.holdout_fraction, len(stations),
+                    )
                 rng = np.random.default_rng(self.holdout_seed)
                 held_out = rng.choice(stations.index, size=n_holdout, replace=False)
                 stations = stations.drop(index=held_out)
@@ -1857,4 +1562,11 @@ class NudgeTowardObservation(Filter):
         """Read pre-fetched station observations from the configured Parquet file."""
         if not self.obs_path.exists():
             raise FileNotFoundError(f"Observation file not found: {self.obs_path}")
-        return pd.read_parquet(self.obs_path)
+        stations = pd.read_parquet(self.obs_path)
+        missing_cols = {"latitude", "longitude"} - set(stations.columns)
+        if missing_cols:
+            raise ValueError(
+                f"Observations Parquet {self.obs_path} is missing required "
+                f"column(s) {sorted(missing_cols)}."
+            )
+        return stations

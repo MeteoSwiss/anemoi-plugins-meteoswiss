@@ -242,7 +242,9 @@ class RetrieveObservation(Filter):
         for col in _PARAM_TO_COL.values():
             if col in df.columns:
                 n_valid = int(df[col].notna().sum())
-                LOG.info("Stations with valid %s: %d / %d stations", col, n_valid, len(df))
+                LOG.info(
+                    "Stations with valid %s: %d / %d stations", col, n_valid, len(df)
+                )
 
         Path(self.obs_path).parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(self.obs_path)
@@ -256,8 +258,10 @@ class RetrieveObservation(Filter):
         if self.station_filter_mode == "domain":
             lat_min, lat_max, lon_min, lon_max = self.trim_bbox
             mask = (
-                (df["latitude"] >= lat_min) & (df["latitude"] <= lat_max) &
-                (df["longitude"] >= lon_min) & (df["longitude"] <= lon_max)
+                (df["latitude"] >= lat_min)
+                & (df["latitude"] <= lat_max)
+                & (df["longitude"] >= lon_min)
+                & (df["longitude"] <= lon_max)
             )
             desc = f"domain bbox {self.trim_bbox}"
 
@@ -269,7 +273,8 @@ class RetrieveObservation(Filter):
                 resolution="10m", category="cultural", name="admin_0_countries"
             )
             ch_country = next(
-                r for r in shpreader.Reader(shp_path).records()
+                r
+                for r in shpreader.Reader(shp_path).records()
                 if r.attributes["ADM0_A3"] == "CHE"
             )
             swiss_geom = ch_country.geometry

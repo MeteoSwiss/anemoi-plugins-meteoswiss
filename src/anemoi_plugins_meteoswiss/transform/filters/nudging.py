@@ -82,25 +82,27 @@ _NO_NUDGE = frozenset({"TOT_PREC"})
 
 # GRIB shortName (COSMO/ICON) -> (station Parquet column, offset added to obs before residuals).
 PARAM_MAP = {
-    "T_2M":    ("2t",   0.0),   # 2 m temperature         [K]
-    "TD_2M":   ("2d",   0.0),   # 2 m dewpoint            [K]
-    "U_10M":   ("10u",  0.0),   # 10 m U wind component   [m/s]
-    "V_10M":   ("10v",  0.0),   # 10 m V wind component   [m/s]
-    "PMSL":    ("msl",  0.0),   # mean sea-level pressure  [Pa]
-    "PS":      ("sp",   0.0),   # station-level (unreduced) surface pressure [Pa]
-    "TOT_PREC":("tp",   0.0),   # hourly precipitation     [kg m-2]
-    "VMAX_10M":("vmax", 0.0),   # 10 m wind gust           [m/s]
+    "T_2M": ("2t", 0.0),  # 2 m temperature         [K]
+    "TD_2M": ("2d", 0.0),  # 2 m dewpoint            [K]
+    "U_10M": ("10u", 0.0),  # 10 m U wind component   [m/s]
+    "V_10M": ("10v", 0.0),  # 10 m V wind component   [m/s]
+    "PMSL": ("msl", 0.0),  # mean sea-level pressure  [Pa]
+    "PS": ("sp", 0.0),  # station-level (unreduced) surface pressure [Pa]
+    "TOT_PREC": ("tp", 0.0),  # hourly precipitation     [kg m-2]
+    "VMAX_10M": ("vmax", 0.0),  # 10 m wind gust           [m/s]
 }
 
 _DEFAULT_TOPO_VARS = [
-    "TPI_500M", "TPI_4000M_SMTH", "SN_DERIV_2000M", "WE_DERIV_2000M", "ICON_OROG"
+    "TPI_500M",
+    "TPI_4000M_SMTH",
+    "SN_DERIV_2000M",
+    "WE_DERIV_2000M",
+    "ICON_OROG",
 ]
 _DEFAULT_TOPO_FILE = (
     "/scratch/mch/llanzila/sruc/aux_files/topo_descriptors_icon_R19B08.nc"
 )
-_DEFAULT_DEM_BARRIER_FILE = (
-    "/store_new/mch/msclim/appclim/data/grids/topodem/v2/topo/radar_100/topo_DEM_1000M.nc"
-)
+_DEFAULT_DEM_BARRIER_FILE = "/store_new/mch/msclim/appclim/data/grids/topodem/v2/topo/radar_100/topo_DEM_1000M.nc"
 # Precomputed d_eff cache — see NudgeTowardObservation's d_eff_file parameter.
 _DEFAULT_D_EFF_FILE = "/scratch/mch/llanzila/sruc/aux_files/d_eff_cache_v11.nc"
 # ICON's own native orography (extpar); barrier_distances itself keeps using the
@@ -279,7 +281,7 @@ def barrier_distances(
 
     u_poi, inv_poi = np.unique(pi_idx, return_inverse=True)
     u_sta, inv_sta = np.unique(si_idx, return_inverse=True)
-    
+
     poi_x_u, poi_y_u = wgs84_to_lv95.transform(poi_lon[u_poi], poi_lat[u_poi])
     sta_x_u, sta_y_u = wgs84_to_lv95.transform(sta_lon[u_sta], sta_lat[u_sta])
 
@@ -294,16 +296,18 @@ def barrier_distances(
     sta_yp = sta_y_u[inv_sta]
 
     t = np.linspace(0, 1, n_samples + 2)[1:-1]
-    x_path = poi_xp[None, :] + t[:, None] * (sta_xp - poi_xp)[None, :]  # (n_samples, n_close)
+    x_path = (
+        poi_xp[None, :] + t[:, None] * (sta_xp - poi_xp)[None, :]
+    )  # (n_samples, n_close)
     y_path = poi_yp[None, :] + t[:, None] * (sta_yp - poi_yp)[None, :]
 
     # Unit vector 90° to the path: rotate (dx, dy) -> (-dy, dx), then normalise.
     dx = sta_xp - poi_xp
     dy = sta_yp - poi_yp
-    path_len = np.sqrt(dx ** 2 + dy ** 2)
+    path_len = np.sqrt(dx**2 + dy**2)
     safe_len = np.where(path_len > 0, path_len, 1.0)  # avoid /0 for co-located pairs
     perp_x = -dy / safe_len
-    perp_y =  dx / safe_len
+    perp_y = dx / safe_len
 
     perp_offsets = np.linspace(-barrier_width, barrier_width, n_barrier_width_samples)
 
@@ -320,11 +324,11 @@ def barrier_distances(
     y_slab = y_path[:, None, :] + perp_offsets[None, :, None] * perp_y[None, None, :]
 
     # RGI expects (northing, easting).
-    n_perp  = n_barrier_width_samples
+    n_perp = n_barrier_width_samples
     n_close = len(pi_idx)
-    elev_slab = dem_rgi(
-        np.c_[y_slab.ravel(), x_slab.ravel()]
-    ).reshape(n_samples, n_perp, n_close)
+    elev_slab = dem_rgi(np.c_[y_slab.ravel(), x_slab.ravel()]).reshape(
+        n_samples, n_perp, n_close
+    )
 
     elev_mean_cross = (elev_slab * gauss_w[None, :, None]).sum(axis=1)
 
@@ -337,14 +341,16 @@ def barrier_distances(
     d_eff = d_euc.copy()
     d_eff[pi_idx, si_idx] = np.sqrt(
         d_euc[pi_idx, si_idx] ** 2
-        + (barrier    / elev_scale)      ** 2
-        + (elev_diff  / elev_diff_scale) ** 2
+        + (barrier / elev_scale) ** 2
+        + (elev_diff / elev_diff_scale) ** 2
     ).astype(np.float32)
 
     n_blocked = int((d_eff[pi_idx, si_idx] >= max_dist).sum())
     LOG.debug(
         "barrier_distances: %d close pairs → %d newly blocked by barrier+elev_diff (%.1f%%)",
-        len(pi_idx), n_blocked, 100.0 * n_blocked / max(len(pi_idx), 1),
+        len(pi_idx),
+        n_blocked,
+        100.0 * n_blocked / max(len(pi_idx), 1),
     )
     return d_eff
 
@@ -562,7 +568,9 @@ class NudgeTowardObservation(Filter):
         self.d_eff_file = Path(d_eff_file)
         self.icon_orog_file = Path(icon_orog_file)
         self.weight_power = weight_power
-        self.max_dist = max_dist / 1000.0  # max_dist is given in meters (see docstring); converted to km once here
+        self.max_dist = (
+            max_dist / 1000.0
+        )  # max_dist is given in meters (see docstring); converted to km once here
         self.min_topo_w = min_topo_w
         self.lim_effective = lim_effective
         self.use_reliability_check = use_reliability_check
@@ -571,7 +579,9 @@ class NudgeTowardObservation(Filter):
         self.reliability_eps = reliability_eps
         self.enable_plotting = enable_plotting
         self.plot_dir = Path(plot_dir) if plot_dir is not None else None
-        self.plot_extent = list(plot_extent) if plot_extent is not None else [5.8, 10.8, 45.7, 47.9]
+        self.plot_extent = (
+            list(plot_extent) if plot_extent is not None else [5.8, 10.8, 45.7, 47.9]
+        )
         self.temperature_lapse_rate = temperature_lapse_rate
         self.temperature_lapse_rate_vars = (
             frozenset(temperature_lapse_rate_vars)
@@ -584,12 +594,16 @@ class NudgeTowardObservation(Filter):
             if pressure_lapse_rate_vars is not None
             else _DEFAULT_PRESSURE_LAPSE_RATE_VARS
         )
-        self.topo_vars = list(topo_vars) if topo_vars is not None else _DEFAULT_TOPO_VARS
+        self.topo_vars = (
+            list(topo_vars) if topo_vars is not None else _DEFAULT_TOPO_VARS
+        )
         self.use_topo_descriptors = use_topo_descriptors
         self.run_mode = run_mode
         self.holdout_fraction = holdout_fraction
         self.holdout_seed = holdout_seed
-        self.exclude_stations = list(exclude_stations) if exclude_stations is not None else None
+        self.exclude_stations = (
+            list(exclude_stations) if exclude_stations is not None else None
+        )
         self._nudging_done = False
         self._reliability_diag = {}
 
@@ -620,7 +634,9 @@ class NudgeTowardObservation(Filter):
         self.param_map = {v: w for v, w in self.param_map.items() if v not in _NO_NUDGE}
 
         # ── Per-variable d_eff_file/max_dist (variable_overrides) ──────────
-        self.variable_overrides = dict(variable_overrides) if variable_overrides is not None else {}
+        self.variable_overrides = (
+            dict(variable_overrides) if variable_overrides is not None else {}
+        )
         unknown_override_vars = set(self.variable_overrides) - set(self.param_map)
         if unknown_override_vars:
             raise ValueError(
@@ -637,7 +653,7 @@ class NudgeTowardObservation(Filter):
                     "are supported."
                 )
 
-        # variable_overrides' max_dist 
+        # variable_overrides' max_dist
         self._max_dist_by_var = {
             var: (
                 self.variable_overrides[var]["max_dist"] / 1000.0
@@ -652,7 +668,9 @@ class NudgeTowardObservation(Filter):
                     f"variable_overrides[{_var!r}]['max_dist'] must be > 0, got {_md!r}"
                 )
         self._d_eff_file_by_var = {
-            var: Path(self.variable_overrides.get(var, {}).get("d_eff_file", self.d_eff_file))
+            var: Path(
+                self.variable_overrides.get(var, {}).get("d_eff_file", self.d_eff_file)
+            )
             for var in self.param_map
         }
 
@@ -662,7 +680,8 @@ class NudgeTowardObservation(Filter):
         self._load_dem()
         # Load each distinct d_eff cache file once (several variables may share one).
         self._d_eff_caches = {
-            path: self._load_d_eff_cache(path) for path in set(self._d_eff_file_by_var.values())
+            path: self._load_d_eff_cache(path)
+            for path in set(self._d_eff_file_by_var.values())
         }
 
         LOG.info(
@@ -683,7 +702,10 @@ class NudgeTowardObservation(Filter):
             self.use_reliability_check,
             self.number_of_std,
             self.reliability_min_dist_frac,
-            {v: round(self.reliability_min_dist_frac * self._max_dist_by_var[v], 2) for v in self.param_map},
+            {
+                v: round(self.reliability_min_dist_frac * self._max_dist_by_var[v], 2)
+                for v in self.param_map
+            },
         )
         super().__init__()
 
@@ -731,7 +753,8 @@ class NudgeTowardObservation(Filter):
                 "use_topo_descriptors=False: topo descriptors from %s will not be "
                 "used for similarity weighting (ICON_OROG from %s is still loaded "
                 "for the lapse-rate correction).",
-                self.topo_file, self.icon_orog_file,
+                self.topo_file,
+                self.icon_orog_file,
             )
             return
         missing = [v for v in self.topo_vars if v not in self._ds_topo]
@@ -749,7 +772,10 @@ class NudgeTowardObservation(Filter):
         file), so the array is attached positionally, without reindexing.
         """
         ds_orog = xr.open_dataset(self.icon_orog_file)
-        self._ds_topo["ICON_OROG"] = ("cell", ds_orog["topography_c"].values.astype(np.float32))
+        self._ds_topo["ICON_OROG"] = (
+            "cell",
+            ds_orog["topography_c"].values.astype(np.float32),
+        )
         ds_orog.close()
         LOG.info("ICON native orography loaded from %s: ICON_OROG", self.icon_orog_file)
 
@@ -797,8 +823,10 @@ class NudgeTowardObservation(Filter):
 
         LOG.info(
             "ICON/topo grids projected to LV95: x=[%.1f, %.1f] km, y=[%.1f, %.1f] km",
-            self._grid_xy_km[:, 0].min(), self._grid_xy_km[:, 0].max(),
-            self._grid_xy_km[:, 1].min(), self._grid_xy_km[:, 1].max(),
+            self._grid_xy_km[:, 0].min(),
+            self._grid_xy_km[:, 0].max(),
+            self._grid_xy_km[:, 1].min(),
+            self._grid_xy_km[:, 1].max(),
         )
 
     def _load_d_eff_cache(self, path: Path) -> dict:
@@ -824,7 +852,9 @@ class NudgeTowardObservation(Filter):
         ds.close()
         LOG.info(
             "d_eff loaded from %s: POI x station %s, station x station %s",
-            path, d_eff_poi_full.shape, d_eff_sta_full.shape,
+            path,
+            d_eff_poi_full.shape,
+            d_eff_sta_full.shape,
         )
         return {
             "d_eff_poi_full": d_eff_poi_full,
@@ -837,7 +867,9 @@ class NudgeTowardObservation(Filter):
             "sta_set": set(d_eff_poi_full["sta"].values.tolist()),
         }
 
-    def _get_d_eff_poi(self, shortname: str, dom_idx: np.ndarray, sta_ids: list) -> xr.DataArray:
+    def _get_d_eff_poi(
+        self, shortname: str, dom_idx: np.ndarray, sta_ids: list
+    ) -> xr.DataArray:
         """POI<->station d_eff for this call's domain/station subset, sliced
         from the precomputed cache configured for *shortname* (see
         *d_eff_file*/*variable_overrides* and _load_d_eff_cache)."""
@@ -977,7 +1009,8 @@ class NudgeTowardObservation(Filter):
                 if log:
                     LOG.debug(
                         "Filled %d/%d station elevations from DEM (NaN in metadata)",
-                        int(nan_mask.sum()), len(elev),
+                        int(nan_mask.sum()),
+                        len(elev),
                     )
         else:
             if log:
@@ -1046,10 +1079,10 @@ class NudgeTowardObservation(Filter):
         max_dist = self._max_dist_by_var[shortname]
 
         # ── Valid stations ─────────────────────────────────────────────────
-        valid   = stations[col].notna()
-        st_lat  = stations.loc[valid, "latitude"].to_numpy()
-        st_lon  = stations.loc[valid, "longitude"].to_numpy()
-        st_obs  = stations.loc[valid, col].to_numpy() + offset
+        valid = stations[col].notna()
+        st_lat = stations.loc[valid, "latitude"].to_numpy()
+        st_lon = stations.loc[valid, "longitude"].to_numpy()
+        st_obs = stations.loc[valid, col].to_numpy() + offset
         sta_ids = stations.loc[valid].index.tolist()
 
         st_elev = self._station_elevation(stations, valid, st_lon, st_lat, log=True)
@@ -1067,25 +1100,31 @@ class NudgeTowardObservation(Filter):
         sta_y_min = sta_xy[:, 1].min() - max_dist
         sta_y_max = sta_xy[:, 1].max() + max_dist
         dom_mask = (
-            (grid_xy[:, 0] >= sta_x_min) & (grid_xy[:, 0] <= sta_x_max) &
-            (grid_xy[:, 1] >= sta_y_min) & (grid_xy[:, 1] <= sta_y_max)
+            (grid_xy[:, 0] >= sta_x_min)
+            & (grid_xy[:, 0] <= sta_x_max)
+            & (grid_xy[:, 1] >= sta_y_min)
+            & (grid_xy[:, 1] <= sta_y_max)
         )
         dom_idx = np.where(dom_mask)[0]
-        poi_xy  = grid_xy[dom_idx]
-        n_poi   = len(dom_idx)
+        poi_xy = grid_xy[dom_idx]
+        n_poi = len(dom_idx)
 
         # ── Residuals at stations ──────────────────────────────────────────
         # self._grid_tree was built once in _load_dem(), reused across every call.
-        _, gi   = self._grid_tree.query(sta_xy, k=1)
+        _, gi = self._grid_tree.query(sta_xy, k=1)
 
-        st_obs_lr = self._reduce_obs_to_model_elevation(shortname, st_obs, gi, st_elev, log=True)
+        st_obs_lr = self._reduce_obs_to_model_elevation(
+            shortname, st_obs, gi, st_elev, log=True
+        )
 
         r_at_st = B_flat[gi] - st_obs_lr  # positive when model > observation
 
         sta_res = xr.Dataset(
-            {shortname: xr.DataArray(
-                r_at_st.astype(np.float32), dims=["sta"], coords={"sta": sta_ids}
-            )}
+            {
+                shortname: xr.DataArray(
+                    r_at_st.astype(np.float32), dims=["sta"], coords={"sta": sta_ids}
+                )
+            }
         )
 
         # ── Euclidean distance matrix ──────────────────────────────────────
@@ -1094,7 +1133,11 @@ class NudgeTowardObservation(Filter):
         # ample for a continuous IDW/taper weight.
         d_euc_mat = np.sqrt(
             (
-                (poi_xy[:, None, :].astype(np.float32) - sta_xy[None, :, :].astype(np.float32)) ** 2
+                (
+                    poi_xy[:, None, :].astype(np.float32)
+                    - sta_xy[None, :, :].astype(np.float32)
+                )
+                ** 2
             ).sum(axis=-1)
         ).astype(np.float32)
 
@@ -1124,7 +1167,14 @@ class NudgeTowardObservation(Filter):
         # ── Station reliability → per-station influence radius (v4) ────────
         if self.use_reliability_check:
             reliability = self._compute_reliability(
-                shortname, sta_ids, st_lon, st_lat, r_at_st, sta_res, sta_topo, max_dist,
+                shortname,
+                sta_ids,
+                st_lon,
+                st_lat,
+                r_at_st,
+                sta_res,
+                sta_topo,
+                max_dist,
             )
             min_dist = self.reliability_min_dist_frac * max_dist
             station_max_dist = min_dist + (max_dist - min_dist) * reliability
@@ -1135,14 +1185,18 @@ class NudgeTowardObservation(Filter):
         d_euc_da = xr.DataArray(
             d_euc_mat, dims=["poi", "sta"], coords={"poi": dom_idx, "sta": sta_ids}
         )
-        pair_taper = (1.0 - (d_euc_da / station_max_dist).clip(min=0.0, max=1.0)).astype(np.float32)
+        pair_taper = (
+            1.0 - (d_euc_da / station_max_dist).clip(min=0.0, max=1.0)
+        ).astype(np.float32)
 
         # ── ned_interp ─────────────────────────────────────────────────────
         # max_dist cuts on barrier-aware distance here, so a POI that is
         # geographically close but behind a ridge may get zero correction.
         result = ned_interp(
-            sta_res, ned_sta_poi,
-            sta_topo=sta_topo, poi_topo=poi_topo,
+            sta_res,
+            ned_sta_poi,
+            sta_topo=sta_topo,
+            poi_topo=poi_topo,
             max_dist=station_max_dist,
             weight_power=self.weight_power,
             min_topo_w=self.min_topo_w,
@@ -1156,10 +1210,23 @@ class NudgeTowardObservation(Filter):
         corrected_flat = B_flat.copy()
         corrected_flat[dom_idx] -= correction
 
-        if self.enable_plotting and self.plot_dir is not None and self.use_reliability_check:
+        if (
+            self.enable_plotting
+            and self.plot_dir is not None
+            and self.use_reliability_check
+        ):
             self._record_reliability_diagnostics(
-                shortname, col, offset, stations, held_out_stations,
-                B_flat, corrected_flat, st_lat, st_lon, gi, st_obs_lr,
+                shortname,
+                col,
+                offset,
+                stations,
+                held_out_stations,
+                B_flat,
+                corrected_flat,
+                st_lat,
+                st_lon,
+                gi,
+                st_obs_lr,
             )
 
         if self.use_reliability_check:
@@ -1172,11 +1239,21 @@ class NudgeTowardObservation(Filter):
             reliability_note = "reliability check: disabled"
         LOG.info(
             "Nudged '%s': %d stations, %d POIs, max |correction| = %.4f (%s)",
-            shortname, len(st_lat), n_poi, float(np.abs(correction).max()), reliability_note,
+            shortname,
+            len(st_lat),
+            n_poi,
+            float(np.abs(correction).max()),
+            reliability_note,
         )
 
-        if self.enable_plotting and self.plot_dir is not None and self.use_reliability_check:
-            self._plot_reliability_diagnostic(shortname, ref_time, B_flat, corrected_flat)
+        if (
+            self.enable_plotting
+            and self.plot_dir is not None
+            and self.use_reliability_check
+        ):
+            self._plot_reliability_diagnostic(
+                shortname, ref_time, B_flat, corrected_flat
+            )
 
         return corrected_flat
 
@@ -1210,19 +1287,27 @@ class NudgeTowardObservation(Filter):
         err_is_holdout = [np.zeros(len(st_lat), dtype=bool)]
 
         if held_out_stations is not None and len(held_out_stations):
-            ho_valid = held_out_stations[col].notna() if col in held_out_stations.columns else pd.Series(dtype=bool)
+            ho_valid = (
+                held_out_stations[col].notna()
+                if col in held_out_stations.columns
+                else pd.Series(dtype=bool)
+            )
             if ho_valid.any():
                 ho_lat = held_out_stations.loc[ho_valid, "latitude"].to_numpy()
                 ho_lon = held_out_stations.loc[ho_valid, "longitude"].to_numpy()
                 ho_obs = held_out_stations.loc[ho_valid, col].to_numpy() + offset
 
-                ho_elev = self._station_elevation(held_out_stations, ho_valid, ho_lon, ho_lat, log=False)
+                ho_elev = self._station_elevation(
+                    held_out_stations, ho_valid, ho_lon, ho_lat, log=False
+                )
 
                 ho_x, ho_y = self._wgs84_to_lv95.transform(ho_lon, ho_lat)
                 ho_xy = np.c_[ho_x, ho_y] / 1000.0
                 _, ho_gi = self._grid_tree.query(ho_xy, k=1)
 
-                ho_obs_lr = self._reduce_obs_to_model_elevation(shortname, ho_obs, ho_gi, ho_elev, log=False)
+                ho_obs_lr = self._reduce_obs_to_model_elevation(
+                    shortname, ho_obs, ho_gi, ho_elev, log=False
+                )
 
                 err_lat.append(ho_lat)
                 err_lon.append(ho_lon)
@@ -1241,17 +1326,19 @@ class NudgeTowardObservation(Filter):
         else:
             qc_mask = pd.Series(False, index=stations.index)
 
-        self._reliability_diag.setdefault(shortname, {}).update({
-            "err_latitude": np.concatenate(err_lat),
-            "err_longitude": np.concatenate(err_lon),
-            "residual_pre_nudge": residual_pre_nudge,
-            "pre_nudge_rmse": np.sqrt(residual_pre_nudge ** 2),
-            "post_nudge_rmse": np.sqrt(np.concatenate(err_val_post) ** 2),
-            "err_is_holdout": np.concatenate(err_is_holdout),
-            "qc_dropped_latitude": stations.loc[qc_mask, "latitude"].to_numpy(),
-            "qc_dropped_longitude": stations.loc[qc_mask, "longitude"].to_numpy(),
-            "qc_dropped_ids": stations.index[qc_mask].tolist(),
-        })
+        self._reliability_diag.setdefault(shortname, {}).update(
+            {
+                "err_latitude": np.concatenate(err_lat),
+                "err_longitude": np.concatenate(err_lon),
+                "residual_pre_nudge": residual_pre_nudge,
+                "pre_nudge_rmse": np.sqrt(residual_pre_nudge**2),
+                "post_nudge_rmse": np.sqrt(np.concatenate(err_val_post) ** 2),
+                "err_is_holdout": np.concatenate(err_is_holdout),
+                "qc_dropped_latitude": stations.loc[qc_mask, "latitude"].to_numpy(),
+                "qc_dropped_longitude": stations.loc[qc_mask, "longitude"].to_numpy(),
+                "qc_dropped_ids": stations.index[qc_mask].tolist(),
+            }
+        )
 
     def _compute_reliability(
         self,
@@ -1286,17 +1373,22 @@ class NudgeTowardObservation(Filter):
         # Stations stand in as both "sta" and "poi" for the leave-one-out prediction.
         poi_topo = (
             sta_topo.rename({"sta": "poi"}).assign_coords({"poi": sta_ids})
-            if sta_topo is not None else None
+            if sta_topo is not None
+            else None
         )
 
         # ── Leave-one-out neighbour prediction ──────────────────────────────
         # No reliability weighting here: this first pass must trust every OTHER
         # station equally, or a bad station could suppress its own signal.
         r_hat = ned_interp(
-            sta_res, ned_ss,
-            sta_topo=sta_topo, poi_topo=poi_topo,
-            max_dist=max_dist, weight_power=self.weight_power,
-            min_topo_w=self.min_topo_w, lim_effective=self.lim_effective,
+            sta_res,
+            ned_ss,
+            sta_topo=sta_topo,
+            poi_topo=poi_topo,
+            max_dist=max_dist,
+            weight_power=self.weight_power,
+            min_topo_w=self.min_topo_w,
+            lim_effective=self.lim_effective,
         )
         r_hat_at_st = r_hat[shortname].rename({"poi": "sta"}).sel(sta=sta_ids).values
         e = r_at_st - r_hat_at_st
@@ -1309,11 +1401,14 @@ class NudgeTowardObservation(Filter):
                 "within max_dist=%.2f km for the leave-one-out check (e=NaN); "
                 "left at reliability=1.0, excluded from the robust median/MAD "
                 "so they don't corrupt every other station's reliability.",
-                shortname, n_isolated, n_sta, max_dist,
+                shortname,
+                n_isolated,
+                n_sta,
+                max_dist,
             )
         if finite.any():
             med_e = float(np.median(e[finite]))
-            mad   = float(np.median(np.abs(e[finite] - med_e)))
+            mad = float(np.median(np.abs(e[finite] - med_e)))
         else:
             med_e, mad = 0.0, 0.0
         scale = max(1.4826 * mad, self.reliability_eps)
@@ -1321,27 +1416,43 @@ class NudgeTowardObservation(Filter):
         u = np.zeros(n_sta, dtype=np.float64)
         u[finite] = (e[finite] - med_e) / scale
         reliability_vals = np.ones(n_sta, dtype=np.float64)
-        reliability_vals[finite] = np.clip(1.0 - (u[finite] / self.number_of_std) ** 2, 0.0, None) ** 2
+        reliability_vals[finite] = (
+            np.clip(1.0 - (u[finite] / self.number_of_std) ** 2, 0.0, None) ** 2
+        )
 
         n_flagged = int((reliability_vals < 0.5).sum())
         LOG.debug(
             "compute_reliability('%s'): %d stations, median(e)=%.4f, MAD(e)=%.4f, "
             "scale=%.4f, %d station(s) with reliability < 0.5",
-            shortname, n_sta, med_e, mad, scale, n_flagged,
+            shortname,
+            n_sta,
+            med_e,
+            mad,
+            scale,
+            n_flagged,
         )
 
         # Side channel for the optional plot only; does not feed back into reliability.
         self._reliability_diag[shortname] = {
-            "sta_ids": sta_ids, "r_at_st": r_at_st, "r_hat": r_hat_at_st,
-            "e": e, "u": u, "reliability": reliability_vals,
-            "latitude": st_lat, "longitude": st_lon,
+            "sta_ids": sta_ids,
+            "r_at_st": r_at_st,
+            "r_hat": r_hat_at_st,
+            "e": e,
+            "u": u,
+            "reliability": reliability_vals,
+            "latitude": st_lat,
+            "longitude": st_lon,
         }
 
         return xr.DataArray(
-            reliability_vals.astype(np.float32), dims=["sta"], coords={"sta": sta_ids},
+            reliability_vals.astype(np.float32),
+            dims=["sta"],
+            coords={"sta": sta_ids},
         )
 
-    def _plot_reliability_diagnostic(self, shortname, ref_time, background, corrected) -> None:
+    def _plot_reliability_diagnostic(
+        self, shortname, ref_time, background, corrected
+    ) -> None:
         """Save the 6-panel reliability diagnostic PNG for one variable/ref_time:
         station residual (holdin+holdout, pre-nudging), station reliability
         (holdin only), gridded correction (these three match
@@ -1357,10 +1468,13 @@ class NudgeTowardObservation(Filter):
             return
         try:
             import matplotlib
-            matplotlib.use("Agg")  # non-interactive backend — safe in headless/batch jobs
-            import matplotlib.pyplot as plt
+
+            matplotlib.use(
+                "Agg"
+            )  # non-interactive backend — safe in headless/batch jobs
             import cartopy.crs as ccrs
             import cartopy.feature as cfeature
+            import matplotlib.pyplot as plt
             from mpl_toolkits.axes_grid1 import make_axes_locatable
 
             diag = self._reliability_diag[shortname]
@@ -1370,8 +1484,10 @@ class NudgeTowardObservation(Filter):
 
             extent = self.plot_extent
             ch_mask = (
-                (self._lon_icon >= extent[0]) & (self._lon_icon <= extent[1]) &
-                (self._lat_icon >= extent[2]) & (self._lat_icon <= extent[3])
+                (self._lon_icon >= extent[0])
+                & (self._lon_icon <= extent[1])
+                & (self._lat_icon >= extent[2])
+                & (self._lat_icon <= extent[3])
             )
             residual_full = background - corrected  # the correction actually applied
             lo_ch, la_ch = self._lon_icon[ch_mask], self._lat_icon[ch_mask]
@@ -1379,17 +1495,37 @@ class NudgeTowardObservation(Filter):
 
             # Percentile per source, combined via max, so gridded points don't dilute
             # station outliers' influence on the scale, or vice versa.
-            res_abs = max(
-                float(np.percentile(np.abs(station_res), _DIAG_COLORBAR_PERCENTILE)) if len(station_res) else 0.0,
-                float(np.percentile(np.abs(res_ch), _DIAG_COLORBAR_PERCENTILE)) if len(res_ch) else 0.0,
-            ) or 1.0  # guard against an all-zero degenerate case
+            res_abs = (
+                max(
+                    float(np.percentile(np.abs(station_res), _DIAG_COLORBAR_PERCENTILE))
+                    if len(station_res)
+                    else 0.0,
+                    float(np.percentile(np.abs(res_ch), _DIAG_COLORBAR_PERCENTILE))
+                    if len(res_ch)
+                    else 0.0,
+                )
+                or 1.0
+            )  # guard against an all-zero degenerate case
             vmin, vmax = -res_abs, res_abs
 
             # Shared colour scale for the two RMSE panels (same rationale as above).
-            err_vmax = max(
-                float(np.percentile(diag["pre_nudge_rmse"], _DIAG_COLORBAR_PERCENTILE)) if len(diag["pre_nudge_rmse"]) else 0.0,
-                float(np.percentile(diag["post_nudge_rmse"], _DIAG_COLORBAR_PERCENTILE)) if len(diag["post_nudge_rmse"]) else 0.0,
-            ) or 1.0
+            err_vmax = (
+                max(
+                    float(
+                        np.percentile(diag["pre_nudge_rmse"], _DIAG_COLORBAR_PERCENTILE)
+                    )
+                    if len(diag["pre_nudge_rmse"])
+                    else 0.0,
+                    float(
+                        np.percentile(
+                            diag["post_nudge_rmse"], _DIAG_COLORBAR_PERCENTILE
+                        )
+                    )
+                    if len(diag["post_nudge_rmse"])
+                    else 0.0,
+                )
+                or 1.0
+            )
 
             def _base(ax):
                 ax.set_extent(extent, crs=ccrs.PlateCarree())
@@ -1407,15 +1543,31 @@ class NudgeTowardObservation(Filter):
 
             def _holdin_holdout_scatter(ax, lon, lat, values, s=45, **kwargs):
                 sc = ax.scatter(
-                    lon[~is_ho], lat[~is_ho], c=values[~is_ho], s=s,
-                    marker="o", edgecolors="black", linewidths=0.4,
-                    transform=ccrs.PlateCarree(), zorder=5, label="holdin", **kwargs,
+                    lon[~is_ho],
+                    lat[~is_ho],
+                    c=values[~is_ho],
+                    s=s,
+                    marker="o",
+                    edgecolors="black",
+                    linewidths=0.4,
+                    transform=ccrs.PlateCarree(),
+                    zorder=5,
+                    label="holdin",
+                    **kwargs,
                 )
                 if is_ho.any():
                     ax.scatter(
-                        lon[is_ho], lat[is_ho], c=values[is_ho], s=s * 2,
-                        marker="^", edgecolors="black", linewidths=0.6,
-                        transform=ccrs.PlateCarree(), zorder=6, label="holdout", **kwargs,
+                        lon[is_ho],
+                        lat[is_ho],
+                        c=values[is_ho],
+                        s=s * 2,
+                        marker="^",
+                        edgecolors="black",
+                        linewidths=0.6,
+                        transform=ccrs.PlateCarree(),
+                        zorder=6,
+                        label="holdout",
+                        **kwargs,
                     )
                     ax.legend(loc="lower left", fontsize=8)
                 return sc
@@ -1425,38 +1577,72 @@ class NudgeTowardObservation(Filter):
             ax0 = fig.add_subplot(2, 3, 1, projection=ccrs.PlateCarree())
             _base(ax0)
             sc0 = _holdin_holdout_scatter(
-                ax0, diag["err_longitude"], diag["err_latitude"], station_res,
-                cmap="RdBu_r", vmin=vmin, vmax=vmax,
+                ax0,
+                diag["err_longitude"],
+                diag["err_latitude"],
+                station_res,
+                cmap="RdBu_r",
+                vmin=vmin,
+                vmax=vmax,
             )
             _colorbar(ax0, sc0, "residual (background − obs)")
-            ax0.set_title(f"Station residuals (holdin + holdout) — {shortname} ({ref_time})")
+            ax0.set_title(
+                f"Station residuals (holdin + holdout) — {shortname} ({ref_time})"
+            )
 
             ax1 = fig.add_subplot(2, 3, 2, projection=ccrs.PlateCarree())
             _base(ax1)
             sc1 = ax1.scatter(
-                diag["longitude"][~flagged], diag["latitude"][~flagged],
-                c=diag["reliability"][~flagged], cmap="RdYlGn", vmin=0, vmax=1, s=45,
-                marker="o", edgecolors="black", linewidths=0.4,
-                transform=ccrs.PlateCarree(), zorder=5, label="reliability ≥ 0.5",
+                diag["longitude"][~flagged],
+                diag["latitude"][~flagged],
+                c=diag["reliability"][~flagged],
+                cmap="RdYlGn",
+                vmin=0,
+                vmax=1,
+                s=45,
+                marker="o",
+                edgecolors="black",
+                linewidths=0.4,
+                transform=ccrs.PlateCarree(),
+                zorder=5,
+                label="reliability ≥ 0.5",
             )
             if flagged.any():
                 ax1.scatter(
-                    diag["longitude"][flagged], diag["latitude"][flagged],
-                    c=diag["reliability"][flagged], cmap="RdYlGn", vmin=0, vmax=1, s=90,
-                    marker="X", edgecolors="black", linewidths=0.6,
-                    transform=ccrs.PlateCarree(), zorder=6, label="flagged (reliability < 0.5)",
+                    diag["longitude"][flagged],
+                    diag["latitude"][flagged],
+                    c=diag["reliability"][flagged],
+                    cmap="RdYlGn",
+                    vmin=0,
+                    vmax=1,
+                    s=90,
+                    marker="X",
+                    edgecolors="black",
+                    linewidths=0.6,
+                    transform=ccrs.PlateCarree(),
+                    zorder=6,
+                    label="flagged (reliability < 0.5)",
                 )
                 ax1.legend(loc="lower left", fontsize=8)
             _colorbar(ax1, sc1, "reliability")
-            ax1.set_title(f"Station reliability (holdin only) — {shortname} ({ref_time})")
+            ax1.set_title(
+                f"Station reliability (holdin only) — {shortname} ({ref_time})"
+            )
 
             ax2 = fig.add_subplot(2, 3, 3, projection=ccrs.PlateCarree())
             _base(ax2)
 
             levels = np.linspace(vmin, vmax, 51)
             tcf2 = ax2.tricontourf(
-                lo_ch, la_ch, res_ch, levels=levels, cmap="RdBu_r",
-                vmin=vmin, vmax=vmax, extend="both", transform=ccrs.PlateCarree(),
+                lo_ch,
+                la_ch,
+                res_ch,
+                levels=levels,
+                cmap="RdBu_r",
+                vmin=vmin,
+                vmax=vmax,
+                extend="both",
+                transform=ccrs.PlateCarree(),
             )
             _colorbar(ax2, tcf2, "interpolated residual (background − corrected)")
             ax2.set_title(f"Interpolated residuals — {shortname} ({ref_time})")
@@ -1464,8 +1650,13 @@ class NudgeTowardObservation(Filter):
             ax3 = fig.add_subplot(2, 3, 4, projection=ccrs.PlateCarree())
             _base(ax3)
             sc3 = _holdin_holdout_scatter(
-                ax3, diag["err_longitude"], diag["err_latitude"], diag["pre_nudge_rmse"],
-                cmap="viridis", vmin=0, vmax=err_vmax,
+                ax3,
+                diag["err_longitude"],
+                diag["err_latitude"],
+                diag["pre_nudge_rmse"],
+                cmap="viridis",
+                vmin=0,
+                vmax=err_vmax,
             )
             _colorbar(ax3, sc3, "pre-nudging RMSE (station − background)")
             ax3.set_title(f"Pre-nudging station error — {shortname} ({ref_time})")
@@ -1473,8 +1664,13 @@ class NudgeTowardObservation(Filter):
             ax4 = fig.add_subplot(2, 3, 5, projection=ccrs.PlateCarree())
             _base(ax4)
             sc4 = _holdin_holdout_scatter(
-                ax4, diag["err_longitude"], diag["err_latitude"], diag["post_nudge_rmse"],
-                cmap="viridis", vmin=0, vmax=err_vmax,
+                ax4,
+                diag["err_longitude"],
+                diag["err_latitude"],
+                diag["post_nudge_rmse"],
+                cmap="viridis",
+                vmin=0,
+                vmax=err_vmax,
             )
             _colorbar(ax4, sc4, "post-nudging RMSE (station − corrected)")
             ax4.set_title(f"Post-nudging station error — {shortname} ({ref_time})")
@@ -1483,27 +1679,49 @@ class NudgeTowardObservation(Filter):
             _base(ax5)
 
             ax5.scatter(
-                diag["err_longitude"], diag["err_latitude"],
-                s=25, c="lightgrey", marker="o", edgecolors="black", linewidths=0.3,
-                transform=ccrs.PlateCarree(), zorder=4, label="kept",
+                diag["err_longitude"],
+                diag["err_latitude"],
+                s=25,
+                c="lightgrey",
+                marker="o",
+                edgecolors="black",
+                linewidths=0.3,
+                transform=ccrs.PlateCarree(),
+                zorder=4,
+                label="kept",
             )
             qc_lon = diag.get("qc_dropped_longitude", np.array([]))
             qc_lat = diag.get("qc_dropped_latitude", np.array([]))
             if len(qc_lon):
                 ax5.scatter(
-                    qc_lon, qc_lat,
-                    s=90, c="red", marker="X", edgecolors="black", linewidths=0.6,
-                    transform=ccrs.PlateCarree(), zorder=6, label="removed by QC",
+                    qc_lon,
+                    qc_lat,
+                    s=90,
+                    c="red",
+                    marker="X",
+                    edgecolors="black",
+                    linewidths=0.6,
+                    transform=ccrs.PlateCarree(),
+                    zorder=6,
+                    label="removed by QC",
                 )
             ax5.legend(loc="lower left", fontsize=8)
-            ax5.set_title(f"Stations removed by QC ({len(qc_lon)}) — {shortname} ({ref_time})")
+            ax5.set_title(
+                f"Stations removed by QC ({len(qc_lon)}) — {shortname} ({ref_time})"
+            )
 
             plt.tight_layout()
-            ref_time_str = ref_time.strftime("%Y%m%d%H%M") if ref_time is not None else "unknown"
-            out_path = self.plot_dir / f"reliability_diag_{shortname}_{ref_time_str}.png"
+            ref_time_str = (
+                ref_time.strftime("%Y%m%d%H%M") if ref_time is not None else "unknown"
+            )
+            out_path = (
+                self.plot_dir / f"reliability_diag_{shortname}_{ref_time_str}.png"
+            )
             fig.savefig(out_path, dpi=150, bbox_inches="tight")
             plt.close(fig)
-            LOG.info("Saved reliability diagnostic plot for '%s' to %s", shortname, out_path)
+            LOG.info(
+                "Saved reliability diagnostic plot for '%s' to %s", shortname, out_path
+            )
         except Exception:
             LOG.exception(
                 "Reliability diagnostic plot failed for '%s'; continuing without it "
@@ -1519,7 +1737,9 @@ class NudgeTowardObservation(Filter):
             before = len(stations)
             missing = [s for s in self.exclude_stations if s not in stations.index]
             if missing:
-                LOG.warning("Excluded station IDs not found in observations: %s", missing)
+                LOG.warning(
+                    "Excluded station IDs not found in observations: %s", missing
+                )
             stations = stations.drop(
                 index=[s for s in self.exclude_stations if s in stations.index]
             )
@@ -1542,7 +1762,8 @@ class NudgeTowardObservation(Filter):
                         "holdout_fraction=%.4f rounds to 0 station(s) held out "
                         "of %d — no cross-validation holdout set will be "
                         "available this run.",
-                        self.holdout_fraction, len(stations),
+                        self.holdout_fraction,
+                        len(stations),
                     )
                 rng = np.random.default_rng(self.holdout_seed)
                 held_out = rng.choice(stations.index, size=n_holdout, replace=False)

@@ -105,12 +105,15 @@ def _make_mock_dem_rgi():
     x = np.linspace(2_500_000, 2_700_000, 50)
     y = np.linspace(1_100_000, 1_300_000, 50)
     z = np.full((len(y), len(x)), 100.0)
-    return RegularGridInterpolator((y, x), z, method="linear", bounds_error=False, fill_value=0.0)
+    return RegularGridInterpolator(
+        (y, x), z, method="linear", bounds_error=False, fill_value=0.0
+    )
 
 
 def _make_mock_transformer():
     """WGS84 → LV95 transformer (real pyproj)."""
     from pyproj import Transformer
+
     return Transformer.from_crs("EPSG:4326", "EPSG:2056", always_xy=True)
 
 
@@ -127,10 +130,13 @@ def test_ned_interp_no_topo():
         coords={"poi": poi_ids, "sta": sta_ids},
     )
     residuals = xr.Dataset(
-        {"T_2M": xr.DataArray(
-            rng.standard_normal(n_sta).astype(np.float32),
-            dims=["sta"], coords={"sta": sta_ids},
-        )}
+        {
+            "T_2M": xr.DataArray(
+                rng.standard_normal(n_sta).astype(np.float32),
+                dims=["sta"],
+                coords={"sta": sta_ids},
+            )
+        }
     )
     result = ned_interp(residuals, dist, max_dist=0.3, weight_power=4.0)
     assert "T_2M" in result
@@ -150,10 +156,13 @@ def test_ned_interp_max_dist_masking():
         coords={"poi": poi_ids, "sta": sta_ids},
     )
     residuals = xr.Dataset(
-        {"T_2M": xr.DataArray(
-            np.array([1.0, 2.0, 3.0], dtype=np.float32),
-            dims=["sta"], coords={"sta": sta_ids},
-        )}
+        {
+            "T_2M": xr.DataArray(
+                np.array([1.0, 2.0, 3.0], dtype=np.float32),
+                dims=["sta"],
+                coords={"sta": sta_ids},
+            )
+        }
     )
     result = ned_interp(residuals, dist, max_dist=0.5, weight_power=2.0)
     assert np.all(np.isnan(result["T_2M"].values))
@@ -168,19 +177,26 @@ def test_barrier_distances_flat_terrain():
     poi_lat = np.array([47.0], dtype=np.float32)
     sta_lon = np.array([8.0], dtype=np.float32)
     sta_lat = np.array([47.1], dtype=np.float32)
-    sta_elev = np.array([100.0], dtype=np.float32)   # same as flat DEM → elev_diff = 0
+    sta_elev = np.array([100.0], dtype=np.float32)  # same as flat DEM → elev_diff = 0
 
-    lat0 = np.deg2rad(47.05)
-    d_raw = float(np.sqrt((47.0 - 47.1) ** 2))       # delta-lon=0, delta-lat=0.1
+    d_raw = float(np.sqrt((47.0 - 47.1) ** 2))  # delta-lon=0, delta-lat=0.1
     d_euc = np.array([[d_raw]], dtype=np.float32)
 
     d_eff = barrier_distances(
-        poi_lon, poi_lat, sta_lon, sta_lat,
-        d_euc, max_dist=0.5,
+        poi_lon,
+        poi_lat,
+        sta_lon,
+        sta_lat,
+        d_euc,
+        max_dist=0.5,
         sta_elev=sta_elev,
-        dem_rgi=dem_rgi, wgs84_to_lv95=transformer,
-        n_samples=10, elev_scale=2000.0, elev_diff_scale=4000.0,
-        n_barrier_width_samples=1, barrier_width=0.0,
+        dem_rgi=dem_rgi,
+        wgs84_to_lv95=transformer,
+        n_samples=10,
+        elev_scale=2000.0,
+        elev_diff_scale=4000.0,
+        n_barrier_width_samples=1,
+        barrier_width=0.0,
     )
     np.testing.assert_allclose(d_eff, d_euc, rtol=1e-4)
 
@@ -194,19 +210,27 @@ def test_barrier_distances_same_valley_no_penalty():
     poi_lat = np.array([47.0])
     sta_lon = np.array([8.2])
     sta_lat = np.array([47.0])
-    sta_elev = np.array([100.0])   # matches flat DEM → elev_diff = 0, barrier = 0
+    sta_elev = np.array([100.0])  # matches flat DEM → elev_diff = 0, barrier = 0
 
     lat0 = np.deg2rad(47.0)
     d_raw = float(np.sqrt((0.2 * np.cos(lat0)) ** 2))
     d_euc = np.array([[d_raw]], dtype=np.float32)
 
     d_eff = barrier_distances(
-        poi_lon, poi_lat, sta_lon, sta_lat,
-        d_euc, max_dist=0.5,
+        poi_lon,
+        poi_lat,
+        sta_lon,
+        sta_lat,
+        d_euc,
+        max_dist=0.5,
         sta_elev=sta_elev,
-        dem_rgi=dem_rgi, wgs84_to_lv95=transformer,
-        n_samples=5, elev_scale=2000.0, elev_diff_scale=4000.0,
-        n_barrier_width_samples=1, barrier_width=0.0,
+        dem_rgi=dem_rgi,
+        wgs84_to_lv95=transformer,
+        n_samples=5,
+        elev_scale=2000.0,
+        elev_diff_scale=4000.0,
+        n_barrier_width_samples=1,
+        barrier_width=0.0,
     )
     np.testing.assert_allclose(d_eff, d_euc, rtol=1e-4)
 
@@ -218,11 +242,15 @@ def test_barrier_distances_no_close_pairs():
 
     d_euc = np.array([[1.0, 2.0]], dtype=np.float32)
     d_eff = barrier_distances(
-        np.array([8.0]), np.array([47.0]),
-        np.array([8.0, 8.5]), np.array([48.0, 48.0]),
-        d_euc, max_dist=0.3,
+        np.array([8.0]),
+        np.array([47.0]),
+        np.array([8.0, 8.5]),
+        np.array([48.0, 48.0]),
+        d_euc,
+        max_dist=0.3,
         sta_elev=np.array([100.0, 200.0]),
-        dem_rgi=dem_rgi, wgs84_to_lv95=transformer,
+        dem_rgi=dem_rgi,
+        wgs84_to_lv95=transformer,
     )
     np.testing.assert_array_equal(d_eff, d_euc)
 
@@ -234,9 +262,11 @@ def test_nudge_toward_observation_invalid_run_mode(tmp_path):
     obs = tmp_path / "obs.parquet"
     obs.touch()
 
-    with patch.object(NudgeTowardObservation, "_load_icon_grid"), \
-         patch.object(NudgeTowardObservation, "_load_topo"), \
-         patch.object(NudgeTowardObservation, "_load_dem"):
+    with (
+        patch.object(NudgeTowardObservation, "_load_icon_grid"),
+        patch.object(NudgeTowardObservation, "_load_topo"),
+        patch.object(NudgeTowardObservation, "_load_dem"),
+    ):
         with pytest.raises(ValueError, match="run_mode"):
             NudgeTowardObservation(obs_path=str(obs), run_mode="bad")
 
@@ -248,9 +278,11 @@ def test_nudge_toward_observation_mutual_exclusion(tmp_path):
     obs = tmp_path / "obs.parquet"
     obs.touch()
 
-    with patch.object(NudgeTowardObservation, "_load_icon_grid"), \
-         patch.object(NudgeTowardObservation, "_load_topo"), \
-         patch.object(NudgeTowardObservation, "_load_dem"):
+    with (
+        patch.object(NudgeTowardObservation, "_load_icon_grid"),
+        patch.object(NudgeTowardObservation, "_load_topo"),
+        patch.object(NudgeTowardObservation, "_load_dem"),
+    ):
         with pytest.raises(ValueError, match="mutually exclusive"):
             NudgeTowardObservation(
                 obs_path=str(obs),
@@ -266,9 +298,11 @@ def test_nudge_toward_observation_invalid_reliability_min_dist_frac(tmp_path):
     obs = tmp_path / "obs.parquet"
     obs.touch()
 
-    with patch.object(NudgeTowardObservation, "_load_icon_grid"), \
-         patch.object(NudgeTowardObservation, "_load_topo"), \
-         patch.object(NudgeTowardObservation, "_load_dem"):
+    with (
+        patch.object(NudgeTowardObservation, "_load_icon_grid"),
+        patch.object(NudgeTowardObservation, "_load_topo"),
+        patch.object(NudgeTowardObservation, "_load_dem"),
+    ):
         with pytest.raises(ValueError, match="reliability_min_dist_frac"):
             NudgeTowardObservation(obs_path=str(obs), reliability_min_dist_frac=1.5)
 
@@ -280,9 +314,11 @@ def test_nudge_toward_observation_invalid_number_of_std(tmp_path):
     obs = tmp_path / "obs.parquet"
     obs.touch()
 
-    with patch.object(NudgeTowardObservation, "_load_icon_grid"), \
-         patch.object(NudgeTowardObservation, "_load_topo"), \
-         patch.object(NudgeTowardObservation, "_load_dem"):
+    with (
+        patch.object(NudgeTowardObservation, "_load_icon_grid"),
+        patch.object(NudgeTowardObservation, "_load_topo"),
+        patch.object(NudgeTowardObservation, "_load_dem"),
+    ):
         with pytest.raises(ValueError, match="number_of_std"):
             NudgeTowardObservation(obs_path=str(obs), number_of_std=0.0)
 
@@ -297,9 +333,11 @@ def test_compute_reliability_flags_outlier_station(tmp_path):
     obs = tmp_path / "obs.parquet"
     obs.touch()
 
-    with patch.object(NudgeTowardObservation, "_load_icon_grid"), \
-         patch.object(NudgeTowardObservation, "_load_topo"), \
-         patch.object(NudgeTowardObservation, "_load_dem"):
+    with (
+        patch.object(NudgeTowardObservation, "_load_icon_grid"),
+        patch.object(NudgeTowardObservation, "_load_topo"),
+        patch.object(NudgeTowardObservation, "_load_dem"),
+    ):
         filt = NudgeTowardObservation(
             obs_path=str(obs),
             max_dist=50_000.0,  # meters (50 km)
@@ -323,11 +361,22 @@ def test_compute_reliability_flags_outlier_station(tmp_path):
     # A single topo descriptor is enough to exercise ned_interp's topo-similarity
     # branch (its importance normalises to 1 trivially with only one descriptor).
     sta_topo = xr.Dataset(
-        {"ELEV": xr.DataArray(st_elev.astype(np.float32), dims=["sta"], coords={"sta": sta_ids})}
+        {
+            "ELEV": xr.DataArray(
+                st_elev.astype(np.float32), dims=["sta"], coords={"sta": sta_ids}
+            )
+        }
     )
 
     reliability = filt._compute_reliability(
-        "T_2M", sta_ids, st_lon, st_lat, st_elev, sta_xy, r_at_st, sta_topo,
+        "T_2M",
+        sta_ids,
+        st_lon,
+        st_lat,
+        st_elev,
+        sta_xy,
+        r_at_st,
+        sta_topo,
     )
 
     assert reliability.dims == ("sta",)
@@ -353,9 +402,11 @@ def test_compute_reliability_isolated_station_does_not_poison_others(tmp_path):
     obs = tmp_path / "obs.parquet"
     obs.touch()
 
-    with patch.object(NudgeTowardObservation, "_load_icon_grid"), \
-         patch.object(NudgeTowardObservation, "_load_topo"), \
-         patch.object(NudgeTowardObservation, "_load_dem"):
+    with (
+        patch.object(NudgeTowardObservation, "_load_icon_grid"),
+        patch.object(NudgeTowardObservation, "_load_topo"),
+        patch.object(NudgeTowardObservation, "_load_dem"),
+    ):
         filt = NudgeTowardObservation(
             obs_path=str(obs),
             max_dist=50_000.0,  # meters (50 km)
@@ -379,14 +430,29 @@ def test_compute_reliability_isolated_station_does_not_poison_others(tmp_path):
     r_at_st = np.array([0.0, -0.2, 0.2, -0.1, 3.0])  # all mutually plausible values
 
     sta_topo = xr.Dataset(
-        {"ELEV": xr.DataArray(st_elev.astype(np.float32), dims=["sta"], coords={"sta": sta_ids})}
+        {
+            "ELEV": xr.DataArray(
+                st_elev.astype(np.float32), dims=["sta"], coords={"sta": sta_ids}
+            )
+        }
     )
 
     reliability = filt._compute_reliability(
-        "T_2M", sta_ids, st_lon, st_lat, st_elev, sta_xy, r_at_st, sta_topo,
+        "T_2M",
+        sta_ids,
+        st_lon,
+        st_lat,
+        st_elev,
+        sta_xy,
+        r_at_st,
+        sta_topo,
     )
     values = reliability.values
 
     assert not np.any(np.isnan(values)), f"NaN leaked into reliability: {values}"
-    assert values[-1] == 1.0, f"isolated station should default to reliability=1.0, got {values[-1]}"
-    assert np.all(values[:-1] > 0.5), f"consistent cluster stations should stay trusted, got {values[:-1]}"
+    assert values[-1] == 1.0, (
+        f"isolated station should default to reliability=1.0, got {values[-1]}"
+    )
+    assert np.all(values[:-1] > 0.5), (
+        f"consistent cluster stations should stay trusted, got {values[:-1]}"
+    )

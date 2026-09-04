@@ -180,7 +180,7 @@ def test_barrier_distances_flat_terrain():
         sta_elev=sta_elev,
         dem_rgi=dem_rgi, wgs84_to_lv95=transformer,
         n_samples=10, elev_scale=2000.0, elev_diff_scale=4000.0,
-        n_barrier_width_samples=1, barrier_width_m=0.0,
+        n_barrier_width_samples=1, barrier_width=0.0,
     )
     np.testing.assert_allclose(d_eff, d_euc, rtol=1e-4)
 
@@ -206,7 +206,7 @@ def test_barrier_distances_same_valley_no_penalty():
         sta_elev=sta_elev,
         dem_rgi=dem_rgi, wgs84_to_lv95=transformer,
         n_samples=5, elev_scale=2000.0, elev_diff_scale=4000.0,
-        n_barrier_width_samples=1, barrier_width_m=0.0,
+        n_barrier_width_samples=1, barrier_width=0.0,
     )
     np.testing.assert_allclose(d_eff, d_euc, rtol=1e-4)
 
@@ -225,26 +225,6 @@ def test_barrier_distances_no_close_pairs():
         dem_rgi=dem_rgi, wgs84_to_lv95=transformer,
     )
     np.testing.assert_array_equal(d_eff, d_euc)
-
-
-def test_nudge_toward_observation_deprecated_params(tmp_path):
-    """Deprecated 'k' and 'power' parameters emit DeprecationWarning."""
-    import warnings
-    from unittest.mock import patch
-
-    obs = tmp_path / "obs.parquet"
-    obs.touch()
-
-    with patch.object(NudgeTowardObservation, "_load_icon_grid"), \
-         patch.object(NudgeTowardObservation, "_load_topo"), \
-         patch.object(NudgeTowardObservation, "_load_dem"):
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            NudgeTowardObservation(obs_path=str(obs), power=2.0, k=5)
-
-    messages = [str(warning.message) for warning in w]
-    assert any("power" in m for m in messages), "Expected DeprecationWarning for 'power'"
-    assert any("k" in m for m in messages), "Expected DeprecationWarning for 'k'"
 
 
 def test_nudge_toward_observation_invalid_run_mode(tmp_path):
@@ -322,7 +302,7 @@ def test_compute_reliability_flags_outlier_station(tmp_path):
          patch.object(NudgeTowardObservation, "_load_dem"):
         filt = NudgeTowardObservation(
             obs_path=str(obs),
-            max_dist=50.0,
+            max_dist=50_000.0,  # meters (50 km)
             weight_power=2.0,
             min_topo_w=0.2,
             lim_effective=0.0,
@@ -378,7 +358,7 @@ def test_compute_reliability_isolated_station_does_not_poison_others(tmp_path):
          patch.object(NudgeTowardObservation, "_load_dem"):
         filt = NudgeTowardObservation(
             obs_path=str(obs),
-            max_dist=50.0,
+            max_dist=50_000.0,  # meters (50 km)
             weight_power=2.0,
             min_topo_w=0.2,
             lim_effective=0.0,

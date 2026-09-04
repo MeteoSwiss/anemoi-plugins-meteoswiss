@@ -101,10 +101,10 @@ stages:
         --dem-barrier-file "/store_new/mch/msclim/appclim/data/grids/topodem/v2/topo/radar_100/topo_DEM_1000M.nc" \
         --n-barrier-samples 50 \
         --n-barrier-width-samples 3 \
-        --barrier-width-m 1500 \
-        --elev-scale-km 50 \
-        --elev-diff-scale-km 100 \
-        --max-dist-km 50 \
+        --barrier-width 1500 \
+        --elev-scale 50 \
+        --elev-diff-scale 100 \
+        --max-dist 50000 \
         --output-dir "$CI_PROJECT_DIR/output/d_eff_cache" \
         --plot-out "$CI_PROJECT_DIR/output/d_eff_cache/stations.png"
 

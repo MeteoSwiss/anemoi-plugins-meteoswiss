@@ -102,10 +102,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # NudgeTowardObservation itself (see its d_eff_file parameter). Defaults
     # below match the notebook's own "currently active" configuration; the
     # production configs' d_eff_file currently points at a different combo
-    # (max-dist-km=50, elev-scale-km=50, elev-diff-scale-km=100 — the
+    # (max-dist=50000, elev-scale=50, elev-diff-scale=100 — the
     # 'd_eff_5' cache) — override below to reproduce that one instead.
     p.add_argument(
-        "--n-barrier-samples", type=int, default=75,
+        "--n-barrier-samples", type=int, default=50,
         help="DEM sample points along the straight-line path (endpoints excluded).",
     )
     p.add_argument(
@@ -113,20 +113,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Perpendicular samples per step (odd = centred; 1 = straight line only).",
     )
     p.add_argument(
-        "--barrier-width-m", type=float, default=1500.0,
+        "--barrier-width", type=float, default=1500.0,
         help="Half-width of the perpendicular corridor [m].",
     )
     p.add_argument(
-        "--elev-scale-km", type=float, default=150.0,
+        "--elev-scale", type=float, default=50.0,
         help="m/km: ridge height above both endpoints that adds 1 km to effective distance.",
     )
     p.add_argument(
-        "--elev-diff-scale-km", type=float, default=300.0,
+        "--elev-diff-scale", type=float, default=100.0,
         help="m/km: endpoint elevation difference that adds 1 km.",
     )
     p.add_argument(
-        "--max-dist-km", type=float, default=75.0,
-        help="km: station influence radius — barrier-distance cutoff.",
+        "--max-dist", type=float, default=50000.0,
+        help="meters: station influence radius — barrier-distance cutoff "
+        "(converted to km internally, same convention as NudgeTowardObservation's max_dist).",
     )
     p.add_argument(
         "--output-dir", default=DEFAULT_OUTPUT_DIR,
@@ -433,12 +434,17 @@ def build_d_eff(
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     args = parse_args(argv)
+    # --max-dist is given in meters at the CLI; converted to km once here —
+    # every downstream function (cache_key, cache_file_path, build_d_eff,
+    # barrier_distances) stays km-only, same convention as
+    # NudgeTowardObservation's own max_dist.
+    max_dist_km = args.max_dist / 1000.0
 
     LOG.info(
         "station_filter_mode=%r max_dist_km=%g elev_scale_km=%g elev_diff_scale_km=%g "
         "n_barrier_samples=%d n_barrier_width_samples=%d barrier_width_m=%g",
-        args.station_filter_mode, args.max_dist_km, args.elev_scale_km, args.elev_diff_scale_km,
-        args.n_barrier_samples, args.n_barrier_width_samples, args.barrier_width_m,
+        args.station_filter_mode, max_dist_km, args.elev_scale, args.elev_diff_scale,
+        args.n_barrier_samples, args.n_barrier_width_samples, args.barrier_width,
     )
     LOG.info("Output directory: %s", args.output_dir)
 
@@ -454,17 +460,17 @@ def main(argv: list[str] | None = None) -> None:
         save_station_plot(stations, args.station_filter_mode, args.domain_bbox, args.plot_out)
 
     out_file = cache_file_path(
-        args.output_dir, args.station_filter_mode, args.max_dist_km, args.n_barrier_samples,
-        args.n_barrier_width_samples, args.barrier_width_m, args.elev_scale_km,
-        args.elev_diff_scale_km, len(stations),
+        args.output_dir, args.station_filter_mode, max_dist_km, args.n_barrier_samples,
+        args.n_barrier_width_samples, args.barrier_width, args.elev_scale,
+        args.elev_diff_scale, len(stations),
     )
     meta_file = out_file.with_suffix(".meta.json")
     LOG.info("Output: %s", out_file)
 
     key = cache_key(
         args.dem_barrier_file, args.icon_grid_file, stations,
-        args.n_barrier_samples, args.n_barrier_width_samples, args.barrier_width_m,
-        args.elev_scale_km, args.elev_diff_scale_km, args.max_dist_km,
+        args.n_barrier_samples, args.n_barrier_width_samples, args.barrier_width,
+        args.elev_scale, args.elev_diff_scale, max_dist_km,
     )
     existing = xr.open_dataset(out_file) if out_file.exists() else None
     cache_hit = not args.force and existing is not None and existing.attrs.get("cache_key") == key
@@ -490,8 +496,8 @@ def main(argv: list[str] | None = None) -> None:
 
         d_eff_poi_full, d_eff_sta_full = build_d_eff(
             stations, lat_icon, lon_icon, dem_rgi, wgs84_to_lv95,
-            args.max_dist_km, args.n_barrier_samples, args.n_barrier_width_samples,
-            args.barrier_width_m, args.elev_scale_km, args.elev_diff_scale_km,
+            max_dist_km, args.n_barrier_samples, args.n_barrier_width_samples,
+            args.barrier_width, args.elev_scale, args.elev_diff_scale,
         )
 
         out_ds = xr.Dataset({"d_eff_poi": d_eff_poi_full, "d_eff_sta": d_eff_sta_full})
@@ -499,10 +505,10 @@ def main(argv: list[str] | None = None) -> None:
         out_ds.attrs["station_filter_mode"] = args.station_filter_mode
         out_ds.attrs["N_BARRIER_SAMPLES"] = args.n_barrier_samples
         out_ds.attrs["N_BARRIER_WIDTH_SAMPLES"] = args.n_barrier_width_samples
-        out_ds.attrs["BARRIER_WIDTH_M"] = args.barrier_width_m
-        out_ds.attrs["ELEV_SCALE_KM"] = args.elev_scale_km
-        out_ds.attrs["ELEV_DIFF_SCALE_KM"] = args.elev_diff_scale_km
-        out_ds.attrs["MAX_DIST_KM"] = args.max_dist_km
+        out_ds.attrs["BARRIER_WIDTH"] = args.barrier_width
+        out_ds.attrs["ELEV_SCALE"] = args.elev_scale
+        out_ds.attrs["ELEV_DIFF_SCALE"] = args.elev_diff_scale
+        out_ds.attrs["MAX_DIST_KM"] = max_dist_km
         out_ds.attrs["n_stations"] = len(stations)
         meta = dict(out_ds.attrs)
 

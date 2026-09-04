@@ -323,20 +323,51 @@ def test_nudge_toward_observation_invalid_number_of_std(tmp_path):
             NudgeTowardObservation(obs_path=str(obs), number_of_std=0.0)
 
 
+def _make_mock_d_eff_sta_cache(sta_ids: list, sta_xy: np.ndarray) -> dict:
+    """Synthetic station<->station d_eff cache for _compute_reliability tests:
+    on a flat DEM (barrier=elev_diff=0), d_eff reduces to plain Euclidean
+    distance — see test_barrier_distances_flat_terrain. Self-distance is +inf,
+    matching generate_d_eff_cache.py's own convention (a station is never its
+    own neighbour). Only the two keys _get_d_eff_sta actually reads are
+    included — see NudgeTowardObservation._load_d_eff_cache."""
+    d = np.sqrt(((sta_xy[:, None, :] - sta_xy[None, :, :]) ** 2).sum(axis=-1))
+    np.fill_diagonal(d, np.inf)
+    d_eff_sta_full = xr.DataArray(
+        d.astype(np.float32),
+        dims=["sta_i", "sta"],
+        coords={"sta_i": sta_ids, "sta": sta_ids},
+    )
+    return {"d_eff_sta_full": d_eff_sta_full, "sta_set": set(sta_ids)}
+
+
 def test_compute_reliability_flags_outlier_station(tmp_path):
     """Leave-one-out spatial-consistency check: a station whose residual wildly
     disagrees with its neighbours gets reliability=0; consistent stations stay
     close to 1. Uses the same mock DEM/transformer as the barrier_distances tests
-    above — no real ICON/DEM/topo files needed."""
+    above, plus a synthetic d_eff cache (see _make_mock_d_eff_sta_cache) — no
+    real ICON/DEM/topo/d_eff files needed."""
     from unittest.mock import patch
 
     obs = tmp_path / "obs.parquet"
     obs.touch()
 
+    sta_ids = ["AAA", "BBB", "CCC", "DDD", "BAD"]
+    st_lat = np.array([47.00, 47.02, 46.98, 47.01, 46.99])
+    st_lon = np.array([8.00, 8.02, 7.98, 8.05, 8.01])
+    st_elev = np.full(5, 100.0)  # matches the flat mock DEM → barrier/elev_diff = 0
+    transformer = _make_mock_transformer()
+    sta_x, sta_y = transformer.transform(st_lon, st_lat)
+    sta_xy = np.c_[sta_x, sta_y] / 1000.0
+    r_at_st = np.array([0.0, -0.2, 0.2, -0.1, 5.0])  # "BAD" wildly disagrees
+    d_eff_sta_cache = _make_mock_d_eff_sta_cache(sta_ids, sta_xy)
+
     with (
         patch.object(NudgeTowardObservation, "_load_icon_grid"),
         patch.object(NudgeTowardObservation, "_load_topo"),
         patch.object(NudgeTowardObservation, "_load_dem"),
+        patch.object(
+            NudgeTowardObservation, "_load_d_eff_cache", return_value=d_eff_sta_cache
+        ),
     ):
         filt = NudgeTowardObservation(
             obs_path=str(obs),
@@ -348,15 +379,7 @@ def test_compute_reliability_flags_outlier_station(tmp_path):
             reliability_min_dist_frac=0.1,
         )
     filt._dem_rgi = _make_mock_dem_rgi()
-    filt._wgs84_to_lv95 = _make_mock_transformer()
-
-    sta_ids = ["AAA", "BBB", "CCC", "DDD", "BAD"]
-    st_lat = np.array([47.00, 47.02, 46.98, 47.01, 46.99])
-    st_lon = np.array([8.00, 8.02, 7.98, 8.05, 8.01])
-    st_elev = np.full(5, 100.0)  # matches the flat mock DEM → barrier/elev_diff = 0
-    sta_x, sta_y = filt._wgs84_to_lv95.transform(st_lon, st_lat)
-    sta_xy = np.c_[sta_x, sta_y] / 1000.0
-    r_at_st = np.array([0.0, -0.2, 0.2, -0.1, 5.0])  # "BAD" wildly disagrees
+    filt._wgs84_to_lv95 = transformer
 
     # A single topo descriptor is enough to exercise ned_interp's topo-similarity
     # branch (its importance normalises to 1 trivially with only one descriptor).
@@ -367,16 +390,23 @@ def test_compute_reliability_flags_outlier_station(tmp_path):
             )
         }
     )
+    sta_res = xr.Dataset(
+        {
+            "T_2M": xr.DataArray(
+                r_at_st.astype(np.float32), dims=["sta"], coords={"sta": sta_ids}
+            )
+        }
+    )
 
     reliability = filt._compute_reliability(
         "T_2M",
         sta_ids,
         st_lon,
         st_lat,
-        st_elev,
-        sta_xy,
         r_at_st,
+        sta_res,
         sta_topo,
+        filt._max_dist_by_var["T_2M"],
     )
 
     assert reliability.dims == ("sta",)
@@ -402,10 +432,25 @@ def test_compute_reliability_isolated_station_does_not_poison_others(tmp_path):
     obs = tmp_path / "obs.parquet"
     obs.touch()
 
+    # AAA/BBB/CCC/DDD form a consistent cluster; ISO is ~190 km away — well
+    # beyond max_dist=50 km, so it has zero neighbours in the leave-one-out check.
+    sta_ids = ["AAA", "BBB", "CCC", "DDD", "ISO"]
+    st_lat = np.array([47.00, 47.02, 46.98, 47.01, 46.20])
+    st_lon = np.array([8.00, 8.02, 7.98, 8.05, 9.90])
+    st_elev = np.full(5, 100.0)
+    transformer = _make_mock_transformer()
+    sta_x, sta_y = transformer.transform(st_lon, st_lat)
+    sta_xy = np.c_[sta_x, sta_y] / 1000.0
+    r_at_st = np.array([0.0, -0.2, 0.2, -0.1, 3.0])  # all mutually plausible values
+    d_eff_sta_cache = _make_mock_d_eff_sta_cache(sta_ids, sta_xy)
+
     with (
         patch.object(NudgeTowardObservation, "_load_icon_grid"),
         patch.object(NudgeTowardObservation, "_load_topo"),
         patch.object(NudgeTowardObservation, "_load_dem"),
+        patch.object(
+            NudgeTowardObservation, "_load_d_eff_cache", return_value=d_eff_sta_cache
+        ),
     ):
         filt = NudgeTowardObservation(
             obs_path=str(obs),
@@ -417,22 +462,19 @@ def test_compute_reliability_isolated_station_does_not_poison_others(tmp_path):
             reliability_min_dist_frac=0.1,
         )
     filt._dem_rgi = _make_mock_dem_rgi()
-    filt._wgs84_to_lv95 = _make_mock_transformer()
-
-    # AAA/BBB/CCC/DDD form a consistent cluster; ISO is ~190 km away — well
-    # beyond max_dist=50 km, so it has zero neighbours in the leave-one-out check.
-    sta_ids = ["AAA", "BBB", "CCC", "DDD", "ISO"]
-    st_lat = np.array([47.00, 47.02, 46.98, 47.01, 46.20])
-    st_lon = np.array([8.00, 8.02, 7.98, 8.05, 9.90])
-    st_elev = np.full(5, 100.0)
-    sta_x, sta_y = filt._wgs84_to_lv95.transform(st_lon, st_lat)
-    sta_xy = np.c_[sta_x, sta_y] / 1000.0
-    r_at_st = np.array([0.0, -0.2, 0.2, -0.1, 3.0])  # all mutually plausible values
+    filt._wgs84_to_lv95 = transformer
 
     sta_topo = xr.Dataset(
         {
             "ELEV": xr.DataArray(
                 st_elev.astype(np.float32), dims=["sta"], coords={"sta": sta_ids}
+            )
+        }
+    )
+    sta_res = xr.Dataset(
+        {
+            "T_2M": xr.DataArray(
+                r_at_st.astype(np.float32), dims=["sta"], coords={"sta": sta_ids}
             )
         }
     )
@@ -442,10 +484,10 @@ def test_compute_reliability_isolated_station_does_not_poison_others(tmp_path):
         sta_ids,
         st_lon,
         st_lat,
-        st_elev,
-        sta_xy,
         r_at_st,
+        sta_res,
         sta_topo,
+        filt._max_dist_by_var["T_2M"],
     )
     values = reliability.values
 

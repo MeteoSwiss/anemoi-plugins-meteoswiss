@@ -74,7 +74,6 @@ class RetrieveObservation(Filter):
         retrieved here stays a subset of whatever ``NudgeTowardObservation``'s
         ``d_eff_file`` cache was built from (a station outside that cache
         raises an error there rather than silently recomputing). One of:
-
         - ``None`` (default): no extra trim — retrieves exactly whatever
           *station_group*/*retrieval_bbox* selects, unchanged from before
           this parameter existed.

@@ -131,7 +131,7 @@ buddy:
   RH_2M:
     radius: 100000
     num_min: 2
-    threshold: [15, 10]
+    threshold: [5, 6]
     max_elev_diff: 700
     elev_gradient: 0
     min_std: 1.5
@@ -147,7 +147,7 @@ buddy:
   PS:
     radius: 100000
     num_min: 2
-    threshold: [1000, 750]   # Pa
+    threshold: [5.5, 4.5]   
     max_elev_diff: 500
     elev_gradient: -12.0     # Pa/m standard atmosphere
     min_std: 200
@@ -155,7 +155,7 @@ buddy:
   PMSL:
     radius: 100000
     num_min: 2
-    threshold: [500, 350]    # Pa
+    threshold: [5.5, 4.5]    
     max_elev_diff: 500
     elev_gradient: 0
     min_std: 100
@@ -166,7 +166,7 @@ buddy_diff:
   T_2M:
     radius: 100000
     num_min: 2
-    threshold: [5.0, 3.5]
+    threshold: [4.5, 3.0]
     max_elev_diff: 500
     elev_gradient: 0
     min_std: 2
@@ -174,7 +174,7 @@ buddy_diff:
   TD_2M:
     radius: 100000
     num_min: 2
-    threshold: [6.5, 5.0]
+    threshold: [6.0, 4.5]
     max_elev_diff: 700
     elev_gradient: 0
     min_std: 2
@@ -198,7 +198,7 @@ buddy_diff:
   RH_2M:
     radius: 100000
     num_min: 2
-    threshold: [15, 10]
+    threshold: [5, 6]
     max_elev_diff: 700
     elev_gradient: 0
     min_std: 1.5
@@ -214,7 +214,7 @@ buddy_diff:
   PS:
     radius: 100000
     num_min: 2
-    threshold: [1000, 750]   # Pa
+    threshold: [5.5, 4.5]
     max_elev_diff: 500
     elev_gradient: 0
     min_std: 200
@@ -222,7 +222,7 @@ buddy_diff:
   PMSL:
     radius: 100000
     num_min: 2
-    threshold: [500, 350]    # Pa
+    threshold: [5.5, 4.5]
     max_elev_diff: 500
     elev_gradient: 0
     min_std: 100
@@ -593,7 +593,7 @@ sct_dual:
 
 # Trusted stations — never blacklisted by automated QC regardless of score
 stations_excluded:
-  T_2M:    {stations: []}
+  T_2M:    {stations: ['BRL']}
   TD_2M:   {stations: []}
   T_G:     {stations: []}
   RH_2M:   {stations: []}

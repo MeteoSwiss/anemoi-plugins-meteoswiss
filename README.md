@@ -18,10 +18,12 @@ the gridded anemoi-datasets creator as one cell per station.
 
 **Requirements**
 
-- `jretrievedwh.py` must be on `$PATH`.
-- `$OPR_HOME` must be set; auth uses `$OPR_HOME/.jretrievedwh-conf.<stage>.py`.
-
-On Balfrin both are set up by `source ~osm/.opr_setup_dir`.
+- `jretrievedwh.py` must be reachable — on `$PATH`, or the wrapper falls back to
+  `/oprusers/osm/opr.inn/bin/jretrievedwh.py`. On Balfrin, `source
+  ~osm/.opr_setup_dir` puts it on `$PATH`.
+- Auth uses a committed `.jretrievedwh-conf.prod.py` that mints a Bearer token
+  from OAuth client credentials `JRETRIEVE_CLIENT_ID` / `JRETRIEVE_CLIENT_SECRET`
+  (env vars or a `.env` next to the conf). Only the `prod` stage is supported.
 
 **Recipe usage**
 
@@ -29,7 +31,7 @@ On Balfrin both are set up by `source ~osm/.opr_setup_dir`.
 input:
   join:
     - synop-dwh:
-        stage: prod                       # prod | depl | devt
+        stage: prod                       # prod only
         seq_type: surface                 # jretrieve --seq-type
         increment_minutes: 10             # native cadence; matches recipe frequency
         param:

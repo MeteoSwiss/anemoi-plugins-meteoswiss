@@ -41,6 +41,8 @@ class SynopDwhSource(Source):
         super().__init__(context)
         if not param:
             raise ValueError("param must be a non-empty list of DWH short names.")
+        if stage != "prod":
+            raise ValueError(f"Only 'prod' stage is supported, got {stage!r}.")
         self.param: list[str] = list(param)
         self.stations: dict[str, Any] = stations
         self.stage: str = stage
@@ -53,6 +55,9 @@ class SynopDwhSource(Source):
         """Canonical station catalog — fetched once per process, deterministic
         across parallel workers because the meta-info call uses a fixed wide
         time range."""
+        # Fail fast on a missing binary / conf / credentials before we start a
+        # potentially long build, rather than hours in.
+        jretrieve.check_prerequisites(self.stage)
         meta = jretrieve.fetch_meta(
             stations=self.stations,
             params=self.param,

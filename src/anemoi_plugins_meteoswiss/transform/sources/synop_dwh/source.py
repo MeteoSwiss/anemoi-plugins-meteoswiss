@@ -50,17 +50,48 @@ class SynopDwhSource(Source):
         self.increment_minutes: int = int(increment_minutes)
         self.timeout: int = int(timeout)
 
+    @staticmethod
+    def _as_datetime(v: Any) -> datetime | None:
+        """Coerce a recipe date to a naive datetime. It arrives as a `datetime`
+        in the `init`/`create` path but as an ISO string in the `load` path
+        (the recipe is reloaded from the zarr metadata there)."""
+        if v is None or isinstance(v, datetime):
+            return v
+        ts = pd.to_datetime(str(v))
+        if ts.tzinfo is not None:
+            ts = ts.tz_convert("UTC").tz_localize(None)
+        return ts.to_pydatetime()
+
+    def _recipe_date_range(self) -> tuple[datetime | None, datetime | None]:
+        """The dataset's full [start, end] from the recipe, used to scope the
+        station catalog to stations operating in the period. Same for every
+        parallel worker (they share the recipe), so the cell axis stays stable.
+        Falls back to (None, None) — the wide default — if unavailable."""
+        try:
+            dates = self.context.recipe.dates
+            return self._as_datetime(dates.start), self._as_datetime(dates.end)
+        except AttributeError:
+            return None, None
+
     @functools.cached_property
     def catalog(self) -> StationCatalog:
         """Canonical station catalog — fetched once per process, deterministic
-        across parallel workers because the meta-info call uses a fixed wide
-        time range."""
+        across parallel workers because it is scoped to the recipe's fixed date
+        range and station selection.
+
+        With an explicit `locations:` list the `-i nat_abbr,...` selector filters
+        the meta response to exactly those stations, so the catalog is precisely
+        the requested set. (A `group:` selector is *not* honoured by
+        `--meta-info`, so avoid it here — pin the stations you want.)"""
         # Fail fast on a missing binary / conf / credentials before we start a
         # potentially long build, rather than hours in.
         jretrieve.check_prerequisites(self.stage)
+        start, end = self._recipe_date_range()
         meta = jretrieve.fetch_meta(
             stations=self.stations,
             params=self.param,
+            start=start,
+            end=end,
             seq_type=self.seq_type,
             stage=self.stage,
             timeout_s=min(self.timeout, 300),

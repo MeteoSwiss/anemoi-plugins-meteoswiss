@@ -12,14 +12,27 @@ import pandas as pd
 import pytest
 
 from anemoi_plugins_meteoswiss.transform.sources.synop_dwh import jretrieve as jr
+from anemoi_plugins_meteoswiss.transform.sources.synop_dwh.source import SynopDwhSource
 from anemoi_plugins_meteoswiss.transform.sources.synop_dwh.stations import StationCatalog
+
+
+# --- recipe date coercion (load path passes ISO strings) -------------------
+
+def test_as_datetime_from_string_and_datetime():
+    from datetime import datetime as _dt
+    assert SynopDwhSource._as_datetime(None) is None
+    d = _dt(2024, 1, 1)
+    assert SynopDwhSource._as_datetime(d) is d
+    assert SynopDwhSource._as_datetime("2024-01-01T00:00:00") == _dt(2024, 1, 1)
+    # tz-aware ISO string -> naive datetime (as _fmt_time expects)
+    assert SynopDwhSource._as_datetime("2024-06-15T12:00:00+00:00") == _dt(2024, 6, 15, 12)
 
 
 # --- _stations_to_argv -----------------------------------------------------
 
 def test_stations_to_argv_group():
-    # We keep the `stn_group` selector (our recipes use `group: smn`).
-    assert jr._stations_to_argv({"group": "smn"}) == ["-a", "stn_group,smn"]
+    # evalml selector: group maps to stn_group_id (our recipes use `group: smn`).
+    assert jr._stations_to_argv({"group": "smn"}) == ["-a", "stn_group_id,smn"]
 
 
 def test_stations_to_argv_locations_from_list():

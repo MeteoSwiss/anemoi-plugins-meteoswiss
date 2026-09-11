@@ -189,7 +189,7 @@ def _stations_to_argv(stations: dict[str, Any]) -> list[str]:
     val = stations[key]
 
     if key == "group":
-        return ["-a", f"stn_group,{val}"]
+        return ["-a", f"stn_group_id,{val}"]
     if key == "locations":
         if isinstance(val, str):
             val = [v for v in val.split(",") if v]
@@ -264,6 +264,8 @@ def fetch_meta(
     *,
     stations: dict[str, Any],
     params: list[str],
+    start: datetime | None = None,
+    end: datetime | None = None,
     seq_type: str = "surface",
     stage: str = "prod",
     meta_fields: Sequence[str] = DEFAULT_META_FIELDS,
@@ -271,15 +273,21 @@ def fetch_meta(
 ) -> pd.DataFrame:
     """Fetch the station catalog (rows per station × parameter × operating period).
 
-    Uses a fixed wide time range so the response is deterministic regardless
-    of when (or where) the call runs — important for parallel workers that all
-    need the same canonical station list.
+    The `[start, end]` window scopes which stations are returned: only those
+    operating in that range. Callers pass the dataset's full date range so the
+    catalog is exactly the stations with data in the period — and identical
+    across parallel workers, which all share the same recipe range. When omitted,
+    a fixed wide range (1900–2100) is used, i.e. every station that ever operated.
 
     Returns a DataFrame with columns: station (int stationId), latitude, longitude,
     elev, stn_name, nat_abbr, parameter, op_since, op_till.
     """
     if not params:
         raise ValueError("params must be non-empty.")
+    if start is None:
+        start = CATALOG_TIME_RANGE_START
+    if end is None:
+        end = CATALOG_TIME_RANGE_END
     binary = _resolve_binary()
     env = _build_env(stage)
 
@@ -287,7 +295,7 @@ def fetch_meta(
         binary,
         "-s", seq_type,
         "-n", ",".join(params),
-        "-t", f"{_fmt_time(CATALOG_TIME_RANGE_START)},{_fmt_time(CATALOG_TIME_RANGE_END)}",
+        "-t", f"{_fmt_time(start)},{_fmt_time(end)}",
         "--meta-info", ",".join(meta_fields),
         "--format", "csv",
         *_stations_to_argv(stations),

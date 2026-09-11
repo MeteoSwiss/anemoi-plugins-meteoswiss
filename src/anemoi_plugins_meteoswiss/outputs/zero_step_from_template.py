@@ -82,7 +82,7 @@ class ZeroStepFromTemplate(GribFileOutput):
 
     @cached_property
     def template_index(self) -> dict[str, ekd.Field]:
-        """The reference GRIB file(s), indexed by anemoi variable name."""
+        """The reference GRIB file(s), indexed by GRIB param name."""
         files = sorted(glob.glob(self.template_path))
         if not files:
             raise FileNotFoundError(
@@ -100,6 +100,11 @@ class ZeroStepFromTemplate(GribFileOutput):
         )
         return index
 
+    def _mars_param(self, name: str) -> str:
+        """Resolve an anemoi variable name to its GRIB param (mars shortName)."""
+        mars = self.metadata.variables_metadata.get(name, {}).get("mars", {})
+        return mars.get("param", name)
+
     def write_initial_state(self, state: State) -> None:
         """Write a zero-valued message for each configured accumulation
         variable not already present in the initial state."""
@@ -113,11 +118,13 @@ class ZeroStepFromTemplate(GribFileOutput):
                 # Already part of the initial conditions, nothing to synthesize.
                 continue
 
-            template = self.template_index.get(name)
+            param = self._mars_param(name)
+            template = self.template_index.get(param)
             if template is None:
                 raise KeyError(
-                    f"zero-step-from-template: no template field for {name!r} in "
-                    f"{self.template_path!r} (available: {sorted(self.template_index)})"
+                    f"zero-step-from-template: no template field for {name!r} "
+                    f"(param {param!r}) in {self.template_path!r} "
+                    f"(available: {sorted(self.template_index)})"
                 )
 
             values = np.zeros(template.shape, dtype=float)

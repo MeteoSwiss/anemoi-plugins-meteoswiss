@@ -20,6 +20,7 @@ class FakeContext:
 class FakeMetadata:
     dataset_name = "test"
     typed_variables: dict = {}
+    variables_metadata: dict = {}
     accumulations = ["2t"]
 
 
@@ -59,6 +60,30 @@ def test_write_initial_state_emits_zero_field_from_template(output, data_dir):
     template = output.template_index["2t"]
     assert field.metadata("gridType") == template.metadata("gridType")
     assert field.metadata("edition") == template.metadata("edition")
+
+
+def test_write_initial_state_resolves_mars_param(data_dir, tmp_path):
+    """When the anemoi variable name differs from the GRIB param (e.g. 'tp'
+    vs 'TOT_PREC'), the template must be looked up by the resolved mars
+    param, not the raw anemoi name."""
+
+    class FakeMetadataWithMars(FakeMetadata):
+        accumulations = ["total_precip"]
+        variables_metadata = {"total_precip": {"mars": {"param": "t"}}}
+
+    output = ZeroStepFromTemplate(
+        FakeContext(),
+        FakeMetadataWithMars(),
+        path=str(tmp_path / "out.grib"),
+        template_path=str(data_dir / "iaf2025010100"),
+    )
+    state = {"date": REFERENCE_DATE, "fields": {}, "step": datetime.timedelta(0)}
+    output.write_initial_state(state)
+    output.close()
+
+    written = list(ekd.from_source("file", output.out))
+    assert len(written) == 1
+    assert written[0].metadata("shortName") == "t"
 
 
 def test_write_initial_state_skips_field_already_present(output):

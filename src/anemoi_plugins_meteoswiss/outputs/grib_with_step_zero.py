@@ -71,9 +71,11 @@ class GribWithStepZero(GribFileOutput):
             Glob to the reference GRIB file(s) to clone step=0 messages
             from, e.g. the operational reference file for this stream. Must
             contain one message per variable in ``step_zero_accumulations``
-            (matched by anemoi variable name / GRIB ``param``). Distinct from
-            the base output's own ``templates:`` param, which resolves
-            templates for every other (non step-0-synthesized) message.
+            (matched by anemoi variable name / GRIB ``param``), on the same
+            grid as this run (checked against ``metadata.number_of_grid_points``
+            and rejected otherwise). Distinct from the base output's own
+            ``templates:`` param, which resolves templates for every other
+            (non step-0-synthesized) message.
         step_zero_accumulations:
             Anemoi variable names to emit a zero field for. Optional: when
             omitted, defaults to ``metadata.accumulations`` (every variable
@@ -148,6 +150,15 @@ class GribWithStepZero(GribFileOutput):
                     f"grib-with-step-zero: no template field for {name!r} "
                     f"(param {param!r}) in {self.step_zero_template!r} "
                     f"(available: {sorted(self.step_zero_template_index)})"
+                )
+
+            expected_shape = (self.metadata.number_of_grid_points,)
+            if template.shape != expected_shape:
+                raise ValueError(
+                    f"grib-with-step-zero: template field for {name!r} (param {param!r}) "
+                    f"in {self.step_zero_template!r} has shape {template.shape}, but this "
+                    f"run's grid has {expected_shape[0]} points. The template file likely "
+                    "comes from a different domain or resolution."
                 )
 
             values = np.zeros(template.shape, dtype=float)

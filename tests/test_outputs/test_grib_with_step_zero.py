@@ -23,7 +23,7 @@ class FakeMetadata:
     typed_variables: dict = {}
     variables_metadata: dict = {}
     accumulations = ["2t"]
-    number_of_grid_points = None
+    number_of_grid_points = 1147980
     grid = None
     area = None
 
@@ -128,6 +128,25 @@ def test_write_initial_state_skips_field_already_present(output):
 
     # Nothing was written, so the file was never even created.
     assert not output.out.exists()
+
+
+def test_write_initial_state_raises_on_grid_shape_mismatch(data_dir, tmp_path):
+    """If the template file's grid doesn't match this run's grid (e.g. it
+    comes from a different domain/resolution), fail loudly instead of
+    silently writing a wrong-shaped zero field."""
+
+    class FakeMetadataWrongGrid(FakeMetadata):
+        number_of_grid_points = 1
+
+    output = GribWithStepZero(
+        FakeContext(),
+        FakeMetadataWrongGrid(),
+        path=str(tmp_path / "out.grib"),
+        step_zero_template=str(data_dir / "iaf2025010100"),
+    )
+    state = {"date": REFERENCE_DATE, "fields": {}, "step": datetime.timedelta(0)}
+    with pytest.raises(ValueError, match="different domain or resolution"):
+        output.write_initial_state(state)
 
 
 def test_write_initial_state_writes_real_and_zero_step_fields_to_same_file(output, data_dir):

@@ -1,5 +1,5 @@
-from .zero_step_from_template import ZeroStepFromTemplate
+from .grib_with_step_zero import GribWithStepZero
 
 __all__ = [
-    "ZeroStepFromTemplate",
+    "GribWithStepZero",
 ]

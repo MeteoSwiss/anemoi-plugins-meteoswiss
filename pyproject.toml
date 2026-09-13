@@ -37,7 +37,7 @@ retrieve-observation = "anemoi_plugins_meteoswiss.transform.filters:RetrieveObse
 clean-observation = "anemoi_plugins_meteoswiss.transform.filters:CleanObservation"
 
 [project.entry-points."anemoi.inference.outputs"]
-zero-step-from-template = "anemoi_plugins_meteoswiss.outputs:ZeroStepFromTemplate"
+grib-with-step-zero = "anemoi_plugins_meteoswiss.outputs:GribWithStepZero"
 
 [project.entry-points."anemoi.datasets.create.sources"]
 rea-l-ch1-precip = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1Precip"

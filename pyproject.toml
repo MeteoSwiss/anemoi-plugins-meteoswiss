@@ -27,6 +27,9 @@ clean-observation = "anemoi_plugins_meteoswiss.transform.filters:CleanObservatio
 copy-prognostic-from-forecaster = "anemoi_plugins_meteoswiss.transform.filters:CopyPrognosticFromForecaster"
 nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
 retrieve-observation = "anemoi_plugins_meteoswiss.transform.filters:RetrieveObservation"
+wind-speed-from-components = "anemoi_plugins_meteoswiss.transform.filters:WindSpeedFromComponents"
+wind-direction-from-components = "anemoi_plugins_meteoswiss.transform.filters:WindDirectionFromComponents"
+relative-humidity-from-dewpoint = "anemoi_plugins_meteoswiss.transform.filters:RelativeHumidityFromDewpoint"
 
 [project.entry-points."anemoi.transform.filters.fields"]
 nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
@@ -34,6 +37,9 @@ gaussian-smoother = "anemoi_plugins_meteoswiss.transform.filters:GaussianSmoothe
 icon-remap-to-reg-lat-lon = "anemoi_plugins_meteoswiss.transform.filters:IconRemapToRegLatLon"
 retrieve-observation = "anemoi_plugins_meteoswiss.transform.filters:RetrieveObservation"
 clean-observation = "anemoi_plugins_meteoswiss.transform.filters:CleanObservation"
+wind-speed-from-components = "anemoi_plugins_meteoswiss.transform.filters:WindSpeedFromComponents"
+wind-direction-from-components = "anemoi_plugins_meteoswiss.transform.filters:WindDirectionFromComponents"
+relative-humidity-from-dewpoint = "anemoi_plugins_meteoswiss.transform.filters:RelativeHumidityFromDewpoint"
 
 [project.entry-points."anemoi.datasets.create.sources"]
 rea-l-ch1-precip = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1Precip"

@@ -3,10 +3,14 @@ import numpy as np
 import pytest
 from anemoi.transform.fields import new_field_from_numpy
 from anemoi.transform.fields import new_fieldlist_from_list
+from earthkit.meteo.thermo import relative_humidity_from_dewpoint
 
 from anemoi_plugins_meteoswiss.transform import filters
 from anemoi_plugins_meteoswiss.transform.filters import GaussianSmoother
 from anemoi_plugins_meteoswiss.transform.filters import IconRemapToRegLatLon
+from anemoi_plugins_meteoswiss.transform.filters import RelativeHumidityFromDewpoint
+from anemoi_plugins_meteoswiss.transform.filters import WindDirectionFromComponents
+from anemoi_plugins_meteoswiss.transform.filters import WindSpeedFromComponents
 
 ICONREMAP_WEIGHTS = (
     "/store_new/mch/msopr/icon_workflow_2/iconremap-weights/icon-ch1-eps-rotlatlon.nc"
@@ -90,3 +94,104 @@ def test_gaussian_smoother(data_dir, hostname):
 
     # W was not in params — must be bit-for-bit identical
     np.testing.assert_array_equal(w_raw, w_smo)
+
+
+def test_wind_speed_from_components(data_dir):
+    template = ekd.from_source("file", str(data_dir / "iaf2025010100")).sel(
+        shortName="2t"
+    )[0]
+
+    rng = np.random.default_rng(0)
+    n = template.to_numpy(flatten=True).size
+    u_values = rng.uniform(-20, 20, n)
+    v_values = rng.uniform(-20, 20, n)
+
+    u = new_field_from_numpy(u_values, template=template, param="10u", shortName="10u")
+    v = new_field_from_numpy(v_values, template=template, param="10v", shortName="10v")
+    fieldlist = new_fieldlist_from_list([u, v])
+
+    wind_speed = WindSpeedFromComponents(
+        u_component="10u", v_component="10v", wind_speed="10si"
+    )
+    result = wind_speed.forward(fieldlist)
+
+    assert len(result) == 3
+    by_param = {f.metadata("param"): f for f in result}
+    assert set(by_param) == {"10u", "10v", "10si"}
+
+    # Originals are passed through untouched.
+    np.testing.assert_array_equal(by_param["10u"].to_numpy(flatten=True), u_values)
+    np.testing.assert_array_equal(by_param["10v"].to_numpy(flatten=True), v_values)
+
+    # New field holds the wind speed magnitude.
+    expected = np.sqrt(u_values**2 + v_values**2)
+    np.testing.assert_allclose(by_param["10si"].to_numpy(flatten=True), expected)
+
+
+def test_wind_direction_from_components(data_dir):
+    template = ekd.from_source("file", str(data_dir / "iaf2025010100")).sel(
+        shortName="2t"
+    )[0]
+
+    rng = np.random.default_rng(0)
+    n = template.to_numpy(flatten=True).size
+    u_values = rng.uniform(-20, 20, n)
+    v_values = rng.uniform(-20, 20, n)
+
+    u = new_field_from_numpy(u_values, template=template, param="10u", shortName="10u")
+    v = new_field_from_numpy(v_values, template=template, param="10v", shortName="10v")
+    fieldlist = new_fieldlist_from_list([u, v])
+
+    wind_direction = WindDirectionFromComponents(
+        u_component="10u", v_component="10v", wind_direction="10wdir"
+    )
+    result = wind_direction.forward(fieldlist)
+
+    assert len(result) == 3
+    by_param = {f.metadata("param"): f for f in result}
+    assert set(by_param) == {"10u", "10v", "10wdir"}
+
+    # Originals are passed through untouched.
+    np.testing.assert_array_equal(by_param["10u"].to_numpy(flatten=True), u_values)
+    np.testing.assert_array_equal(by_param["10v"].to_numpy(flatten=True), v_values)
+
+    # New field holds the meteorological wind direction (FROM, clockwise from North).
+    expected = np.mod(np.degrees(np.arctan2(-u_values, -v_values)), 360.0)
+    np.testing.assert_allclose(by_param["10wdir"].to_numpy(flatten=True), expected)
+
+
+def test_relative_humidity_from_dewpoint(data_dir):
+    template = ekd.from_source("file", str(data_dir / "iaf2025010100")).sel(
+        shortName="2t"
+    )[0]
+
+    rng = np.random.default_rng(0)
+    n = template.to_numpy(flatten=True).size
+    t_values = rng.uniform(250.0, 300.0, n)
+    # Dewpoint never exceeds temperature; keep it 0-20 K below.
+    td_values = t_values - rng.uniform(0.0, 20.0, n)
+
+    t = new_field_from_numpy(t_values, template=template, param="2t", shortName="2t")
+    td = new_field_from_numpy(
+        td_values, template=template, param="2d", shortName="2d"
+    )
+    fieldlist = new_fieldlist_from_list([t, td])
+
+    relative_humidity = RelativeHumidityFromDewpoint(
+        temperature="2t", dewpoint="2d", relative_humidity="relhum_2m"
+    )
+    result = relative_humidity.forward(fieldlist)
+
+    assert len(result) == 3
+    by_param = {f.metadata("param"): f for f in result}
+    assert set(by_param) == {"2t", "2d", "relhum_2m"}
+
+    # Originals are passed through untouched.
+    np.testing.assert_array_equal(by_param["2t"].to_numpy(flatten=True), t_values)
+    np.testing.assert_array_equal(by_param["2d"].to_numpy(flatten=True), td_values)
+
+    # New field holds the relative humidity, as computed by earthkit-meteo directly.
+    expected = relative_humidity_from_dewpoint(t_values, td_values)
+    np.testing.assert_allclose(
+        by_param["relhum_2m"].to_numpy(flatten=True), expected
+    )

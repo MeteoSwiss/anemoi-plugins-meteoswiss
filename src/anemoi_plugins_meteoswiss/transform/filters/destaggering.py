@@ -1,33 +1,53 @@
-import earthkit.data as ekd
-from anemoi.transform.filter import Filter
-from meteodatalab.operators import destagger
+from collections import defaultdict
 
-from anemoi_plugins_meteoswiss.helpers import from_meteodatalab
-from anemoi_plugins_meteoswiss.helpers import to_meteodatalab
+import earthkit.data as ekd
+from anemoi.transform.fields import new_field_from_numpy
+from anemoi.transform.filter import Filter
 
 
 class Destagger(Filter):
-    """A filter to destagger fields using meteodata-lab."""
+    """Destagger fields from half levels to full levels in the vertical.
 
-    def __init__(self, param_dim: dict[str, str]):
-        """Initialize the filter.
+    Full level ``k`` is the mean of half levels ``k`` and ``k + 1``, so both must be in
+    the input. Fields of other parameters pass through unchanged; the half-level inputs
+    of destaggered parameters are dropped.
 
-        Parameters
-        ----------
-        param_dim:
-            Dictionary mapping parameter names to dimensions along which to destagger.
-        """
-        self.param_dim = param_dim
-        self.param = list(param_dim.keys())
+    Args:
+        param (list[str]): Short names of the fields on half levels, e.g. ``[W]``.
+        levels (list[int], optional): Full levels to output. Defaults to every level ``k``
+            for which half levels ``k`` and ``k + 1`` are both in the input.
+    """
+
+    def __init__(self, param: str | list[str], levels: list[int] | None = None):
+        self.param = [param] if isinstance(param, str) else list(param)
+        self.levels = None if levels is None else {int(k) for k in levels}
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
-        ds = to_meteodatalab(data)
-        for name, dim in self.param_dim.items():
-            if name not in ds:
-                raise ValueError(f"Field {name} not found in dataset.")
-            ds[name] = destagger.destagger(ds[name], dim)
-        data = from_meteodatalab(ds)
-        return data
+        out = ekd.SimpleFieldList()
+        half_levels = defaultdict(dict)
+        for field in data:
+            name = field.metadata("shortName")
+            if name in self.param:
+                key = (name, field.metadata("valid_datetime"))
+                half_levels[key][int(field.metadata("level"))] = field
+            else:
+                out.append(field)
 
-    def backward_transform(self):
-        raise NotImplementedError("Destagger is not reversible.")
+        for (name, valid_datetime), fields in half_levels.items():
+            levels = sorted(k for k in fields if k + 1 in fields)
+            if self.levels is not None:
+                missing = self.levels - set(levels)
+                if missing:
+                    raise ValueError(
+                        f"Cannot destagger {name} at {valid_datetime} to levels {sorted(missing)}: "
+                        f"half levels k and k+1 are needed, got {sorted(fields)}"
+                    )
+                levels = sorted(self.levels)
+            for k in levels:
+                values = 0.5 * (fields[k].values + fields[k + 1].values)
+                out.append(
+                    new_field_from_numpy(
+                        values, template=fields[k], typeOfLevel="generalVerticalLayer"
+                    )
+                )
+        return out

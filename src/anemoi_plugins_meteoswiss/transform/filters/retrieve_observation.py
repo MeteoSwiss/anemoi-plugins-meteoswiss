@@ -84,18 +84,14 @@ class RetrieveObservation(Filter):
         self.obs_path = obs_path
         self.jretrieve_src_path = str(jretrieve_src_path)
         self.group = group
-        self.bbox = (
-            bbox if (bbox is not None or group is not None) else [40.5, 53.0, 0.0, 17.5]
-        )
+        self.bbox = bbox if (bbox is not None or group is not None) else [40.5, 53.0, 0.0, 17.5]
         self.use_limitation = use_limitation
         self.run_mode = run_mode
 
         if variables is not None:
             unknown = set(variables) - _PARAM_TO_COL.keys()
             if unknown:
-                raise ValueError(
-                    f"Unknown variables: {unknown}. Valid: {list(_PARAM_TO_COL)}"
-                )
+                raise ValueError(f"Unknown variables: {unknown}. Valid: {list(_PARAM_TO_COL)}")
             self.cols = {_PARAM_TO_COL[v] for v in variables}
         else:
             self.cols = set(_PARAM_TO_COL.values())
@@ -129,19 +125,13 @@ class RetrieveObservation(Filter):
             sys.path.insert(0, self.jretrieve_src_path)
         import jretrieve as jr
 
-        jr_params = list(
-            dict.fromkeys(
-                p for col in self.cols for p in _COL_TO_JR_PARAMS.get(col, [])
-            )
-        )
+        jr_params = list(dict.fromkeys(p for col in self.cols for p in _COL_TO_JR_PARAMS.get(col, [])))
         if not jr_params:
             raise ValueError(f"No jretrieve parameters found for columns: {self.cols}")
 
         jr.check_prerequisites()
 
-        stations_sel = (
-            {"group": self.group} if self.group is not None else {"bbox": self.bbox}
-        )
+        stations_sel = {"group": self.group} if self.group is not None else {"bbox": self.bbox}
         meta = jr.fetch_meta(stations=stations_sel, params=jr_params)
         catalog = jr.StationCatalog.from_meta(meta)
         LOG.info("Station catalog: %d stations", catalog.n)
@@ -156,15 +146,9 @@ class RetrieveObservation(Filter):
             stage="prod",
         )
 
-        df["nat_abbr"] = df["station"].map(
-            dict(zip(catalog.station_id, catalog.nat_abbr))
-        )
-        df["latitude"] = df["station"].map(
-            dict(zip(catalog.station_id, catalog.latitude))
-        )
-        df["longitude"] = df["station"].map(
-            dict(zip(catalog.station_id, catalog.longitude))
-        )
+        df["nat_abbr"] = df["station"].map(dict(zip(catalog.station_id, catalog.nat_abbr)))
+        df["latitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.latitude)))
+        df["longitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.longitude)))
         df = df.dropna(subset=["nat_abbr"]).set_index("nat_abbr")
         df.index.name = "station"
 

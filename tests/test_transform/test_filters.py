@@ -4,15 +4,17 @@ import pytest
 from anemoi.transform.fields import new_field_from_numpy
 from anemoi.transform.fields import new_fieldlist_from_list
 from earthkit.meteo.thermo import relative_humidity_from_dewpoint
+from earthkit.data.core.metadata import RawMetadata
+from earthkit.data.sources.array_list import ArrayField
 
 from anemoi_plugins_meteoswiss.transform import filters
 from anemoi_plugins_meteoswiss.transform.filters import GaussianSmoother
 from anemoi_plugins_meteoswiss.transform.filters import IconRemapToRegLatLon
 from anemoi_plugins_meteoswiss.transform.filters import SurfaceDiagnosticsFromComponents
+from anemoi_plugins_meteoswiss.transform.filters import Keep
+from anemoi_plugins_meteoswiss.transform.filters import ModelToPressureLevel
 
-ICONREMAP_WEIGHTS = (
-    "/store_new/mch/msopr/icon_workflow_2/iconremap-weights/icon-ch1-eps-rotlatlon.nc"
-)
+ICONREMAP_WEIGHTS = "/store_new/mch/msopr/icon_workflow_2/iconremap-weights/icon-ch1-eps-rotlatlon.nc"
 
 
 def test_filter_imports():
@@ -38,7 +40,7 @@ def test_icon_remap_to_reg_lat_lon(data_dir, hostname):
     assert regridder._longitudes.max() < 22.0
 
     fn = str(data_dir / "iaf2025010100")
-    fieldlist = ekd.from_source("file", fn).sel(shortName="2t")
+    fieldlist = ekd.from_source("file", fn).sel(shortName="T_2M")
 
     result = regridder.forward(fieldlist)
 
@@ -60,14 +62,12 @@ def test_gaussian_smoother(data_dir, hostname):
         pytest.skip("Only runs on Balfrin.")
 
     regridder = IconRemapToRegLatLon(ICONREMAP_WEIGHTS)
-    smoother = GaussianSmoother(sigma=5, params=["2t"])
+    smoother = GaussianSmoother(sigma=5, params=["T_2M"])
 
     fn = str(data_dir / "iaf2025010100")
     fs = ekd.from_source("file", fn)
     # T_2M (smoothed) + one level of W (pass-through, not in params)
-    fieldlist = new_fieldlist_from_list(
-        list(fs.sel(shortName="2t")) + [fs.sel(shortName="wz")[0]]
-    )
+    fieldlist = new_fieldlist_from_list(list(fs.sel(shortName="T_2M")) + [fs.sel(shortName="W")[0]])
 
     regridded = list(regridder.forward(fieldlist))
     synthetic = np.zeros((regridder.ny, regridder.nx))
@@ -202,3 +202,22 @@ def test_surface_diagnostics_rejects_unknown_variable():
             dewpoint="2d",
             variables=["TOT_PREC"],
         )
+
+def test_keep(caplog):
+    fieldlist = new_fieldlist_from_list([ArrayField(np.zeros(4), RawMetadata({"param": p})) for p in ["t", "q", "z"]])
+
+    kept = Keep(param=["t", "z"]).forward(fieldlist)
+    assert [f.metadata("param") for f in kept] == ["t", "z"]
+
+    with caplog.at_level("WARNING"):
+        Keep(param=["t", "missing"]).forward(fieldlist)
+    assert "missing" in caplog.text
+
+
+def test_pipe_or_fdb_xarray_returns_piped_value_when_present(data_dir):
+    fn = str(data_dir / "iaf2025010100")
+    fieldlist = ekd.from_source("file", fn).sel(shortName="T_2M")
+
+    interpolator = ModelToPressureLevel(interpolate_levels=[500])
+    da = interpolator._get_field(fieldlist, "T_2M").to_xarray()["T_2M"]
+    assert da.shape == (1147980,)

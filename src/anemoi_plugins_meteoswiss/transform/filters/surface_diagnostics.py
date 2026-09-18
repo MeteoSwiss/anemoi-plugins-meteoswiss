@@ -1,5 +1,5 @@
 """Computes SP_10M (wind speed), DD_10M (wind direction), RELHUM_2M from
-U/V and temperature/dewpoint, in a single pass. Fields are added to Varda 
+U/V and temperature/dewpoint, in a single pass. Fields are added to Varda
 inference output.
 
 Usage::
@@ -17,7 +17,7 @@ Usage::
       - grib:
           post_processors:
           - forward_transform_filter:
-              surface-diagnostics-from-components:
+              surface-diagnostics:
                 u_component: U_10M
                 v_component: V_10M
                 temperature: T_2M
@@ -98,7 +98,7 @@ class SurfaceDiagnosticsFromComponents(MatchingFieldsFilter):
         self.dewpoint = dewpoint
         self.variables = variables
         LOG.info(
-            "surface-diagnostics-from-components: will add %s to the output, "
+            "surface-diagnostics: will add %s to the output, "
             "computed from u_component=%r, v_component=%r, temperature=%r, dewpoint=%r",
             self.variables,
             u_component,

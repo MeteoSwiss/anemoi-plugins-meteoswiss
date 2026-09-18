@@ -42,7 +42,7 @@ gaussian-smoother = "anemoi_plugins_meteoswiss.transform.filters:GaussianSmoothe
 icon-remap-to-reg-lat-lon = "anemoi_plugins_meteoswiss.transform.filters:IconRemapToRegLatLon"
 retrieve-observation = "anemoi_plugins_meteoswiss.transform.filters:RetrieveObservation"
 clean-observation = "anemoi_plugins_meteoswiss.transform.filters:CleanObservation"
-surface-diagnostics = "anemoi_plugins_meteoswiss.transform.filters:SurfaceDiagnosticsFromComponents"
+surface-diagnostics = "anemoi_plugins_meteoswiss.transform.filters:SurfaceDiagnostics"
 
 [project.entry-points."anemoi.datasets.create.sources"]
 rea-l-ch1-precip = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1Precip"

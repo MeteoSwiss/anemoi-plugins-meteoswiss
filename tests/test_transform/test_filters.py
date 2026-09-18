@@ -3,16 +3,16 @@ import numpy as np
 import pytest
 from anemoi.transform.fields import new_field_from_numpy
 from anemoi.transform.fields import new_fieldlist_from_list
-from earthkit.meteo.thermo import relative_humidity_from_dewpoint
 from earthkit.data.core.metadata import RawMetadata
 from earthkit.data.sources.array_list import ArrayField
+from earthkit.meteo.thermo import relative_humidity_from_dewpoint
 
 from anemoi_plugins_meteoswiss.transform import filters
 from anemoi_plugins_meteoswiss.transform.filters import GaussianSmoother
 from anemoi_plugins_meteoswiss.transform.filters import IconRemapToRegLatLon
-from anemoi_plugins_meteoswiss.transform.filters import SurfaceDiagnosticsFromComponents
 from anemoi_plugins_meteoswiss.transform.filters import Keep
 from anemoi_plugins_meteoswiss.transform.filters import ModelToPressureLevel
+from anemoi_plugins_meteoswiss.transform.filters import SurfaceDiagnostics
 
 ICONREMAP_WEIGHTS = "/store_new/mch/msopr/icon_workflow_2/iconremap-weights/icon-ch1-eps-rotlatlon.nc"
 
@@ -95,9 +95,7 @@ def test_gaussian_smoother(data_dir, hostname):
 
 
 def _synthetic_components(data_dir):
-    template = ekd.from_source("file", str(data_dir / "iaf2025010100")).sel(
-        shortName="2t"
-    )[0]
+    template = ekd.from_source("file", str(data_dir / "iaf2025010100")).sel(shortName="T_2M")[0]
 
     rng = np.random.default_rng(0)
     n = template.to_numpy(flatten=True).size
@@ -110,19 +108,15 @@ def _synthetic_components(data_dir):
     u = new_field_from_numpy(u_values, template=template, param="10u", shortName="10u")
     v = new_field_from_numpy(v_values, template=template, param="10v", shortName="10v")
     t = new_field_from_numpy(t_values, template=template, param="2t", shortName="2t")
-    td = new_field_from_numpy(
-        td_values, template=template, param="2d", shortName="2d"
-    )
+    td = new_field_from_numpy(td_values, template=template, param="2d", shortName="2d")
     fieldlist = new_fieldlist_from_list([u, v, t, td])
     return fieldlist, u_values, v_values, t_values, td_values
 
 
 def test_surface_diagnostics_all_variables(data_dir):
-    fieldlist, u_values, v_values, t_values, td_values = _synthetic_components(
-        data_dir
-    )
+    fieldlist, u_values, v_values, t_values, td_values = _synthetic_components(data_dir)
 
-    diagnostics = SurfaceDiagnosticsFromComponents(
+    diagnostics = SurfaceDiagnostics(
         u_component="10u",
         v_component="10v",
         temperature="2t",
@@ -142,29 +136,21 @@ def test_surface_diagnostics_all_variables(data_dir):
     np.testing.assert_array_equal(by_param["2d"].to_numpy(flatten=True), td_values)
 
     expected_speed = np.sqrt(u_values**2 + v_values**2)
-    np.testing.assert_allclose(
-        by_param["SP_10M"].to_numpy(flatten=True), expected_speed
-    )
+    np.testing.assert_allclose(by_param["SP_10M"].to_numpy(flatten=True), expected_speed)
 
     expected_direction = np.mod(np.degrees(np.arctan2(-u_values, -v_values)), 360.0)
-    np.testing.assert_allclose(
-        by_param["DD_10M"].to_numpy(flatten=True), expected_direction
-    )
+    np.testing.assert_allclose(by_param["DD_10M"].to_numpy(flatten=True), expected_direction)
 
     expected_rh = relative_humidity_from_dewpoint(t_values, td_values)
-    np.testing.assert_allclose(
-        by_param["RELHUM_2M"].to_numpy(flatten=True), expected_rh
-    )
+    np.testing.assert_allclose(by_param["RELHUM_2M"].to_numpy(flatten=True), expected_rh)
 
 
 def test_surface_diagnostics_subset_of_variables(data_dir):
-    fieldlist, u_values, v_values, t_values, td_values = _synthetic_components(
-        data_dir
-    )
+    fieldlist, u_values, v_values, t_values, td_values = _synthetic_components(data_dir)
 
     # Only SP_10M requested: DD_10M and RELHUM_2M are skipped, even though
     # temperature/dewpoint are still required matches.
-    diagnostics = SurfaceDiagnosticsFromComponents(
+    diagnostics = SurfaceDiagnostics(
         u_component="10u",
         v_component="10v",
         temperature="2t",
@@ -177,14 +163,12 @@ def test_surface_diagnostics_subset_of_variables(data_dir):
     assert set(by_param) == {"10u", "10v", "2t", "2d", "SP_10M"}
 
     expected_speed = np.sqrt(u_values**2 + v_values**2)
-    np.testing.assert_allclose(
-        by_param["SP_10M"].to_numpy(flatten=True), expected_speed
-    )
+    np.testing.assert_allclose(by_param["SP_10M"].to_numpy(flatten=True), expected_speed)
 
 
 def test_surface_diagnostics_requires_at_least_one_variable():
     with pytest.raises(ValueError, match="at least one"):
-        SurfaceDiagnosticsFromComponents(
+        SurfaceDiagnostics(
             u_component="10u",
             v_component="10v",
             temperature="2t",
@@ -195,13 +179,14 @@ def test_surface_diagnostics_requires_at_least_one_variable():
 
 def test_surface_diagnostics_rejects_unknown_variable():
     with pytest.raises(ValueError, match="Unsupported variable"):
-        SurfaceDiagnosticsFromComponents(
+        SurfaceDiagnostics(
             u_component="10u",
             v_component="10v",
             temperature="2t",
             dewpoint="2d",
             variables=["TOT_PREC"],
         )
+
 
 def test_keep(caplog):
     fieldlist = new_fieldlist_from_list([ArrayField(np.zeros(4), RawMetadata({"param": p})) for p in ["t", "q", "z"]])

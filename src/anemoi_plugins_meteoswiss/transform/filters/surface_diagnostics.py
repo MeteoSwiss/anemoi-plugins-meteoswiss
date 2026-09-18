@@ -57,7 +57,7 @@ _SUPPORTED_VARIABLES: dict[str, tuple[str, ...]] = {
 }
 
 
-class SurfaceDiagnosticsFromComponents(MatchingFieldsFilter):
+class SurfaceDiagnostics(MatchingFieldsFilter):
     """Compute SP_10M/DD_10M/RELHUM_2M from U/V and temperature/dewpoint."""
 
     MATCHING = MatchingSpec(
@@ -81,16 +81,10 @@ class SurfaceDiagnosticsFromComponents(MatchingFieldsFilter):
             variables = [variables]
         variables = list(variables)
         if not variables:
-            raise ValueError(
-                "`variables` must list at least one of: "
-                f"{sorted(_SUPPORTED_VARIABLES)}."
-            )
+            raise ValueError(f"`variables` must list at least one of: {sorted(_SUPPORTED_VARIABLES)}.")
         unknown = set(variables) - set(_SUPPORTED_VARIABLES)
         if unknown:
-            raise ValueError(
-                f"Unsupported variable(s) {sorted(unknown)}; supported: "
-                f"{sorted(_SUPPORTED_VARIABLES)}."
-            )
+            raise ValueError(f"Unsupported variable(s) {sorted(unknown)}; supported: {sorted(_SUPPORTED_VARIABLES)}.")
 
         self.u_component = u_component
         self.v_component = v_component
@@ -140,9 +134,7 @@ class SurfaceDiagnosticsFromComponents(MatchingFieldsFilter):
             )
 
         if "RELHUM_2M" in self.variables:
-            rh = relative_humidity_from_dewpoint(
-                temperature.to_numpy(), dewpoint.to_numpy()
-            )
+            rh = relative_humidity_from_dewpoint(temperature.to_numpy(), dewpoint.to_numpy())
             yield self.new_field_from_numpy(
                 rh,
                 template=temperature,

@@ -213,8 +213,10 @@ class CopyPrognosticFromForecaster(Filter):
         out = []
         copied = []
         leads_copied: set[timedelta] = set()
-        for field in data:  # loop through each variable and look for prognostics to copy over.
-            name = field.metadata("param")
+        for (
+            field
+        ) in data:  # loop through each variable and look for prognostics to copy over.
+            name = field.metadata("name")
             lead = _leadtime(field)
             # Patch a field only if it is a requested prognostic AND sits at an
             # overlap step (lead a positive multiple of the stride)

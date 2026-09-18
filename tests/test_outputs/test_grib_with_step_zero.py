@@ -3,11 +3,13 @@ import datetime
 import earthkit.data as ekd
 import numpy as np
 import pytest
-from anemoi.inference.testing.variables import z as VAR_Z
+from anemoi.transform.variables import Variable
 
 from anemoi_plugins_meteoswiss.outputs import GribWithStepZero
 
 REFERENCE_DATE = datetime.datetime(2026, 8, 31, 0, 0)
+
+VAR_FIS = Variable.from_dict("FIS", {"mars": {"param": "FIS", "levtype": "sfc"}})
 
 
 class FakeContext:
@@ -22,7 +24,7 @@ class FakeMetadata:
     dataset_name = "test"
     typed_variables: dict = {}
     variables_metadata: dict = {}
-    accumulations = ["2t"]
+    accumulations = ["T_2M"]
     number_of_grid_points = 1147980
     grid = None
     area = None
@@ -39,7 +41,7 @@ def output(data_dir, tmp_path):
 
 
 def test_step_zero_template_index_keyed_by_param(output):
-    assert set(output.step_zero_template_index) == {"2t", "t", "wz"}
+    assert set(output.step_zero_template_index) == {"T_2M", "T", "W"}
 
 
 def test_write_initial_state_emits_zero_field_from_template(output, data_dir):
@@ -51,17 +53,17 @@ def test_write_initial_state_emits_zero_field_from_template(output, data_dir):
     assert len(written) == 1
 
     field = written[0]
-    assert field.metadata("shortName") == "2t"
+    assert field.metadata("shortName") == "T_2M"
     assert field.metadata("step") == 0
     assert field.metadata("dataDate") == 20260831
     assert field.metadata("dataTime") == 0
 
     values = field.to_numpy(flatten=True)
-    assert values.shape == (output.step_zero_template_index["2t"].shape[0],)
+    assert values.shape == (output.step_zero_template_index["T_2M"].shape[0],)
     assert np.all(values == 0)
 
     # Metadata not explicitly overridden is inherited from the template.
-    template = output.step_zero_template_index["2t"]
+    template = output.step_zero_template_index["T_2M"]
     assert field.metadata("gridType") == template.metadata("gridType")
     assert field.metadata("edition") == template.metadata("edition")
 
@@ -73,7 +75,7 @@ def test_write_initial_state_resolves_mars_param(data_dir, tmp_path):
 
     class FakeMetadataWithMars(FakeMetadata):
         accumulations = ["total_precip"]
-        variables_metadata = {"total_precip": {"mars": {"param": "t"}}}
+        variables_metadata = {"total_precip": {"mars": {"param": "T"}}}
 
     output = GribWithStepZero(
         FakeContext(),
@@ -87,7 +89,7 @@ def test_write_initial_state_resolves_mars_param(data_dir, tmp_path):
 
     written = list(ekd.from_source("file", output.out))
     assert len(written) == 1
-    assert written[0].metadata("shortName") == "t"
+    assert written[0].metadata("shortName") == "T"
 
 
 def test_write_initial_state_emits_one_message_per_accumulation(data_dir, tmp_path):
@@ -95,8 +97,8 @@ def test_write_initial_state_emits_one_message_per_accumulation(data_dir, tmp_pa
     message, resolved independently from the same template file(s)."""
 
     class FakeMetadataWithMultiple(FakeMetadata):
-        accumulations = ["2t", "total_precip"]
-        variables_metadata = {"total_precip": {"mars": {"param": "t"}}}
+        accumulations = ["T_2M", "total_precip"]
+        variables_metadata = {"total_precip": {"mars": {"param": "T"}}}
 
     output = GribWithStepZero(
         FakeContext(),
@@ -109,19 +111,19 @@ def test_write_initial_state_emits_one_message_per_accumulation(data_dir, tmp_pa
     output.close()
 
     written = list(ekd.from_source("file", output.out))
-    assert {f.metadata("shortName") for f in written} == {"2t", "t"}
+    assert {f.metadata("shortName") for f in written} == {"T_2M", "T"}
     assert all(f.metadata("step") == 0 for f in written)
 
 
 def test_write_initial_state_skips_field_already_present(output):
     state = {
         "date": REFERENCE_DATE,
-        "fields": {"2t": np.zeros(1)},
+        "fields": {"T_2M": np.zeros(1)},
         "step": datetime.timedelta(0),
     }
     # Scoped to the zero-step logic only: going through `write_initial_state`
     # here would also exercise GribFileOutput's own real-field writing path,
-    # which needs a resolvable `typed_variables["2t"]` that isn't relevant to
+    # which needs a resolvable `typed_variables["T_2M"]` that isn't relevant to
     # what this test is checking.
     output._write_zero_step_messages(state)
     output.close()
@@ -154,17 +156,17 @@ def test_write_initial_state_writes_real_and_zero_step_fields_to_same_file(outpu
     inherited GribFileOutput logic) and the synthetic zero-step field both
     end up in the same GRIB file."""
     templates = {f.metadata("param"): f for f in ekd.from_source("file", data_dir / "iaf2025010100")}
-    real_template = templates["t"]
+    real_template = templates["T"]
 
-    output.typed_variables = {"z": VAR_Z}
+    output.typed_variables = {"FIS": VAR_FIS}
     state = {
         "date": REFERENCE_DATE,
-        "fields": {"z": np.zeros(real_template.shape)},
+        "fields": {"FIS": np.zeros(real_template.shape)},
         "step": datetime.timedelta(0),
-        "_grib_templates_for_output": {"z": real_template},
+        "_grib_templates_for_output": {"FIS": real_template},
     }
     output.write_initial_state(state)
     output.close()
 
     written_params = {f.metadata("shortName") for f in ekd.from_source("file", output.out)}
-    assert written_params == {"z", "2t"}
+    assert written_params == {"FIS", "T_2M"}

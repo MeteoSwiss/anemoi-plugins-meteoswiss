@@ -3,6 +3,7 @@ from .copy_prognostic_from_forecaster import CopyPrognosticFromForecaster
 from .geopotential_from_height import GeopotentialFromHeight
 from .grid import AssignGrid
 from .iconremap import IconRemapToRegLatLon
+from .keep import Keep
 from .nudging import NudgeTowardObservation
 from .retrieve_observation import RetrieveObservation
 from .smoothing import GaussianSmoother
@@ -20,4 +21,5 @@ __all__ = [
     "RetrieveObservation",
     "IconRemapToRegLatLon",
     "GaussianSmoother",
+    "Keep",
 ]

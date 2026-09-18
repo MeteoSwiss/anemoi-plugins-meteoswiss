@@ -195,13 +195,9 @@ class NudgeTowardObservation(Filter):
         if run_mode not in ("devt", "depl"):
             raise ValueError(f"run_mode must be 'devt' or 'depl', got {run_mode!r}")
         if holdout_fraction is not None and exclude_stations is not None:
-            raise ValueError(
-                "holdout_fraction and exclude_stations are mutually exclusive; provide at most one."
-            )
+            raise ValueError("holdout_fraction and exclude_stations are mutually exclusive; provide at most one.")
         if holdout_fraction is not None and not (0.0 <= holdout_fraction <= 1.0):
-            raise ValueError(
-                f"holdout_fraction must be in [0, 1], got {holdout_fraction!r}"
-            )
+            raise ValueError(f"holdout_fraction must be in [0, 1], got {holdout_fraction!r}")
 
         self.obs_path = Path(obs_path)
         self.icon_grid_dir = Path(icon_grid_dir)
@@ -211,17 +207,13 @@ class NudgeTowardObservation(Filter):
         self.run_mode = run_mode
         self.holdout_fraction = holdout_fraction
         self.holdout_seed = holdout_seed
-        self.exclude_stations = (
-            list(exclude_stations) if exclude_stations is not None else None
-        )
+        self.exclude_stations = list(exclude_stations) if exclude_stations is not None else None
         self._nudging_done = False
 
         if nudge_variables is not None:
             unknown = set(nudge_variables) - PARAM_MAP.keys()
             if unknown:
-                raise ValueError(
-                    f"Unknown nudge variables: {unknown}. Valid: {list(PARAM_MAP)}"
-                )
+                raise ValueError(f"Unknown nudge variables: {unknown}. Valid: {list(PARAM_MAP)}")
             self.param_map = {k: PARAM_MAP[k] for k in nudge_variables}
         else:
             self.param_map = dict(PARAM_MAP)
@@ -308,12 +300,7 @@ class NudgeTowardObservation(Filter):
             )
             LOG.info("Nudged '%s' using %d stations", shortname, int(valid.sum()))
 
-        result = [
-            nudged.get(f.metadata("shortName"), f)
-            if f.datetime()["valid_time"] == ref_time
-            else f
-            for f in data
-        ]
+        result = [nudged.get(f.metadata("shortName"), f) if f.datetime()["valid_time"] == ref_time else f for f in data]
         self._nudging_done = True
         LOG.info("Nudging complete: %d/%d fields updated", len(nudged), len(result))
         return new_fieldlist_from_list(result)
@@ -335,12 +322,8 @@ class NudgeTowardObservation(Filter):
             before = len(stations)
             missing = [s for s in self.exclude_stations if s not in stations.index]
             if missing:
-                LOG.warning(
-                    "Excluded station IDs not found in observations: %s", missing
-                )
-            stations = stations.drop(
-                index=[s for s in self.exclude_stations if s in stations.index]
-            )
+                LOG.warning("Excluded station IDs not found in observations: %s", missing)
+            stations = stations.drop(index=[s for s in self.exclude_stations if s in stations.index])
             LOG.info(
                 "Excluded %d station(s) by ID: %s",
                 before - len(stations),
@@ -351,9 +334,7 @@ class NudgeTowardObservation(Filter):
             if self.holdout_fraction == 0.0:
                 LOG.info("holdout_fraction=0: all stations used.")
             elif self.holdout_fraction == 1.0:
-                LOG.info(
-                    "holdout_fraction=1: all stations withheld, nudging will have no effect."
-                )
+                LOG.info("holdout_fraction=1: all stations withheld, nudging will have no effect.")
                 stations = stations.iloc[0:0]
             else:
                 n_holdout = round(len(stations) * self.holdout_fraction)

@@ -4,18 +4,20 @@ import pytest
 import xarray as xr
 from anemoi.transform.fields import new_field_from_numpy
 from anemoi.transform.fields import new_fieldlist_from_list
+from earthkit.data.core.metadata import RawMetadata
+from earthkit.data.sources.array_list import ArrayField
 from scipy.interpolate import RegularGridInterpolator
 
 from anemoi_plugins_meteoswiss.transform import filters
 from anemoi_plugins_meteoswiss.transform.filters import GaussianSmoother
 from anemoi_plugins_meteoswiss.transform.filters import IconRemapToRegLatLon
+from anemoi_plugins_meteoswiss.transform.filters import Keep
+from anemoi_plugins_meteoswiss.transform.filters import ModelToPressureLevel
 from anemoi_plugins_meteoswiss.transform.filters.nudging import NudgeTowardObservation
 from anemoi_plugins_meteoswiss.transform.filters.nudging import barrier_distances
 from anemoi_plugins_meteoswiss.transform.filters.nudging import ned_interp
 
-ICONREMAP_WEIGHTS = (
-    "/store_new/mch/msopr/icon_workflow_2/iconremap-weights/icon-ch1-eps-rotlatlon.nc"
-)
+ICONREMAP_WEIGHTS = "/store_new/mch/msopr/icon_workflow_2/iconremap-weights/icon-ch1-eps-rotlatlon.nc"
 
 
 def test_filter_imports():
@@ -41,7 +43,7 @@ def test_icon_remap_to_reg_lat_lon(data_dir, hostname):
     assert regridder._longitudes.max() < 22.0
 
     fn = str(data_dir / "iaf2025010100")
-    fieldlist = ekd.from_source("file", fn).sel(shortName="2t")
+    fieldlist = ekd.from_source("file", fn).sel(shortName="T_2M")
 
     result = regridder.forward(fieldlist)
 
@@ -63,14 +65,12 @@ def test_gaussian_smoother(data_dir, hostname):
         pytest.skip("Only runs on Balfrin.")
 
     regridder = IconRemapToRegLatLon(ICONREMAP_WEIGHTS)
-    smoother = GaussianSmoother(sigma=5, params=["2t"])
+    smoother = GaussianSmoother(sigma=5, params=["T_2M"])
 
     fn = str(data_dir / "iaf2025010100")
     fs = ekd.from_source("file", fn)
     # T_2M (smoothed) + one level of W (pass-through, not in params)
-    fieldlist = new_fieldlist_from_list(
-        list(fs.sel(shortName="2t")) + [fs.sel(shortName="wz")[0]]
-    )
+    fieldlist = new_fieldlist_from_list(list(fs.sel(shortName="T_2M")) + [fs.sel(shortName="W")[0]])
 
     regridded = list(regridder.forward(fieldlist))
     synthetic = np.zeros((regridder.ny, regridder.nx))
@@ -105,9 +105,7 @@ def _make_mock_dem_rgi():
     x = np.linspace(2_500_000, 2_700_000, 50)
     y = np.linspace(1_100_000, 1_300_000, 50)
     z = np.full((len(y), len(x)), 100.0)
-    return RegularGridInterpolator(
-        (y, x), z, method="linear", bounds_error=False, fill_value=0.0
-    )
+    return RegularGridInterpolator((y, x), z, method="linear", bounds_error=False, fill_value=0.0)
 
 
 def _make_mock_transformer():
@@ -365,9 +363,7 @@ def test_compute_reliability_flags_outlier_station(tmp_path):
         patch.object(NudgeTowardObservation, "_load_icon_grid"),
         patch.object(NudgeTowardObservation, "_load_topo"),
         patch.object(NudgeTowardObservation, "_load_dem"),
-        patch.object(
-            NudgeTowardObservation, "_load_d_eff_cache", return_value=d_eff_sta_cache
-        ),
+        patch.object(NudgeTowardObservation, "_load_d_eff_cache", return_value=d_eff_sta_cache),
     ):
         filt = NudgeTowardObservation(
             obs_path=str(obs),
@@ -383,20 +379,8 @@ def test_compute_reliability_flags_outlier_station(tmp_path):
 
     # A single topo descriptor is enough to exercise ned_interp's topo-similarity
     # branch (its importance normalises to 1 trivially with only one descriptor).
-    sta_topo = xr.Dataset(
-        {
-            "ELEV": xr.DataArray(
-                st_elev.astype(np.float32), dims=["sta"], coords={"sta": sta_ids}
-            )
-        }
-    )
-    sta_res = xr.Dataset(
-        {
-            "T_2M": xr.DataArray(
-                r_at_st.astype(np.float32), dims=["sta"], coords={"sta": sta_ids}
-            )
-        }
-    )
+    sta_topo = xr.Dataset({"ELEV": xr.DataArray(st_elev.astype(np.float32), dims=["sta"], coords={"sta": sta_ids})})
+    sta_res = xr.Dataset({"T_2M": xr.DataArray(r_at_st.astype(np.float32), dims=["sta"], coords={"sta": sta_ids})})
 
     reliability = filt._compute_reliability(
         "T_2M",
@@ -448,9 +432,7 @@ def test_compute_reliability_isolated_station_does_not_poison_others(tmp_path):
         patch.object(NudgeTowardObservation, "_load_icon_grid"),
         patch.object(NudgeTowardObservation, "_load_topo"),
         patch.object(NudgeTowardObservation, "_load_dem"),
-        patch.object(
-            NudgeTowardObservation, "_load_d_eff_cache", return_value=d_eff_sta_cache
-        ),
+        patch.object(NudgeTowardObservation, "_load_d_eff_cache", return_value=d_eff_sta_cache),
     ):
         filt = NudgeTowardObservation(
             obs_path=str(obs),
@@ -464,20 +446,8 @@ def test_compute_reliability_isolated_station_does_not_poison_others(tmp_path):
     filt._dem_rgi = _make_mock_dem_rgi()
     filt._wgs84_to_lv95 = transformer
 
-    sta_topo = xr.Dataset(
-        {
-            "ELEV": xr.DataArray(
-                st_elev.astype(np.float32), dims=["sta"], coords={"sta": sta_ids}
-            )
-        }
-    )
-    sta_res = xr.Dataset(
-        {
-            "T_2M": xr.DataArray(
-                r_at_st.astype(np.float32), dims=["sta"], coords={"sta": sta_ids}
-            )
-        }
-    )
+    sta_topo = xr.Dataset({"ELEV": xr.DataArray(st_elev.astype(np.float32), dims=["sta"], coords={"sta": sta_ids})})
+    sta_res = xr.Dataset({"T_2M": xr.DataArray(r_at_st.astype(np.float32), dims=["sta"], coords={"sta": sta_ids})})
 
     reliability = filt._compute_reliability(
         "T_2M",
@@ -492,9 +462,25 @@ def test_compute_reliability_isolated_station_does_not_poison_others(tmp_path):
     values = reliability.values
 
     assert not np.any(np.isnan(values)), f"NaN leaked into reliability: {values}"
-    assert values[-1] == 1.0, (
-        f"isolated station should default to reliability=1.0, got {values[-1]}"
-    )
-    assert np.all(values[:-1] > 0.5), (
-        f"consistent cluster stations should stay trusted, got {values[:-1]}"
-    )
+    assert values[-1] == 1.0, f"isolated station should default to reliability=1.0, got {values[-1]}"
+    assert np.all(values[:-1] > 0.5), f"consistent cluster stations should stay trusted, got {values[:-1]}"
+
+
+def test_keep(caplog):
+    fieldlist = new_fieldlist_from_list([ArrayField(np.zeros(4), RawMetadata({"param": p})) for p in ["t", "q", "z"]])
+
+    kept = Keep(param=["t", "z"]).forward(fieldlist)
+    assert [f.metadata("param") for f in kept] == ["t", "z"]
+
+    with caplog.at_level("WARNING"):
+        Keep(param=["t", "missing"]).forward(fieldlist)
+    assert "missing" in caplog.text
+
+
+def test_pipe_or_fdb_xarray_returns_piped_value_when_present(data_dir):
+    fn = str(data_dir / "iaf2025010100")
+    fieldlist = ekd.from_source("file", fn).sel(shortName="T_2M")
+
+    interpolator = ModelToPressureLevel(interpolate_levels=[500])
+    da = interpolator._get_field(fieldlist, "T_2M").to_xarray()["T_2M"]
+    assert da.shape == (1147980,)

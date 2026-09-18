@@ -105,13 +105,10 @@ class RetrieveObservation(Filter):
         if run_mode not in ("devt", "depl"):
             raise ValueError(f"run_mode must be 'devt' or 'depl', got {run_mode!r}")
         if station_group is not None and retrieval_bbox is not None:
-            raise ValueError(
-                "Specify at most one of 'station_group' or 'retrieval_bbox', not both."
-            )
+            raise ValueError("Specify at most one of 'station_group' or 'retrieval_bbox', not both.")
         if station_filter_mode not in (None, "domain", "switzerland"):
             raise ValueError(
-                f"station_filter_mode must be None, 'domain', or 'switzerland', "
-                f"got {station_filter_mode!r}"
+                f"station_filter_mode must be None, 'domain', or 'switzerland', got {station_filter_mode!r}"
             )
         if station_filter_mode == "domain" and trim_bbox is None:
             raise ValueError("trim_bbox is required when station_filter_mode='domain'.")
@@ -120,9 +117,7 @@ class RetrieveObservation(Filter):
         self.jretrieve_src_path = str(jretrieve_src_path)
         self.station_group = station_group
         self.retrieval_bbox = (
-            retrieval_bbox
-            if (retrieval_bbox is not None or station_group is not None)
-            else [40.5, 53.0, 0.0, 17.5]
+            retrieval_bbox if (retrieval_bbox is not None or station_group is not None) else [40.5, 53.0, 0.0, 17.5]
         )
         self.use_limitation = use_limitation
         self.run_mode = run_mode
@@ -132,9 +127,7 @@ class RetrieveObservation(Filter):
         if variables is not None:
             unknown = set(variables) - _PARAM_TO_COL.keys()
             if unknown:
-                raise ValueError(
-                    f"Unknown variables: {unknown}. Valid: {list(_PARAM_TO_COL)}"
-                )
+                raise ValueError(f"Unknown variables: {unknown}. Valid: {list(_PARAM_TO_COL)}")
             self.cols = {_PARAM_TO_COL[v] for v in variables}
         else:
             self.cols = set(_PARAM_TO_COL.values())
@@ -168,20 +161,14 @@ class RetrieveObservation(Filter):
             sys.path.insert(0, self.jretrieve_src_path)
         import jretrieve as jr
 
-        jr_params = list(
-            dict.fromkeys(
-                p for col in self.cols for p in _COL_TO_JR_PARAMS.get(col, [])
-            )
-        )
+        jr_params = list(dict.fromkeys(p for col in self.cols for p in _COL_TO_JR_PARAMS.get(col, [])))
         if not jr_params:
             raise ValueError(f"No jretrieve parameters found for columns: {self.cols}")
 
         jr.check_prerequisites()
 
         stations_sel = (
-            {"group": self.station_group}
-            if self.station_group is not None
-            else {"bbox": self.retrieval_bbox}
+            {"group": self.station_group} if self.station_group is not None else {"bbox": self.retrieval_bbox}
         )
         meta = jr.fetch_meta(stations=stations_sel, params=jr_params)
         catalog = jr.StationCatalog.from_meta(meta)
@@ -197,18 +184,10 @@ class RetrieveObservation(Filter):
             stage="prod",
         )
 
-        df["nat_abbr"] = df["station"].map(
-            dict(zip(catalog.station_id, catalog.nat_abbr))
-        )
-        df["latitude"] = df["station"].map(
-            dict(zip(catalog.station_id, catalog.latitude))
-        )
-        df["longitude"] = df["station"].map(
-            dict(zip(catalog.station_id, catalog.longitude))
-        )
-        df["elevation"] = df["station"].map(
-            dict(zip(catalog.station_id, catalog.elevation))
-        )
+        df["nat_abbr"] = df["station"].map(dict(zip(catalog.station_id, catalog.nat_abbr)))
+        df["latitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.latitude)))
+        df["longitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.longitude)))
+        df["elevation"] = df["station"].map(dict(zip(catalog.station_id, catalog.elevation)))
         df = df.dropna(subset=["nat_abbr"]).set_index("nat_abbr")
         df.index.name = "station"
 
@@ -242,9 +221,7 @@ class RetrieveObservation(Filter):
         for col in _PARAM_TO_COL.values():
             if col in df.columns:
                 n_valid = int(df[col].notna().sum())
-                LOG.info(
-                    "Stations with valid %s: %d / %d stations", col, n_valid, len(df)
-                )
+                LOG.info("Stations with valid %s: %d / %d stations", col, n_valid, len(df))
 
         Path(self.obs_path).parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(self.obs_path)
@@ -269,14 +246,8 @@ class RetrieveObservation(Filter):
             import cartopy.io.shapereader as shpreader
             from shapely.geometry import Point
 
-            shp_path = shpreader.natural_earth(
-                resolution="10m", category="cultural", name="admin_0_countries"
-            )
-            ch_country = next(
-                r
-                for r in shpreader.Reader(shp_path).records()
-                if r.attributes["ADM0_A3"] == "CHE"
-            )
+            shp_path = shpreader.natural_earth(resolution="10m", category="cultural", name="admin_0_countries")
+            ch_country = next(r for r in shpreader.Reader(shp_path).records() if r.attributes["ADM0_A3"] == "CHE")
             swiss_geom = ch_country.geometry
 
             def _in_switzerland(lat, lon):
@@ -284,16 +255,12 @@ class RetrieveObservation(Filter):
                     return False
                 return swiss_geom.contains(Point(lon, lat))
 
-            mask = [
-                _in_switzerland(lat, lon)
-                for lat, lon in zip(df["latitude"], df["longitude"])
-            ]
+            mask = [_in_switzerland(lat, lon) for lat, lon in zip(df["latitude"], df["longitude"])]
             desc = "Swiss national border (Natural Earth)"
 
         else:
             raise ValueError(
-                f"Unknown station_filter_mode: {self.station_filter_mode!r} "
-                "(expected None, 'domain', or 'switzerland')"
+                f"Unknown station_filter_mode: {self.station_filter_mode!r} (expected None, 'domain', or 'switzerland')"
             )
 
         n_before = len(df)

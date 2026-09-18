@@ -62,9 +62,7 @@ DEFAULT_DWH_PARAMS = [
     "fkl010z1",
 ]
 DEFAULT_JRETRIEVE_SRC_PATH = "/scratch/mch/llanzila/sruc/evalml/src"
-DEFAULT_ICON_GRID_FILE = (
-    "/scratch/mch/llanzila/sruc/aux_files/icon_grid_0001_R19B08_mch.nc"
-)
+DEFAULT_ICON_GRID_FILE = "/scratch/mch/llanzila/sruc/aux_files/icon_grid_0001_R19B08_mch.nc"
 DEFAULT_DEM_BARRIER_FILE = "/store_new/mch/msclim/appclim/data/grids/topodem/v2/topo/radar_100/topo_DEM_1000M.nc"
 DEFAULT_OUTPUT_DIR = "/scratch/mch/llanzila/sruc/aux_files"
 
@@ -193,9 +191,7 @@ def load_dem(dem_barrier_file: str) -> tuple[RegularGridInterpolator, Transforme
     dem_ds = xr.open_dataset(dem_barrier_file)
     # Replace NaN (ocean / no-data) with 0 m so out-of-domain path segments
     # don't produce NaN barriers.
-    dem_z = np.where(
-        np.isnan(dem_ds["DEM_1000M"].values), 0.0, dem_ds["DEM_1000M"].values
-    )
+    dem_z = np.where(np.isnan(dem_ds["DEM_1000M"].values), 0.0, dem_ds["DEM_1000M"].values)
     # RGI axes must match the DEM array layout: first axis = y (northing,
     # rows), second = x (easting, cols).
     dem_rgi = RegularGridInterpolator(
@@ -207,9 +203,7 @@ def load_dem(dem_barrier_file: str) -> tuple[RegularGridInterpolator, Transforme
     )
     # always_xy=True: input order is (longitude, latitude) -> output is (easting, northing).
     wgs84_to_lv95 = Transformer.from_crs("EPSG:4326", "EPSG:2056", always_xy=True)
-    LOG.info(
-        "DEM loaded: shape=%s from %s", dem_ds["DEM_1000M"].shape, dem_barrier_file
-    )
+    LOG.info("DEM loaded: shape=%s from %s", dem_ds["DEM_1000M"].shape, dem_barrier_file)
     return dem_rgi, wgs84_to_lv95
 
 
@@ -241,9 +235,7 @@ def fetch_station_catalog(
         },
         index=pd.Index(catalog.nat_abbr, name="station"),
     )
-    LOG.info(
-        "Retrieved %d stations from jretrieve (domain=%s).", len(stations), stations_sel
-    )
+    LOG.info("Retrieved %d stations from jretrieve (domain=%s).", len(stations), stations_sel)
     return stations
 
 
@@ -266,14 +258,8 @@ def trim_stations(
         import cartopy.io.shapereader as shpreader
         from shapely.geometry import Point
 
-        shp_path = shpreader.natural_earth(
-            resolution="10m", category="cultural", name="admin_0_countries"
-        )
-        ch_country = next(
-            r
-            for r in shpreader.Reader(shp_path).records()
-            if r.attributes["ADM0_A3"] == "CHE"
-        )
+        shp_path = shpreader.natural_earth(resolution="10m", category="cultural", name="admin_0_countries")
+        ch_country = next(r for r in shpreader.Reader(shp_path).records() if r.attributes["ADM0_A3"] == "CHE")
         swiss_geom = ch_country.geometry
 
         def _in_switzerland(lat, lon):
@@ -281,16 +267,11 @@ def trim_stations(
                 return False
             return swiss_geom.contains(Point(lon, lat))
 
-        mask = [
-            _in_switzerland(lat, lon)
-            for lat, lon in zip(stations["latitude"], stations["longitude"])
-        ]
+        mask = [_in_switzerland(lat, lon) for lat, lon in zip(stations["latitude"], stations["longitude"])]
         desc = "Swiss national border (Natural Earth)"
 
     else:
-        raise ValueError(
-            f"Unknown station_filter_mode: {mode!r} (expected 'domain' or 'switzerland')"
-        )
+        raise ValueError(f"Unknown station_filter_mode: {mode!r} (expected 'domain' or 'switzerland')")
 
     n_before = len(stations)
     stations = stations[mask]
@@ -324,9 +305,7 @@ def save_station_plot(
             stations["latitude"].max() + pad,
         ]
 
-        fig, ax = plt.subplots(
-            figsize=(9, 6), subplot_kw={"projection": ccrs.PlateCarree()}
-        )
+        fig, ax = plt.subplots(figsize=(9, 6), subplot_kw={"projection": ccrs.PlateCarree()})
         ax.set_extent(extent, crs=ccrs.PlateCarree())
         ax.add_feature(cfeature.LAND, facecolor="#f5f5f0", zorder=0)
         ax.add_feature(cfeature.OCEAN, facecolor="#c8dff0", alpha=0.6, zorder=0)
@@ -363,9 +342,7 @@ def save_station_plot(
             )
 
         ax.gridlines(draw_labels=True, linewidth=0.3, alpha=0.4)
-        ax.set_title(
-            f"Stations considered for d_eff (mode={mode!r}, n={len(stations)})"
-        )
+        ax.set_title(f"Stations considered for d_eff (mode={mode!r}, n={len(stations)})")
 
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -392,9 +369,7 @@ def cache_key(
     change to one of these must invalidate the cache."""
     dem_stat = Path(dem_barrier_file).stat()
     grid_stat = Path(icon_grid_file).stat()
-    sta_identity = (
-        stations[["latitude", "longitude", "elevation"]].sort_index().round(6).to_csv()
-    )
+    sta_identity = stations[["latitude", "longitude", "elevation"]].sort_index().round(6).to_csv()
 
     payload = {
         "dem_file": str(dem_barrier_file),
@@ -477,9 +452,7 @@ def build_d_eff(
     n_sta = len(sta_ids)
 
     # ── POI <-> station ──────────────────────────────────────────────────
-    d_euc_poi = np.sqrt(
-        ((poi_xy[:, None, :] - sta_xy[None, :, :]) ** 2).sum(axis=-1)
-    ).astype(np.float32)
+    d_euc_poi = np.sqrt(((poi_xy[:, None, :] - sta_xy[None, :, :]) ** 2).sum(axis=-1)).astype(np.float32)
     d_eff_poi = np.empty_like(d_euc_poi)
     for start in range(0, n_sta, PROGRESS_EVERY):
         end = min(start + PROGRESS_EVERY, n_sta)
@@ -508,9 +481,7 @@ def build_d_eff(
     )
 
     # ── Station <-> station (for compute_reliability's leave-one-out check) ──
-    d_euc_sta = np.sqrt(
-        ((sta_xy[:, None, :] - sta_xy[None, :, :]) ** 2).sum(axis=-1)
-    ).astype(np.float32)
+    d_euc_sta = np.sqrt(((sta_xy[:, None, :] - sta_xy[None, :, :]) ** 2).sum(axis=-1)).astype(np.float32)
     np.fill_diagonal(d_euc_sta, np.inf)  # a station is never its own neighbour
     d_eff_sta = np.empty_like(d_euc_sta)
     for start in range(0, n_sta, PROGRESS_EVERY):
@@ -549,9 +520,7 @@ def build_d_eff(
 
 
 def main(argv: list[str] | None = None) -> None:
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     args = parse_args(argv)
     # --max-dist is given in meters at the CLI; converted to km once here —
     # every downstream function (cache_key, cache_file_path, build_d_eff,
@@ -584,9 +553,7 @@ def main(argv: list[str] | None = None) -> None:
     stations = trim_stations(stations, args.station_filter_mode, args.domain_bbox)
 
     if args.plot_out:
-        save_station_plot(
-            stations, args.station_filter_mode, args.domain_bbox, args.plot_out
-        )
+        save_station_plot(stations, args.station_filter_mode, args.domain_bbox, args.plot_out)
 
     out_file = cache_file_path(
         args.output_dir,
@@ -614,11 +581,7 @@ def main(argv: list[str] | None = None) -> None:
         max_dist_km,
     )
     existing = xr.open_dataset(out_file) if out_file.exists() else None
-    cache_hit = (
-        not args.force
-        and existing is not None
-        and existing.attrs.get("cache_key") == key
-    )
+    cache_hit = not args.force and existing is not None and existing.attrs.get("cache_key") == key
 
     if cache_hit:
         d_eff_poi_full = existing["d_eff_poi"].load()
@@ -626,8 +589,7 @@ def main(argv: list[str] | None = None) -> None:
         meta = dict(existing.attrs)
         existing.close()
         LOG.info(
-            "d_eff cache HIT (%s): loaded POI x station %s and station x station %s "
-            "— barrier_distances() skipped.",
+            "d_eff cache HIT (%s): loaded POI x station %s and station x station %s — barrier_distances() skipped.",
             out_file,
             d_eff_poi_full.shape,
             d_eff_sta_full.shape,
@@ -639,8 +601,7 @@ def main(argv: list[str] | None = None) -> None:
             "d_eff cache MISS%s — computing full d_eff matrices...",
             " (--force)"
             if args.force
-            else " (missing, or DEM/grid/station-catalog/"
-            "hyperparameters changed since it was built)",
+            else " (missing, or DEM/grid/station-catalog/hyperparameters changed since it was built)",
         )
 
         d_eff_poi_full, d_eff_sta_full = build_d_eff(

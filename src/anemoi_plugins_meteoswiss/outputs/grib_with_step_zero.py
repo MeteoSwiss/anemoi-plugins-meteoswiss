@@ -87,9 +87,7 @@ class GribWithStepZero(GribFileOutput):
         super().__init__(context, metadata, **kwargs)
         self.step_zero_template = step_zero_template
         self.step_zero_accumulations = (
-            step_zero_accumulations
-            if step_zero_accumulations is not None
-            else list(metadata.accumulations)
+            step_zero_accumulations if step_zero_accumulations is not None else list(metadata.accumulations)
         )
         LOG.info(
             "[grib-with-step-zero] init: step_zero_template=%s step_zero_accumulations=%s",
@@ -102,9 +100,7 @@ class GribWithStepZero(GribFileOutput):
         """The reference GRIB file(s), indexed by GRIB param name."""
         files = sorted(glob.glob(self.step_zero_template))
         if not files:
-            raise FileNotFoundError(
-                f"grib-with-step-zero: no template file(s) match {self.step_zero_template!r}"
-            )
+            raise FileNotFoundError(f"grib-with-step-zero: no template file(s) match {self.step_zero_template!r}")
         index: dict[str, ekd.Field] = {}
         for f in ekd.from_source("file", files):
             name = f.metadata("param")

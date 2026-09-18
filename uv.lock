@@ -99,6 +99,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anemoi-datasets" },
+    { name = "anemoi-inference" },
     { name = "anemoi-plugins" },
     { name = "anemoi-transform" },
     { name = "earthkit-data" },
@@ -126,6 +127,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anemoi-datasets" },
+    { name = "anemoi-inference" },
     { name = "anemoi-inference", marker = "extra == 'oper-inference'", specifier = ">=0.11" },
     { name = "anemoi-plugins", specifier = "==0.2.0" },
     { name = "anemoi-plugins-ecmwf-inference", extras = ["opendata"], marker = "extra == 'oper-inference'", specifier = ">=0.5.0" },

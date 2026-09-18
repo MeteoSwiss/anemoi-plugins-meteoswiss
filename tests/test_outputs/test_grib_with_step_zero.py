@@ -149,16 +149,11 @@ def test_write_initial_state_raises_on_grid_shape_mismatch(data_dir, tmp_path):
         output.write_initial_state(state)
 
 
-def test_write_initial_state_writes_real_and_zero_step_fields_to_same_file(
-    output, data_dir
-):
+def test_write_initial_state_writes_real_and_zero_step_fields_to_same_file(output, data_dir):
     """The whole point of this output: a real field (written by the
     inherited GribFileOutput logic) and the synthetic zero-step field both
     end up in the same GRIB file."""
-    templates = {
-        f.metadata("param"): f
-        for f in ekd.from_source("file", data_dir / "iaf2025010100")
-    }
+    templates = {f.metadata("param"): f for f in ekd.from_source("file", data_dir / "iaf2025010100")}
     real_template = templates["t"]
 
     output.typed_variables = {"z": VAR_Z}
@@ -171,7 +166,5 @@ def test_write_initial_state_writes_real_and_zero_step_fields_to_same_file(
     output.write_initial_state(state)
     output.close()
 
-    written_params = {
-        f.metadata("shortName") for f in ekd.from_source("file", output.out)
-    }
+    written_params = {f.metadata("shortName") for f in ekd.from_source("file", output.out)}
     assert written_params == {"z", "2t"}

@@ -13,8 +13,6 @@ dependencies = [
     "peakweather==0.2.2",
     "earthkit-data==0.19.2",
     "earthkit-utils ==1.0.2",
-    "matplotlib",
-    "cartopy",
     "eccodes-cosmo-resources-python",
 ]
 
@@ -25,6 +23,10 @@ oper-inference = [
     "ecmwf-opendata",
     "filelock",
     "requests",
+]
+plotting = [
+    "matplotlib",
+    "cartopy",
 ]
 
 [project.scripts]

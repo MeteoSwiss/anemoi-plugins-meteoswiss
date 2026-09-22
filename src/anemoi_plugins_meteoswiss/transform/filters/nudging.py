@@ -1587,6 +1587,13 @@ class NudgeTowardObservation(Filter):
             fig.savefig(out_path, dpi=150, bbox_inches="tight")
             plt.close(fig)
             LOG.info("Saved reliability diagnostic plot for '%s' to %s", shortname, out_path)
+        except ImportError as e:
+            LOG.warning(
+                "Skipping reliability diagnostic plot for '%s': %s not installed "
+                "(the nudging correction itself is unaffected).",
+                shortname,
+                e.name or e,
+            )
         except Exception:
             LOG.exception(
                 "Reliability diagnostic plot failed for '%s'; continuing without it "

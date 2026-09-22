@@ -101,12 +101,10 @@ dependencies = [
     { name = "anemoi-datasets" },
     { name = "anemoi-plugins" },
     { name = "anemoi-transform" },
-    { name = "cartopy" },
     { name = "earthkit-data" },
     { name = "earthkit-meteo" },
     { name = "earthkit-utils" },
     { name = "eccodes-cosmo-resources-python" },
-    { name = "matplotlib" },
     { name = "peakweather" },
 ]
 
@@ -117,6 +115,10 @@ oper-inference = [
     { name = "ecmwf-opendata" },
     { name = "filelock" },
     { name = "requests" },
+]
+plotting = [
+    { name = "cartopy" },
+    { name = "matplotlib" },
 ]
 
 [package.dev-dependencies]
@@ -132,18 +134,18 @@ requires-dist = [
     { name = "anemoi-plugins", specifier = "==0.2.0" },
     { name = "anemoi-plugins-ecmwf-inference", extras = ["opendata"], marker = "extra == 'oper-inference'", specifier = ">=0.5.0" },
     { name = "anemoi-transform" },
-    { name = "cartopy" },
+    { name = "cartopy", marker = "extra == 'plotting'" },
     { name = "earthkit-data", specifier = "==0.19.2" },
     { name = "earthkit-meteo", specifier = "==1.0.0" },
     { name = "earthkit-utils", specifier = "==1.0.2" },
     { name = "eccodes-cosmo-resources-python" },
     { name = "ecmwf-opendata", marker = "extra == 'oper-inference'" },
     { name = "filelock", marker = "extra == 'oper-inference'" },
-    { name = "matplotlib" },
+    { name = "matplotlib", marker = "extra == 'plotting'" },
     { name = "peakweather", specifier = "==0.2.2" },
     { name = "requests", marker = "extra == 'oper-inference'" },
 ]
-provides-extras = ["oper-inference"]
+provides-extras = ["oper-inference", "plotting"]
 
 [package.metadata.requires-dev]
 dev = [

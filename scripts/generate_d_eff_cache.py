@@ -244,6 +244,17 @@ def trim_stations(
     mode: str,
     domain_bbox: list[float],
 ) -> pd.DataFrame:
+    requested_mode = mode
+    if mode == "switzerland":
+        try:
+            import cartopy.io.shapereader  # noqa: F401
+        except ImportError:
+            LOG.warning(
+                "cartopy is not installed — cannot filter to the Swiss national "
+                "border; falling back to station_filter_mode='domain'."
+            )
+            mode = "domain"
+
     if mode == "domain":
         lat_min, lat_max, lon_min, lon_max = domain_bbox
         mask = (
@@ -252,7 +263,11 @@ def trim_stations(
             & (stations["longitude"] >= lon_min)
             & (stations["longitude"] <= lon_max)
         )
-        desc = f"domain bbox {domain_bbox}"
+        desc = (
+            f"domain bbox {domain_bbox}"
+            if requested_mode == "domain"
+            else f"domain bbox {domain_bbox} (cartopy unavailable, fell back from 'switzerland')"
+        )
 
     elif mode == "switzerland":
         import cartopy.io.shapereader as shpreader
@@ -349,6 +364,11 @@ def save_station_plot(
         fig.savefig(out_path, dpi=150, bbox_inches="tight")
         plt.close(fig)
         LOG.info("Saved station map to %s", out_path)
+    except ImportError as e:
+        LOG.warning(
+            "Skipping station map: %s not installed (the cache itself is unaffected).",
+            e.name or e,
+        )
     except Exception:
         LOG.exception("Station map plotting failed; continuing without it.")
 
@@ -470,7 +490,7 @@ def build_d_eff(
             elev_scale=elev_scale_km,
             elev_diff_scale=elev_diff_scale_km,
             n_barrier_width_samples=n_barrier_width_samples,
-            barrier_width_m=barrier_width_m,
+            barrier_width=barrier_width_m,
         )
         LOG.info("d_eff_poi: %d/%d stations processed", end, n_sta)
     d_eff_poi_full = xr.DataArray(
@@ -503,7 +523,7 @@ def build_d_eff(
             elev_scale=elev_scale_km,
             elev_diff_scale=elev_diff_scale_km,
             n_barrier_width_samples=n_barrier_width_samples,
-            barrier_width_m=barrier_width_m,
+            barrier_width=barrier_width_m,
         )
         LOG.info("d_eff_sta: %d/%d stations processed", end, n_sta)
     # dim named "sta_i" (not "poi"): keeps this matrix's coordinate (station

@@ -48,7 +48,7 @@ class RetrieveObservation(Filter):
     obs_path : str
         Path where the output Parquet file will be written.
     jretrieve_src_path : str
-        Directory containing ``jretrieve.py``.
+        Directory containing the ``data_input`` package (``data_input/jretrieve.py``).
     station_group : str, optional
         DWH station group IDs (comma-separated) passed to jretrieve
         ``-a stn_group_id``. Mutually exclusive with ``retrieval_bbox``.
@@ -159,7 +159,7 @@ class RetrieveObservation(Filter):
     def _retrieve(self, ref_time) -> None:
         if self.jretrieve_src_path not in sys.path:
             sys.path.insert(0, self.jretrieve_src_path)
-        import jretrieve as jr
+        from data_input import jretrieve as jr
 
         jr_params = list(dict.fromkeys(p for col in self.cols for p in _COL_TO_JR_PARAMS.get(col, [])))
         if not jr_params:
@@ -232,7 +232,23 @@ class RetrieveObservation(Filter):
         the station-trim cell in notebooks/d_eff_generator.ipynb, so the
         stations retrieved here stay in sync with whatever
         NudgeTowardObservation's d_eff_file cache was built from."""
-        if self.station_filter_mode == "domain":
+        mode = self.station_filter_mode
+        if mode == "switzerland":
+            try:
+                import cartopy.io.shapereader  # noqa: F401
+            except ImportError:
+                LOG.warning(
+                    "cartopy is not installed — cannot filter to the Swiss national "
+                    "border; falling back to station_filter_mode='domain'."
+                )
+                mode = "domain"
+                if self.trim_bbox is None:
+                    LOG.warning(
+                        "No trim_bbox configured for the domain fallback either — skipping station trimming entirely."
+                    )
+                    return df
+
+        if mode == "domain":
             lat_min, lat_max, lon_min, lon_max = self.trim_bbox
             mask = (
                 (df["latitude"] >= lat_min)
@@ -240,9 +256,13 @@ class RetrieveObservation(Filter):
                 & (df["longitude"] >= lon_min)
                 & (df["longitude"] <= lon_max)
             )
-            desc = f"domain bbox {self.trim_bbox}"
+            desc = (
+                f"domain bbox {self.trim_bbox}"
+                if self.station_filter_mode == "domain"
+                else f"domain bbox {self.trim_bbox} (cartopy unavailable, fell back from 'switzerland')"
+            )
 
-        elif self.station_filter_mode == "switzerland":
+        elif mode == "switzerland":
             import cartopy.io.shapereader as shpreader
             from shapely.geometry import Point
 

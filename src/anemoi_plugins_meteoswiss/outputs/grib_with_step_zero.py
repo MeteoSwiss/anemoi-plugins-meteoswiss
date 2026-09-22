@@ -72,8 +72,8 @@ class GribWithStepZero(GribFileOutput):
             from, e.g. the operational reference file for this stream. Must
             contain one message per variable in ``step_zero_accumulations``
             (matched by anemoi variable name / GRIB ``param``), on the same
-            grid as this run (checked against ``metadata.number_of_grid_points``
-            and rejected otherwise). Distinct from the base output's own
+            grid as this run (checked against the shape of the state and
+            rejected otherwise). Distinct from the base output's own
             ``templates:`` param, which resolves templates for every other
             (non step-0-synthesized) message.
         step_zero_accumulations:
@@ -148,13 +148,13 @@ class GribWithStepZero(GribFileOutput):
                     f"(available: {sorted(self.step_zero_template_index)})"
                 )
 
-            expected_shape = (self.metadata.number_of_grid_points,)
+            expected_shape = (len(state["latitudes"]),)
             if template.shape != expected_shape:
                 raise ValueError(
                     f"grib-with-step-zero: template field for {name!r} (param {param!r}) "
                     f"in {self.step_zero_template!r} has shape {template.shape}, but this "
-                    f"run's grid has {expected_shape[0]} points. The template file likely "
-                    "comes from a different domain or resolution."
+                    f"run's state has {expected_shape[0]} grid points. The template file "
+                    "likely comes from a different domain or resolution."
                 )
 
             values = np.zeros(template.shape, dtype=float)

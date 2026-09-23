@@ -114,6 +114,9 @@ _DEFAULT_TEMPERATURE_LAPSE_RATE_VARS = frozenset({"T_2M"})
 _DEFAULT_PRESSURE_LAPSE_RATE = 11.5  # Pa/m
 _DEFAULT_PRESSURE_LAPSE_RATE_VARS = frozenset({"PS"})
 
+# Relative to the working directory (the inference run directory in deployment).
+_DEFAULT_PLOT_DIR = "output/nudging_reliability_diagnostics"
+
 # Cosmetic only — never affects the nudging correction itself.
 _DIAG_COLORBAR_PERCENTILE = 90
 
@@ -484,8 +487,11 @@ class NudgeTowardObservation(Filter):
         diagnostic PNG per (variable, ref_time) — see
         ``_plot_reliability_diagnostic``:
         ``{plot_dir}/reliability_diag_{shortname}_{ref_time:%Y%m%d%H%M}.png``.
-        Only effective when *use_reliability_check* is ``True``. Defaults to
-        ``None``. Plotting failures are logged and swallowed.
+        Only effective when *use_reliability_check* is ``True``; the
+        directory is created only in that case. Defaults to
+        ``output/nudging_reliability_diagnostics`` (relative to the working
+        directory); ``None`` disables plotting. Plotting failures are logged
+        and swallowed.
     plot_extent : list of float, optional
         ``[lon_min, lon_max, lat_min, lat_max]`` map extent for the
         diagnostic plot. Defaults to ``[5.8, 10.8, 45.7, 47.9]``
@@ -510,7 +516,7 @@ class NudgeTowardObservation(Filter):
         reliability_min_dist_frac: float = 0.05,
         reliability_eps: float = 1e-6,
         enable_plotting: bool = True,
-        plot_dir: Optional[str] = None,
+        plot_dir: Optional[str] = _DEFAULT_PLOT_DIR,
         plot_extent: Optional[list] = None,
         temperature_lapse_rate: float = _DEFAULT_TEMPERATURE_LAPSE_RATE,
         temperature_lapse_rate_vars: Optional[list] = None,
@@ -582,18 +588,15 @@ class NudgeTowardObservation(Filter):
         self._nudging_done = False
         self._reliability_diag = {}
 
-        if self.plot_dir is not None and self.enable_plotting:
+        # plot_dir has a non-None default, so only create it when plots will actually be written.
+        if self.plot_dir is not None and self.enable_plotting and self.use_reliability_check:
             self.plot_dir.mkdir(parents=True, exist_ok=True)
-            if not self.use_reliability_check:
-                LOG.warning(
-                    "plot_dir=%s is set but use_reliability_check=False — there is no "
-                    "reliability to plot, so no diagnostic plots will be produced.",
-                    self.plot_dir,
-                )
-        elif self.plot_dir is not None and not self.enable_plotting:
+        elif self.plot_dir is not None:
             LOG.info(
-                "plot_dir=%s is set but enable_plotting=False — no diagnostic plots "
-                "will be produced (the directory is not created).",
+                "No diagnostic plots will be produced (enable_plotting=%s, use_reliability_check=%s); "
+                "plot_dir=%s is not created.",
+                self.enable_plotting,
+                self.use_reliability_check,
                 self.plot_dir,
             )
 

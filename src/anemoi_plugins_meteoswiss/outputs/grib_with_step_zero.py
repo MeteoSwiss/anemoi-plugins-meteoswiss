@@ -72,8 +72,8 @@ class GribWithStepZero(GribFileOutput):
             from, e.g. the operational reference file for this stream. Must
             contain one message per variable in ``step_zero_accumulations``
             (matched by anemoi variable name / GRIB ``param``), on the same
-            grid as this run (checked against the shape of the state and
-            rejected otherwise). Distinct from the base output's own
+            grid as this run (checked against the shape of the post-processed
+            state and rejected otherwise). Distinct from the base output's own
             ``templates:`` param, which resolves templates for every other
             (non step-0-synthesized) message.
         step_zero_accumulations:
@@ -127,7 +127,11 @@ class GribWithStepZero(GribFileOutput):
         if not self.write_step_zero:
             return
 
-        self._write_zero_step_messages(state)
+        # The parent writes the post-processed state (e.g. after `extract_mask`)
+        # without handing it back, so re-apply the post-processors here: the
+        # zero-step messages must live on the same grid as the other step=0
+        # messages, not on the full (e.g. multi-dataset) input grid.
+        self._write_zero_step_messages(self.post_process(state))
 
     def _write_zero_step_messages(self, state: State) -> None:
         """Write a zero-valued message for each configured accumulation

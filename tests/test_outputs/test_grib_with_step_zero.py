@@ -11,6 +11,20 @@ REFERENCE_DATE = datetime.datetime(2026, 8, 31, 0, 0)
 
 VAR_FIS = Variable.from_dict("FIS", {"mars": {"param": "FIS", "levtype": "sfc"}})
 
+# Number of grid points in the ICON-CH1 test template (tests/data/iaf2025010100).
+N_POINTS = 1147980
+
+
+def initial_state(n_points: int = N_POINTS, **kwargs) -> dict:
+    return {
+        "date": REFERENCE_DATE,
+        "fields": {},
+        "step": datetime.timedelta(0),
+        "latitudes": np.zeros(n_points),
+        "longitudes": np.zeros(n_points),
+        **kwargs,
+    }
+
 
 class FakeContext:
     reference_date = REFERENCE_DATE
@@ -25,7 +39,6 @@ class FakeMetadata:
     typed_variables: dict = {}
     variables_metadata: dict = {}
     accumulations = ["T_2M"]
-    number_of_grid_points = 1147980
     grid = None
     area = None
 
@@ -45,7 +58,7 @@ def test_step_zero_template_index_keyed_by_param(output):
 
 
 def test_write_initial_state_emits_zero_field_from_template(output, data_dir):
-    state = {"date": REFERENCE_DATE, "fields": {}, "step": datetime.timedelta(0)}
+    state = initial_state()
     output.write_initial_state(state)
     output.close()
 
@@ -83,7 +96,7 @@ def test_write_initial_state_resolves_mars_param(data_dir, tmp_path):
         path=str(tmp_path / "out.grib"),
         step_zero_template=str(data_dir / "iaf2025010100"),
     )
-    state = {"date": REFERENCE_DATE, "fields": {}, "step": datetime.timedelta(0)}
+    state = initial_state()
     output.write_initial_state(state)
     output.close()
 
@@ -106,7 +119,7 @@ def test_write_initial_state_emits_one_message_per_accumulation(data_dir, tmp_pa
         path=str(tmp_path / "out.grib"),
         step_zero_template=str(data_dir / "iaf2025010100"),
     )
-    state = {"date": REFERENCE_DATE, "fields": {}, "step": datetime.timedelta(0)}
+    state = initial_state()
     output.write_initial_state(state)
     output.close()
 
@@ -116,11 +129,7 @@ def test_write_initial_state_emits_one_message_per_accumulation(data_dir, tmp_pa
 
 
 def test_write_initial_state_skips_field_already_present(output):
-    state = {
-        "date": REFERENCE_DATE,
-        "fields": {"T_2M": np.zeros(1)},
-        "step": datetime.timedelta(0),
-    }
+    state = initial_state(fields={"T_2M": np.zeros(1)})
     # Scoped to the zero-step logic only: going through `write_initial_state`
     # here would also exercise GribFileOutput's own real-field writing path,
     # which needs a resolvable `typed_variables["T_2M"]` that isn't relevant to
@@ -137,16 +146,13 @@ def test_write_initial_state_raises_on_grid_shape_mismatch(data_dir, tmp_path):
     comes from a different domain/resolution), fail loudly instead of
     silently writing a wrong-shaped zero field."""
 
-    class FakeMetadataWrongGrid(FakeMetadata):
-        number_of_grid_points = 1
-
     output = GribWithStepZero(
         FakeContext(),
-        FakeMetadataWrongGrid(),
+        FakeMetadata(),
         path=str(tmp_path / "out.grib"),
         step_zero_template=str(data_dir / "iaf2025010100"),
     )
-    state = {"date": REFERENCE_DATE, "fields": {}, "step": datetime.timedelta(0)}
+    state = initial_state(n_points=1)
     with pytest.raises(ValueError, match="different domain or resolution"):
         output.write_initial_state(state)
 
@@ -159,14 +165,33 @@ def test_write_initial_state_writes_real_and_zero_step_fields_to_same_file(outpu
     real_template = templates["T"]
 
     output.typed_variables = {"FIS": VAR_FIS}
-    state = {
-        "date": REFERENCE_DATE,
-        "fields": {"FIS": np.zeros(real_template.shape)},
-        "step": datetime.timedelta(0),
-        "_grib_templates_for_output": {"FIS": real_template},
-    }
+    state = initial_state(
+        fields={"FIS": np.zeros(real_template.shape)},
+        _grib_templates_for_output={"FIS": real_template},
+    )
     output.write_initial_state(state)
     output.close()
 
     written_params = {f.metadata("shortName") for f in ekd.from_source("file", output.out)}
     assert written_params == {"FIS", "T_2M"}
+
+
+def test_write_initial_state_checks_shape_after_post_processing(output):
+    """The output's post-processors (e.g. `extract_mask` removing the global
+    points of a multi-dataset run) shrink the grid. The zero-step messages
+    must be checked against the post-processed grid, not the full input grid."""
+    n_global = 540670
+
+    def drop_global_points(state):
+        state = state.copy()
+        state["latitudes"] = state["latitudes"][:N_POINTS]
+        state["longitudes"] = state["longitudes"][:N_POINTS]
+        return state
+
+    output.post_process = drop_global_points
+    output.write_initial_state(initial_state(n_points=N_POINTS + n_global))
+    output.close()
+
+    written = list(ekd.from_source("file", output.out))
+    assert [f.metadata("shortName") for f in written] == ["T_2M"]
+    assert written[0].to_numpy(flatten=True).shape == (N_POINTS,)

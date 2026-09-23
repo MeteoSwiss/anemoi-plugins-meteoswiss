@@ -39,6 +39,9 @@ class FakeMetadata:
     typed_variables: dict = {}
     variables_metadata: dict = {}
     accumulations = ["T_2M"]
+    # Only read by anemoi-inference's template manager for real fields; the
+    # zero-step shape check uses the (post-processed) state instead.
+    number_of_grid_points = N_POINTS
     grid = None
     area = None
 

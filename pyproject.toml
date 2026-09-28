@@ -27,6 +27,10 @@ oper-inference = [
     "filelock",
     "requests",
 ]
+plotting = [
+    "matplotlib",
+    "cartopy",
+]
 
 [project.scripts]
 anemoi-plugins-meteoswiss = "anemoi_plugins_meteoswiss:main"
@@ -36,12 +40,8 @@ average-flux-to-cumulative-quantity = "anemoi_plugins_meteoswiss.transform.filte
 model-to-pressure-level = "anemoi_plugins_meteoswiss.transform.filters:ModelToPressureLevel"
 assign-grid = "anemoi_plugins_meteoswiss.transform.filters:AssignGrid"
 geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:GeopotentialFromHeight"
-clean-observation = "anemoi_plugins_meteoswiss.transform.filters:CleanObservation"
 copy-prognostic-from-forecaster = "anemoi_plugins_meteoswiss.transform.filters:CopyPrognosticFromForecaster"
 keep = "anemoi_plugins_meteoswiss.transform.filters:Keep"
-
-nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
-retrieve-observation = "anemoi_plugins_meteoswiss.transform.filters:RetrieveObservation"
 
 [project.entry-points."anemoi.transform.filters.fields"]
 nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"

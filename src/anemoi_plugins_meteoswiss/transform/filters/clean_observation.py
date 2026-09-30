@@ -183,7 +183,11 @@ class CleanObservation(Filter):
 
         Two stages:
 
-        1. **Automated QC** (``par2check`` parameters): for each parameter the
+        1. **Hard blacklist** (``hard_blacklist``): station/parameter pairs
+           permanently set to NaN before any test runs, so the spatial QC
+           algorithms never see these values and cannot be influenced by them.
+
+        2. **Automated QC** (``par2check`` parameters): for each parameter the
            configured tests are run via ``make_tests``.  Obs-only tests
            (``hard``, ``isolation_check``, ``buddy_obs``, ``DWH_flag``,
            ``plateau_test``) always run; model-dependent tests (``buddy_diff``,
@@ -192,9 +196,6 @@ class CleanObservation(Filter):
            compared against ``titan_ntests_threshold[para]["threshold_summary"]``.
            Stations above the threshold are set to NaN unless listed in
            ``stations_excluded[para]``.
-
-        2. **Hard blacklist** (``hard_blacklist``): station/parameter pairs
-           permanently set to NaN regardless of QC scores or exclusions.
 
         Populates ``self._flagged``, ``self._qc_diagnostics``,
         ``self._tests_done``, and ``self._qc_duration``.
@@ -225,13 +226,32 @@ class CleanObservation(Filter):
             LOG.warning("QC modules unavailable, skipping cleaning")
             return df
 
+        # --- Stage 1: hard blacklist — applied before QC so tests never see these values ----
+        for entry in _qc_config.hard_blacklist.values():
+            station = entry["station"]
+            if station not in df.index:
+                continue
+            for para in entry["paras"]:
+                LOG.info("Hard blacklist (pre-QC): setting %s / %s to NaN", station, para)
+                for parquet_col in _qc_config.qc_to_parquet.get(para, []):
+                    if parquet_col not in df.columns or station not in df.index:
+                        continue
+                    df.loc[station, parquet_col] = np.nan
+
         df_qc, lats, lons, elevs, stations, df_pi = self._build_df_qc(df)
         df_mod, df_diff, active_tests = self._resolve_model_background(df_qc, lats, lons, elevs)
 
         current_f = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
         _t0 = time.monotonic()
 
-        # --- Stage 1: automated QC tests per parameter --------------------
+        # Index of hard-blacklisted (station, para) pairs — used below to suppress
+        # duplicate logging when automated QC also flags them.
+        _hard_blacklisted: dict[str, set] = {}
+        for _entry in _qc_config.hard_blacklist.values():
+            for _p in _entry["paras"]:
+                _hard_blacklisted.setdefault(_p, set()).add(_entry["station"])
+
+        # --- Stage 2: automated QC tests per parameter --------------------
         for para in _qc_config.par2check:
             if para not in df_qc.columns:
                 LOG.warning("Skipping %s: not available in parquet", para)
@@ -297,6 +317,10 @@ class CleanObservation(Filter):
                     LOG.info("QC flagged %s for station %s but station is excluded — skipping",
                              para, station)
                     continue
+                if station in _hard_blacklisted.get(para, set()):
+                    LOG.debug("QC also flagged %s / %s (score=%.2f) — already in hard blacklist, skipping",
+                              para, station, score)
+                    continue
                 LOG.info("QC flagged %s for station %s (score=%.2f)", para, station, score)
                 flagged_stations.append(station)
                 # Which individual tests voted to flag this station?
@@ -321,17 +345,7 @@ class CleanObservation(Filter):
                 },
             }
 
-        # --- Stage 2: hard blacklist — always applied, ignores exclusions -------
-        # Stations here are permanently unreliable for specific parameters and are
-        # always set to NaN regardless of QC score or stations_excluded membership.
-        for entry in _qc_config.hard_blacklist.values():
-            station = entry["station"]
-            if station not in df.index:
-                continue
-            for para in entry["paras"]:
-                LOG.info("Hard blacklist: setting %s / %s to NaN", station, para)
-                self._flag_station_columns(df, df_qc, station, para, "hard_blacklist")
-
+        # --- Done: hard blacklist (Stage 1) + automated QC (Stage 2) complete -------
         self._qc_duration: float = time.monotonic() - _t0
         LOG.info("QC tests completed in %.2f s", self._qc_duration)
         return df

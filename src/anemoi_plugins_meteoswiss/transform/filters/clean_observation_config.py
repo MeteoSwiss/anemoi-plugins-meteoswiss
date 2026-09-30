@@ -236,7 +236,7 @@ buddy_diff= {
     "FF_10M" : {
         "radius" : 100000,
         "num_min" :  2,
-        "threshold" : [9.0, 7.5],  # [SMN, other stations]
+        "threshold" : [9.5, 8.0],  # [SMN, other stations]
         "max_elev_diff" : 500,
         "elev_gradient" : 0,
         "min_std" : 2,

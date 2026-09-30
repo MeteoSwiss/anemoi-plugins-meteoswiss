@@ -583,9 +583,8 @@ class CleanObservation(Filter):
         runners = {}
 
         if "hard" in tests_to_do:
-            ind_var = cfg.obs_variables.index(para)
-            pch_min = cfg.plausibility_thresholds['pch_min'][ind_var]
-            pch_max = cfg.plausibility_thresholds['pch_max'][ind_var]
+            pch_min = cfg.plausibility_thresholds[para]['pch_min']
+            pch_max = cfg.plausibility_thresholds[para]['pch_max']
             runners["hard"] = lambda: _hard_test(df_obs, pch_min, pch_max, para, current_f)
 
         if "buddy_obs" in tests_to_do:

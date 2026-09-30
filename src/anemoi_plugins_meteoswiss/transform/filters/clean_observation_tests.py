@@ -1,12 +1,26 @@
+import yaml
 import numpy as np
 import pandas as pd
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 import titanlib
 
-#configuration variables
-import clean_observation_config as c
+
+def _load_qc_config() -> SimpleNamespace:
+    """Load QC configuration from clean_observation_config.yaml."""
+    cfg = yaml.safe_load(Path(__file__).with_name("clean_observation_config.yaml").read_text())
+
+    def _identity(x):
+        return x
+
+    ns = SimpleNamespace(**cfg)
+    ns.parquet_to_qc = {col: (qp, _identity) for col, qp in cfg["parquet_to_qc"].items()}
+    return ns
+
+
+c = _load_qc_config()
 
 LOG = logging.getLogger(__name__)
 
@@ -549,8 +563,8 @@ def plateau_test(data, window, std_lim, var, time, obs_path_in=None, gran_minute
             if qp == var and pc in hist_df.columns:
                 norm[var] = conv(hist_df[pc].to_numpy())
                 return norm
-        # FF_10M is derived from U/V components
-        if var == 'FF_10M' and '10u' in hist_df.columns and '10v' in hist_df.columns:
+        # SP_10M is derived from U/V components
+        if var == 'SP_10M' and '10u' in hist_df.columns and '10v' in hist_df.columns:
             norm[var] = np.sqrt(hist_df['10u'].to_numpy() ** 2 +
                                 hist_df['10v'].to_numpy() ** 2)
         else:

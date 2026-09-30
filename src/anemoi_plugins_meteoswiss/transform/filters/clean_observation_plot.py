@@ -268,7 +268,7 @@ def prepare_and_plot_station_maps(flagged, qc_diagnostics, df, obs_path_out,
     para_values: dict = {}
     for para in par2check:
         vals: dict = dict(flagged_vals.get(para, {}))
-        if para == "FF_10M" and "10u" in df.columns and "10v" in df.columns:
+        if para == "SP_10M" and "10u" in df.columns and "10v" in df.columns:
             u = df["10u"].to_numpy(dtype=float)
             v = df["10v"].to_numpy(dtype=float)
             for i, name in enumerate(station_names):

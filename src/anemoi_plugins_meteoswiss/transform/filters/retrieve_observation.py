@@ -56,9 +56,11 @@ class RetrieveObservation(Filter):
     variables : list of str, optional
         GRIB shortNames to fetch (must be keys of ``_PARAM_TO_COL``).
         Defaults to all available variables.
-    use_limitation : int, optional
-        Passed to jretrieve ``--use-limitation``; limits the observation
-        time window in minutes (e.g. 50 means observations within ±50 min).
+    use_limitation : {10, 20, 30, 40, 50}, optional
+        Passed to jretrieve ``--use-limitation``; only stations whose data
+        usage level is ≤ this value are returned.
+        10 = unrestricted, 50 = internal use only (most permissive filter,
+        returns all stations).
     run_mode : str
         ``'depl'`` (default): ref_time = minimum valid_time across all
         fields. ``'devt'``: ref_time = valid_time of the first field.

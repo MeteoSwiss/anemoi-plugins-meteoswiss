@@ -8,6 +8,20 @@ par2check:
   - PS
   - PMSL
 
+  # Trusted stations — never blacklisted by automated QC regardless of score
+stations_excluded:
+  T_2M:    {stations: ['BRL']}
+  TD_2M:   {stations: []}
+  T_G:     {stations: []}
+  RH_2M:   {stations: []}
+  SP_10M:  {stations: []}
+  VMAX10M: {stations: []}
+  PS:      {stations: []}
+  PMSL:    {stations: []}
+
+# Stations permanently set to NaN for the listed parameters (loaded from external file)
+hard_blacklist_file: blacklist_bdp_all.yaml
+
 # Tests that work without model/background data
 obs_only_tests:
   - hard
@@ -1230,20 +1244,6 @@ sct_dual:
     condition: 0
     event_thresholds: 0.05
     test_thresholds: 0.95
-
-# Trusted stations — never blacklisted by automated QC regardless of score
-stations_excluded:
-  T_2M:    {stations: ['BRL']}
-  TD_2M:   {stations: []}
-  T_G:     {stations: []}
-  RH_2M:   {stations: []}
-  SP_10M:  {stations: []}
-  VMAX10M: {stations: []}
-  PS:      {stations: []}
-  PMSL:    {stations: []}
-
-# Stations permanently set to NaN for the listed parameters (loaded from external file)
-hard_blacklist_file: blacklist_bdp_all.yaml
 
 # Set to true to write one PNG per parameter alongside the output parquet (requires cartopy)
 plot_maps: true

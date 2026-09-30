@@ -8,7 +8,7 @@ par2check:
   - PS
   - PMSL
 
-  # Trusted stations — never blacklisted by automated QC regardless of score
+# Trusted stations — never blacklisted by automated QC regardless of score
 stations_excluded:
   T_2M:    {stations: ['BRL']}
   TD_2M:   {stations: []}

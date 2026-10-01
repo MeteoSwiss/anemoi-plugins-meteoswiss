@@ -18,7 +18,7 @@ stations_excluded:
   T_G:     {stations: []}
   SP_10M:  {stations: []}
   VMAX10M: {stations: []}
-  PS:      {stations: []}
+  PS:      {stations: ['CEV','COV','TIT','GOS']}
   PMSL:    {stations: []}
 
 # Test selection and scoring per parameter — tests_QC: {test_name: weight}
@@ -38,9 +38,6 @@ titan_ntests_threshold:
   VMAX10M:
     threshold_summary: 0.1
     tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 1, buddy_diff: 1, fgt: 1, plateau_test: 1, DWH_flag: 1}
-  RH_2M:
-    threshold_summary: 0.1
-    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 1, buddy_diff: 1, fgt: 1, plateau_test: 1, DWH_flag: 1}
   PS:
     threshold_summary: 0.1
     tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 1, buddy_diff: 1, fgt: 1, plateau_test: 1, DWH_flag: 1}
@@ -52,7 +49,6 @@ titan_ntests_threshold:
 plausibility_thresholds:
   T_2M:    {pch_min: 223.15, pch_max: 323.15}  # K
   TD_2M:   {pch_min: 203.15, pch_max: 323.15}  # K
-  RH_2M:   {pch_min:      2, pch_max:    100}  # %
   SP_10M:  {pch_min:      0, pch_max:     80}  # m/s
   VMAX10M: {pch_min:      0, pch_max:     80}  # m/s
   T_G:     {pch_min: 223.15, pch_max: 343.15}  # K
@@ -66,7 +62,6 @@ isolation_check:
   T_G:     {radius: 75000, num_min: 2}
   SP_10M:  {radius: 75000, num_min: 3}
   VMAX10M: {radius: 75000, num_min: 3}
-  RH_2M:   {radius: 75000, num_min: 3}
   PS:      {radius: 75000, num_min: 3}
   PMSL:    {radius: 75000, num_min: 2}
 
@@ -77,7 +72,6 @@ DWH_flag:
   TD_2M:   {dwh_plausibility_thr: 0.75}
   T_G:     {dwh_plausibility_thr: 0.75}
   SP_10M:  {dwh_plausibility_thr: 0.75}
-  RH_2M:   {dwh_plausibility_thr: 0.75}
   VMAX10M: {dwh_plausibility_thr: 0.75}
   PS:      {dwh_plausibility_thr: 0.75}
   PMSL:    {dwh_plausibility_thr: 0.75}
@@ -86,7 +80,6 @@ DWH_flag:
 plateau_test:
   T_2M:    {window: 24, gran: 360, sd: 0}
   TD_2M:   {window: 24, gran: 360, sd: 0}
-  RH_2M:   {window: 48, gran: 360, sd: 0}
   T_G:     {window: 24, gran: 360, sd: 0}
   SP_10M:  {window: 24, gran:  60, sd: 0}
   VMAX10M: {window: 24, gran:  60, sd: 0}
@@ -115,7 +108,7 @@ buddy:
   T_G:
     radius: 100000
     num_min: 2
-    threshold: [6.0, 4.5]
+    threshold: [6.5, 4.5]
     max_elev_diff: 500
     elev_gradient: -0.0065
     min_std: 2
@@ -128,14 +121,6 @@ buddy:
     elev_gradient: 0.0015
     min_std: 2
     num_iterations: 6
-  RH_2M:
-    radius: 100000
-    num_min: 2
-    threshold: [5, 6]
-    max_elev_diff: 700
-    elev_gradient: 0
-    min_std: 1.5
-    num_iterations: 6
   VMAX10M:
     radius: 100000
     num_min: 2
@@ -147,7 +132,7 @@ buddy:
   PS:
     radius: 100000
     num_min: 2
-    threshold: [5.5, 4.5]   
+    threshold: [5.5, 4.5]
     max_elev_diff: 500
     elev_gradient: -12.0     # Pa/m standard atmosphere
     min_std: 200
@@ -182,7 +167,7 @@ buddy_diff:
   T_G:
     radius: 100000
     num_min: 2
-    threshold: [6.0, 4.5]
+    threshold: [6.5, 4.5]
     max_elev_diff: 500
     elev_gradient: 0
     min_std: 2
@@ -194,14 +179,6 @@ buddy_diff:
     max_elev_diff: 500
     elev_gradient: 0
     min_std: 2
-    num_iterations: 6
-  RH_2M:
-    radius: 100000
-    num_min: 2
-    threshold: [5, 6]
-    max_elev_diff: 700
-    elev_gradient: 0
-    min_std: 1.5
     num_iterations: 6
   VMAX10M:
     radius: 100000
@@ -275,7 +252,7 @@ fgt:
     kth_closest_obs_horizontal_scale: 2
     debug: false
     basic: true
-    tpostneg: [6.0, 4.5]
+    tpostneg: [6.5, 4.5]
   SP_10M:
     background_elab_type: 3
     num_min_outer: 2
@@ -291,21 +268,6 @@ fgt:
     debug: false
     basic: true
     tpostneg: [9.5, 8.0]
-  RH_2M:
-    background_elab_type: 3
-    num_min_outer: 2
-    num_max_outer: 15
-    inner_radius: 100000
-    outer_radius: 200000
-    num_iterations: 10
-    num_min_prof: 0
-    min_elev_diff: 700
-    min_horizontal_scale: 250
-    max_horizontal_scale: 300000
-    kth_closest_obs_horizontal_scale: 2
-    debug: false
-    basic: true
-    tpostneg: [5, 6]
   VMAX10M:
     background_elab_type: 3
     num_min_outer: 2
@@ -415,21 +377,6 @@ spt_resistant:
     vertical_scale: 400
     debug: false
     basic: false
-  RH_2M:
-    background_elab_type: 1
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 50000
-    outer_radius: 100000
-    num_iterations: 10
-    num_min_prof: 1
-    min_elev_diff: 700
-    min_horizontal_scale: 250
-    max_horizontal_scale: 150000
-    kth_closest_obs_horizontal_scale: 2
-    vertical_scale: 300
-    debug: false
-    basic: false
   VMAX10M:
     background_elab_type: 1
     num_min_outer: 2
@@ -530,20 +477,6 @@ sct_dual:
     max_horizontal_scale: 100000
     kth_closest_obs_horizontal_scale: 2
     vertical_scale: 400
-    debug: false
-    condition: 0
-    event_thresholds: 0.05
-    test_thresholds: 0.95
-  RH_2M:
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 50000
-    outer_radius: 100000
-    num_iterations: 10
-    min_horizontal_scale: 250
-    max_horizontal_scale: 100000
-    kth_closest_obs_horizontal_scale: 2
-    vertical_scale: 300
     debug: false
     condition: 0
     event_thresholds: 0.05

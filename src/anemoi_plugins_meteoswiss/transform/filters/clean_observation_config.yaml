@@ -16,7 +16,6 @@ stations_excluded:
   T_2M:    {stations: ['BRL']}
   TD_2M:   {stations: []}
   T_G:     {stations: []}
-  RH_2M:   {stations: []}
   SP_10M:  {stations: []}
   VMAX10M: {stations: []}
   PS:      {stations: []}

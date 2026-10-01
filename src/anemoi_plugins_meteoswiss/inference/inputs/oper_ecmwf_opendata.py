@@ -87,9 +87,15 @@ def _with_cache_dir(cache_dir: str | None):
         yield
 
 
-def _latest_published_run(**params: Any) -> datetime:
-    """Return the most recent published run, HEAD-checked via ``Client.latest()``."""
-    return _EcmwfOpenDataClient().latest(**params)
+def _latest_published_run(source: str = "ecmwf", **params: Any) -> datetime:
+    """Return the most recent published run, HEAD-checked via ``Client.latest()``.
+
+    ``source`` must track the mirror used for the downloads: probing ECMWF's own
+    servers while fetching from a mirror reintroduces their rate limiting (HTTP 429,
+    with no ``Retry-After``, so the client falls back to its 120s default) on a run
+    that would otherwise never touch them.
+    """
+    return _EcmwfOpenDataClient(source=source).latest(**params)
 
 
 def _param_translation_from_variables_metadata(metadata: Metadata, variables: list[str]) -> dict[str, str]:
@@ -203,7 +209,7 @@ class OperEcmwfOpenDataInput(OpenDataInputPlugin):
 
     def retrieve(self, variables: list[str], dates: list[Date]) -> Any:
         """Retrieve data for the given variables at the given target valid times."""
-        guaranteed_init_time = _latest_published_run(type="fc")
+        guaranteed_init_time = _latest_published_run(type="fc", source=self._source)
         cosmo_to_ecmwf = _param_translation_from_variables_metadata(self.metadata, variables)
 
         kwargs = self.kwargs.copy()

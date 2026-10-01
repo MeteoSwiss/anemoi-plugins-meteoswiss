@@ -8,13 +8,13 @@ par2check:
   - PS
   - PMSL
 
-# Stations permanently set to NaN for the listed parameters (loaded from external file)
+# Stations permanently set to NaN for the listed parameters (loaded from external file), applied first
 hard_blacklist_file: blacklist_bdp_all.yaml
 
-# Trusted stations — never blacklisted by automated QC regardless of score
+# Trusted stations — never blacklisted by automated QC regardless of score, suited for SMN stations only
 stations_excluded:
   T_2M:    {stations: ['BRL']}
-  TD_2M:   {stations: []}
+  TD_2M:   {stations: ['BRL']}
   T_G:     {stations: []}
   SP_10M:  {stations: []}
   VMAX10M: {stations: []}
@@ -108,7 +108,7 @@ buddy:
   T_G:
     radius: 100000
     num_min: 2
-    threshold: [6.5, 4.5]
+    threshold: [6.5, 5.0]
     max_elev_diff: 500
     elev_gradient: -0.0065
     min_std: 2
@@ -167,7 +167,7 @@ buddy_diff:
   T_G:
     radius: 100000
     num_min: 2
-    threshold: [6.5, 4.5]
+    threshold: [6.5, 5.0]
     max_elev_diff: 500
     elev_gradient: 0
     min_std: 2
@@ -252,7 +252,7 @@ fgt:
     kth_closest_obs_horizontal_scale: 2
     debug: false
     basic: true
-    tpostneg: [6.5, 4.5]
+    tpostneg: [6.5, 5.0]
   SP_10M:
     background_elab_type: 3
     num_min_outer: 2

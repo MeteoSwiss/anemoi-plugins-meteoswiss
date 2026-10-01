@@ -13,6 +13,7 @@ dependencies = [
     "peakweather==0.2.2",
     "earthkit-data==0.19.2",
     "earthkit-utils ==1.0.2",
+    "pyyaml",
 ]
 
 [project.scripts]
@@ -52,5 +53,5 @@ dev = [
     "pytest>=9.0.2",
 ]
 qc = [
-    "titanlib",
+    "titanlib==0.3.4.dev4",
 ]

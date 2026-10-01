@@ -22,49 +22,32 @@ stations_excluded:
 # Stations permanently set to NaN for the listed parameters (loaded from external file)
 hard_blacklist_file: blacklist_bdp_all.yaml
 
-# Tests that work without model/background data
-obs_only_tests:
-  - hard
-  - isolation_check
-  - buddy_obs
-  - DWH_flag
-  - plateau_test
-
-# Test selection and scoring per parameter
-# tests_QC and tests_QC_w must have the same length
+# Test selection and scoring per parameter — tests_QC: {test_name: weight}
 titan_ntests_threshold:
   T_2M:
-    threshold_summary: 0.15
-    tests_QC: [hard, isolation_check, buddy_obs, buddy_diff, fgt, plateau_test, DWH_flag]
-    tests_QC_w: [2, 2, 1, 1, 1, 1, 1]
+    threshold_summary: 0.1
+    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 1, buddy_diff: 1, fgt: 1, plateau_test: 1, DWH_flag: 1}
   TD_2M:
-    threshold_summary: 0.15
-    tests_QC: [hard, isolation_check, buddy_obs, buddy_diff, fgt, plateau_test, DWH_flag]
-    tests_QC_w: [2, 2, 1, 1, 1, 1, 1]
+    threshold_summary: 0.1
+    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 1, buddy_diff: 1, fgt: 1, plateau_test: 1, DWH_flag: 1}
   T_G:
-    threshold_summary: 0.15
-    tests_QC: [hard, isolation_check, buddy_obs, buddy_diff, fgt, plateau_test, DWH_flag]
-    tests_QC_w: [2, 2, 1, 1, 1, 1, 1]
+    threshold_summary: 0.1
+    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 1, buddy_diff: 1, fgt: 1, plateau_test: 1, DWH_flag: 1}
   SP_10M:
-    threshold_summary: 0.15
-    tests_QC: [hard, isolation_check, buddy_obs, buddy_diff, fgt, plateau_test, DWH_flag]
-    tests_QC_w: [2, 2, 1, 1, 1, 2, 1]
+    threshold_summary: 0.1
+    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 1, buddy_diff: 1, fgt: 1, plateau_test: 1, DWH_flag: 1}
   VMAX10M:
-    threshold_summary: 0.15
-    tests_QC: [hard, isolation_check, buddy_obs, buddy_diff, fgt, plateau_test, DWH_flag]
-    tests_QC_w: [2, 2, 1, 1, 1, 2, 1]
+    threshold_summary: 0.1
+    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 1, buddy_diff: 1, fgt: 1, plateau_test: 1, DWH_flag: 1}
   RH_2M:
-    threshold_summary: 0.15
-    tests_QC: [hard, isolation_check, buddy_obs, buddy_diff, fgt, plateau_test, DWH_flag]
-    tests_QC_w: [2, 2, 1, 1, 1, 1, 1]
+    threshold_summary: 0.1
+    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 1, buddy_diff: 1, fgt: 1, plateau_test: 1, DWH_flag: 1}
   PS:
-    threshold_summary: 0.15
-    tests_QC: [hard, isolation_check, buddy_obs, buddy_diff, fgt, plateau_test, DWH_flag]
-    tests_QC_w: [2, 2, 1, 1, 1, 1, 1]
+    threshold_summary: 0.1
+    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 1, buddy_diff: 1, fgt: 1, plateau_test: 1, DWH_flag: 1}
   PMSL:
-    threshold_summary: 0.15
-    tests_QC: [hard, isolation_check, buddy_obs, buddy_diff, fgt, plateau_test, DWH_flag]
-    tests_QC_w: [2, 2, 1, 1, 1, 1, 1]
+    threshold_summary: 0.1
+    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 1, buddy_diff: 1, fgt: 1, plateau_test: 1, DWH_flag: 1}
 
 # Hard test: plausibility range per parameter
 plausibility_thresholds:
@@ -263,7 +246,7 @@ fgt:
     kth_closest_obs_horizontal_scale: 2
     debug: false
     basic: true
-    tpostneg: [5.5, 4.0]
+    tpostneg: [4.5, 3.0]
   TD_2M:
     background_elab_type: 3
     num_min_outer: 2
@@ -278,7 +261,7 @@ fgt:
     kth_closest_obs_horizontal_scale: 2
     debug: false
     basic: true
-    tpostneg: [7.0, 5.5]
+    tpostneg: [6.0, 4.5]
   T_G:
     background_elab_type: 3
     num_min_outer: 2
@@ -293,7 +276,7 @@ fgt:
     kth_closest_obs_horizontal_scale: 2
     debug: false
     basic: true
-    tpostneg: [6.5, 5.0]
+    tpostneg: [6.0, 4.5]
   SP_10M:
     background_elab_type: 3
     num_min_outer: 2
@@ -308,7 +291,7 @@ fgt:
     kth_closest_obs_horizontal_scale: 2
     debug: false
     basic: true
-    tpostneg: [10, 8.5]
+    tpostneg: [9.5, 8.0]
   RH_2M:
     background_elab_type: 3
     num_min_outer: 2
@@ -323,7 +306,7 @@ fgt:
     kth_closest_obs_horizontal_scale: 2
     debug: false
     basic: true
-    tpostneg: [15, 12]
+    tpostneg: [5, 6]
   VMAX10M:
     background_elab_type: 3
     num_min_outer: 2
@@ -338,7 +321,7 @@ fgt:
     kth_closest_obs_horizontal_scale: 2
     debug: false
     basic: true
-    tpostneg: [10.5, 9.0]
+    tpostneg: [9.5, 8.0]
   PS:
     background_elab_type: 3
     num_min_outer: 2
@@ -353,7 +336,7 @@ fgt:
     kth_closest_obs_horizontal_scale: 2
     debug: false
     basic: true
-    tpostneg: [1500, 1100]   # Pa
+    tpostneg: [5.5, 4.5]
   PMSL:
     background_elab_type: 3
     num_min_outer: 2
@@ -368,7 +351,7 @@ fgt:
     kth_closest_obs_horizontal_scale: 2
     debug: false
     basic: true
-    tpostneg: [800, 550]     # Pa
+    tpostneg: [5.5, 4.5]
 
 # Spatial consistency test — resistant variant
 # (background_elab_type 1 = VerticalProfileTheilSen)
@@ -609,50 +592,5 @@ sct_dual:
     event_thresholds: 0.05
     test_thresholds: 0.95
 
-# Trusted stations — never blacklisted by automated QC regardless of score
-stations_excluded:
-  T_2M:    {stations: ['BRL']}
-  TD_2M:   {stations: []}
-  T_G:     {stations: []}
-  RH_2M:   {stations: []}
-  SP_10M:  {stations: []}
-  VMAX10M: {stations: []}
-  PS:      {stations: []}
-  PMSL:    {stations: []}
-
-# Stations permanently set to NaN for the listed parameters
-hard_blacklist:
-  1: {station: WNSSAL, paras: [SP_10M, VMAX10M, DD]}
-
 # Set to true to write one PNG per parameter alongside the output parquet (requires cartopy)
-plot_maps: true
-
-# QC parameter -> parquet plausibility column (written by RetrieveObservation as {param}_pi)
-par2pi:
-  T_2M:    2t_pi
-  TD_2M:   2d_pi
-  SP_10M:  ff_pi
-  VMAX10M: vmax_pi
-  PS:      sp_pi
-  PMSL:    msl_pi
-  T_G:     skt_pi
-
-# parquet column -> QC parameter (unit conversion is always identity)
-# SP_10M is derived from 10u/10v — handled separately in CleanObservation
-parquet_to_qc:
-  2t:   T_2M
-  2d:   TD_2M
-  vmax: VMAX10M
-  sp:   PS
-  msl:  PMSL
-  skt:  T_G
-
-# QC parameter -> parquet columns to set to NaN when flagged
-qc_to_parquet:
-  T_2M:    [2t]
-  TD_2M:   [2d]
-  SP_10M:  [10u, 10v]
-  VMAX10M: [vmax]
-  PS:      [sp]
-  PMSL:    [msl]
-  T_G:     [skt]
+plot_maps: false

@@ -15,6 +15,41 @@ from anemoi.transform.filter import Filter
 
 LOG = logging.getLogger(__name__)
 
+# Tests that run without model/background data
+_OBS_ONLY_TESTS = {"hard", "isolation_check", "buddy_obs", "DWH_flag", "plateau_test"}
+
+# QC parameter → parquet plausibility column
+_PAR2PI = {
+    "T_2M":    "2t_pi",
+    "TD_2M":   "2d_pi",
+    "SP_10M":  "ff_pi",
+    "VMAX10M": "vmax_pi",
+    "PS":      "sp_pi",
+    "PMSL":    "msl_pi",
+    "T_G":     "skt_pi",
+}
+
+# parquet column → QC parameter (SP_10M derived from 10u/10v separately)
+_PARQUET_TO_QC = {
+    "2t":   "T_2M",
+    "2d":   "TD_2M",
+    "vmax": "VMAX10M",
+    "sp":   "PS",
+    "msl":  "PMSL",
+    "skt":  "T_G",
+}
+
+# QC parameter → parquet columns to set NaN when flagged
+_QC_TO_PARQUET = {
+    "T_2M":    ["2t"],
+    "TD_2M":   ["2d"],
+    "SP_10M":  ["10u", "10v"],
+    "VMAX10M": ["vmax"],
+    "PS":      ["sp"],
+    "PMSL":    ["msl"],
+    "T_G":     ["skt"],
+}
+
 # Make clean_observation_tests importable via bare import
 _FILTERS_DIR = str(Path(__file__).parent)
 if _FILTERS_DIR not in sys.path:
@@ -30,8 +65,10 @@ def _load_qc_config() -> SimpleNamespace:
         return x
 
     ns = SimpleNamespace(**cfg)
-    ns.obs_only_tests = set(cfg["obs_only_tests"])
-    ns.parquet_to_qc = {col: (qp, _identity) for col, qp in cfg["parquet_to_qc"].items()}
+    ns.obs_only_tests = _OBS_ONLY_TESTS
+    ns.par2pi        = _PAR2PI
+    ns.parquet_to_qc = {col: (qp, _identity) for col, qp in _PARQUET_TO_QC.items()}
+    ns.qc_to_parquet = _QC_TO_PARQUET
 
     blacklist_file = cfg.get("hard_blacklist_file")
     if blacklist_file:
@@ -75,8 +112,7 @@ class CleanObservation(Filter):
     ``_flagged`` : list of dict
         One entry per (station, parquet column) pair whose value was set to NaN,
         with keys ``station``, ``column``, ``qc_parameter``, ``qc_value``,
-        ``source`` (``"qc_test"`` or ``"hard_blacklist"``), and
-        ``tests_positive`` (list of test names that voted to flag; qc_test only).
+        ``tests_positive`` (list of test names that voted to flag).
     ``_qc_diagnostics`` : dict
         Per-parameter diagnostic information: scores per station, list of flagged
         stations, tests run, threshold, and the raw per-test blacklist.
@@ -102,6 +138,14 @@ class CleanObservation(Filter):
         closest grid point on the unit sphere; ``"min_elev_diff"`` queries the 4
         nearest points and selects the one whose HSURF elevation is closest to
         the station elevation (requires HSURF in the GRIB file).
+    residuals_dir : str, optional
+        Directory containing pre-computed obs-minus-model residual parquet files
+        named ``residuals_{YYYYMMDDhhmm}.parquet``.  When set, residuals are
+        read directly instead of loading a GRIB file and interpolating.  Takes
+        priority over ``model_grib_path``.  The parquet must have the station
+        name as index and QC parameter names (``T_2M``, ``TD_2M``, ``SP_10M``,
+        …) as columns.  The model background is recovered as ``obs − diff`` so
+        that ``fgt`` can still run.
     """
 
     def __init__(
@@ -110,6 +154,7 @@ class CleanObservation(Filter):
         obs_path_out: str,
         model_grib_path: str = None,
         model_interp: str = "nearest",
+        residuals_dir: str = None,
     ):
         if model_interp not in ("nearest", "min_elev_diff"):
             raise ValueError(
@@ -119,6 +164,7 @@ class CleanObservation(Filter):
         self.obs_path_out = Path(obs_path_out)
         self.model_grib_path = model_grib_path
         self.model_interp = model_interp
+        self.residuals_dir = Path(residuals_dir) if residuals_dir is not None else None
         super().__init__()
 
     # ------------------------------------------------------------------
@@ -257,8 +303,9 @@ class CleanObservation(Filter):
                 LOG.warning("Skipping %s: not available in parquet", para)
                 continue
 
-            all_tests = _qc_config.titan_ntests_threshold[para]["tests_QC"]
-            all_weights = _qc_config.titan_ntests_threshold[para]["tests_QC_w"]
+            tests_QC = _qc_config.titan_ntests_threshold[para]["tests_QC"]
+            all_tests = list(tests_QC.keys())
+            all_weights = tests_QC  # {test: weight}
             tests_to_do = [t for t in all_tests if t in active_tests]
             if not tests_to_do:
                 LOG.info("%-10s  no active tests (configured: %s)", para, all_tests)
@@ -281,13 +328,14 @@ class CleanObservation(Filter):
             for test in tests_to_do:
                 my_dict[test] = {"ID": [], "Station": [], "Time": [], "Parameter": []}
 
-            blacklist, _, executed_tests = self.make_tests(
-                current_f, df_qc, df_diff, df_mod, para,
-                stations.copy(), lats.copy(), lons.copy(), elevs.copy(),
-                0, 0, my_dict, tests_to_do,
-                df_pi=df_pi,
-                obs_path_in=self.obs_path_in,
-            )
+            with np.errstate(invalid="ignore", divide="ignore"):
+                blacklist, _, executed_tests = self.make_tests(
+                    current_f, df_qc, df_diff, df_mod, para,
+                    stations.copy(), lats.copy(), lons.copy(), elevs.copy(),
+                    0, 0, my_dict, tests_to_do,
+                    df_pi=df_pi,
+                    obs_path_in=self.obs_path_in,
+                )
 
             # executed_tests may be shorter than tests_to_do (e.g. plateau_test skipped)
             # or longer (isolation_check always runs but is not in tests_QC).
@@ -297,7 +345,7 @@ class CleanObservation(Filter):
             self._tests_done[para] = executed_tests
             blacklist['tests'] = score_tests
             blacklist['n'] = len(score_tests)
-            weights = [all_weights[all_tests.index(t)] for t in score_tests]
+            weights = [all_weights[t] for t in score_tests]
 
             # Score = sum(weight_i for flagging tests) / n_score_tests.
             # A station is blacklisted when score > threshold_summary (default 0.2).
@@ -330,7 +378,7 @@ class CleanObservation(Filter):
                 ]
                 # A QC parameter may map to multiple parquet columns
                 # (e.g. SP_10M → 10u and 10v); set all of them to NaN.
-                self._flag_station_columns(df, df_qc, station, para, "qc_test",
+                self._flag_station_columns(df, df_qc, station, para,
                                            tests_positive=positive_tests)
 
             self._qc_diagnostics[para] = {
@@ -490,20 +538,32 @@ class CleanObservation(Filter):
     def _resolve_model_background(self, df_qc: pd.DataFrame, lats, lons, elevs):
         """Load the NWP background and decide which test set is active.
 
+        Priority: ``residuals_dir`` > ``model_grib_path`` > obs-only fallback.
+
         Returns
         -------
         df_mod : pd.DataFrame
-            Model values at station locations (NaN when no GRIB is available).
+            Model values at station locations (NaN when no background is available).
         df_diff : pd.DataFrame
-            Observation innovation ``df_qc - df_mod`` (NaN when no GRIB is available).
+            Observation innovation ``df_qc - df_mod`` (NaN when no background is available).
         active_tests : set[str]
             ``obs_only_tests`` when no model is loaded; extended with
             ``{"buddy_diff", "fgt"}`` when the model background is available.
         """
-        if self.model_grib_path is not None:
+        if self.residuals_dir is not None:
+            try:
+                df_mod, df_diff = self._load_residuals_at_stations(df_qc)
+                LOG.info("Pre-computed residuals loaded from %s; extended test set active",
+                         self.residuals_dir)
+                return df_mod, df_diff, _qc_config.obs_only_tests | {"buddy_diff", "fgt"}
+            except Exception as exc:
+                LOG.warning(
+                    "Failed to load pre-computed residuals (%s); falling back to obs-only tests", exc
+                )
+        elif self.model_grib_path is not None:
             try:
                 df_mod, df_diff = self._load_model_at_stations(df_qc, lats, lons, elevs)
-                LOG.info("Model background loaded; extended test set active")
+                LOG.info("Model background loaded from GRIB; extended test set active")
                 return df_mod, df_diff, _qc_config.obs_only_tests | {"buddy_diff", "fgt"}
             except Exception as exc:
                 LOG.warning(
@@ -512,7 +572,7 @@ class CleanObservation(Filter):
         df_mod, df_diff = self._nan_frames(df_qc)
         return df_mod, df_diff, _qc_config.obs_only_tests
 
-    def _flag_station_columns(self, df, df_qc, station, para, source, **extra):
+    def _flag_station_columns(self, df, df_qc, station, para, **extra):
         """Set all parquet columns for *(station, para)* to NaN and record each flag.
 
         Parameters
@@ -525,31 +585,30 @@ class CleanObservation(Filter):
             Station ``nat_abbr`` to flag.
         para : str
             QC parameter name (e.g. ``"T_2M"``).
-        source : str
-            ``"qc_test"`` or ``"hard_blacklist"``.
         **extra
             Additional keys appended to each ``_flagged`` entry
             (e.g. ``tests_positive=[...]`` for ``"qc_test"``).
         """
         # Record the QC-space value (e.g. wind speed scalar, not u/v)
         # that triggered the flag, for traceability in the JSON output.
-        sta_row = df_qc.index[df_qc["sta_name"] == station]
-        qc_val = (
-            float(df_qc.loc[sta_row[0], para])
-            if len(sta_row) and para in df_qc.columns
-            else None
-        )
-        for parquet_col in _qc_config.qc_to_parquet.get(para, []):
-            if parquet_col in df.columns and station in df.index:
-                self._flagged.append({
-                    "station": station,
-                    "column": parquet_col,
-                    "qc_parameter": para,
-                    "qc_value": qc_val,
-                    "source": source,
-                    **extra,
-                })
-                df.loc[station, parquet_col] = np.nan
+        cols = [
+            c for c in _qc_config.qc_to_parquet.get(para, [])
+            if c in df.columns and station in df.index
+        ]
+        if cols:
+            qc_values = [
+                round(float(df.at[station, c]), 4) if not pd.isna(df.at[station, c]) else None
+                for c in cols
+            ]
+            self._flagged.append({
+                "station": station,
+                "column": cols,
+                "qc_parameter": para,
+                "qc_value": qc_values,
+                **extra,
+            })
+            for c in cols:
+                df.loc[station, c] = np.nan
 
     @staticmethod
     def _merge_blacklist(my_dict, test_name, blacklist):
@@ -709,6 +768,66 @@ class CleanObservation(Filter):
             if col != "sta_name":
                 df_mod[col] = np.nan
                 df_diff[col] = np.nan
+        return df_mod, df_diff
+
+    def _load_residuals_at_stations(self, df_qc: pd.DataFrame):
+        """Load pre-computed obs-minus-model residuals and reconstruct the model background.
+
+        Reads ``residuals_{ts}.parquet`` from ``self.residuals_dir``.  The file
+        must have the station name as index and QC parameter names (``T_2M``,
+        ``TD_2M``, ``SP_10M``, …) as columns.
+
+        The model background is recovered as ``df_mod = df_qc − df_diff`` so that
+        ``fgt`` can use per-station model values even without the GRIB file.
+
+        Returns
+        -------
+        df_mod : pd.DataFrame
+            Reconstructed model values at station locations.
+        df_diff : pd.DataFrame
+            Observation innovation (obs − model) aligned to ``df_qc`` rows.
+        """
+        ts_match = re.search(r"\d{12}", self.obs_path_in.stem)
+        if not ts_match:
+            raise ValueError(f"Cannot extract timestamp from {self.obs_path_in.stem!r}")
+        ts = ts_match.group()
+
+        matches = list(self.residuals_dir.glob(f"*{ts}*.parquet"))
+        if not matches:
+            raise FileNotFoundError(
+                f"No residuals parquet matching *{ts}*.parquet in {self.residuals_dir}"
+            )
+        residuals_path = matches[0]
+        if len(matches) > 1:
+            LOG.warning("Multiple residuals files match %s — using %s", ts, residuals_path.name)
+
+        LOG.info("Reading residuals: %s", residuals_path)
+        df_res = pd.read_parquet(residuals_path)
+
+        # Rename parquet column names (2t, 2d, skt, …) to QC parameter names (T_2M, TD_2M, T_G, …)
+        col_to_qc = {col: para for col, (para, _) in _qc_config.parquet_to_qc.items()}
+        df_res = df_res.rename(columns=col_to_qc)
+        LOG.debug("Residuals columns after rename: %s", list(df_res.columns))
+
+        station_names = df_qc["sta_name"].to_numpy()
+        df_diff, _ = self._nan_frames(df_qc)
+
+        for para in df_qc.columns:
+            if para == "sta_name" or para not in df_res.columns:
+                continue
+            diff_vals = np.array(
+                [float(df_res.at[stn, para]) if stn in df_res.index else np.nan
+                 for stn in station_names],
+                dtype=float,
+            )
+            df_diff[para] = diff_vals
+
+        # Reconstruct model: obs − diff = model background
+        df_mod = df_qc.copy()
+        for col in df_qc.columns:
+            if col != "sta_name":
+                df_mod[col] = df_qc[col].to_numpy() - df_diff[col].to_numpy()
+
         return df_mod, df_diff
 
     def _load_model_at_stations(

@@ -8,6 +8,9 @@ par2check:
   - PS
   - PMSL
 
+# Stations permanently set to NaN for the listed parameters (loaded from external file)
+hard_blacklist_file: blacklist_bdp_all.yaml
+
 # Trusted stations — never blacklisted by automated QC regardless of score
 stations_excluded:
   T_2M:    {stations: ['BRL']}
@@ -18,9 +21,6 @@ stations_excluded:
   VMAX10M: {stations: []}
   PS:      {stations: []}
   PMSL:    {stations: []}
-
-# Stations permanently set to NaN for the listed parameters (loaded from external file)
-hard_blacklist_file: blacklist_bdp_all.yaml
 
 # Test selection and scoring per parameter — tests_QC: {test_name: weight}
 titan_ntests_threshold:

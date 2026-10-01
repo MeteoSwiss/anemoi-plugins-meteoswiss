@@ -8,6 +8,16 @@ from types import SimpleNamespace
 import titanlib
 
 
+_PARQUET_TO_QC = {
+    "2t":   "T_2M",
+    "2d":   "TD_2M",
+    "vmax": "VMAX10M",
+    "sp":   "PS",
+    "msl":  "PMSL",
+    "skt":  "T_G",
+}
+
+
 def _load_qc_config() -> SimpleNamespace:
     """Load QC configuration from clean_observation_config.yaml."""
     cfg = yaml.safe_load(Path(__file__).with_name("clean_observation_config.yaml").read_text())
@@ -16,7 +26,7 @@ def _load_qc_config() -> SimpleNamespace:
         return x
 
     ns = SimpleNamespace(**cfg)
-    ns.parquet_to_qc = {col: (qp, _identity) for col, qp in cfg["parquet_to_qc"].items()}
+    ns.parquet_to_qc = {col: (qp, _identity) for col, qp in _PARQUET_TO_QC.items()}
     return ns
 
 

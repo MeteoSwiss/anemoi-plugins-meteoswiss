@@ -34,7 +34,7 @@ fgt_excluded:
   PMSL:    {stations: []}
 
 # Test selection and scoring per parameter — tests_QC: {test_name: weight}
-# with 0.15 threshold need 2 points test for flagging  (value=1/sum(weights))
+# with 0.15 threshold need 2 points test for flagging  (value=(weight of positive tests)/sum(all test weights))
 titan_ntests_threshold:
   T_2M:
     threshold_summary: 0.15

@@ -21,29 +21,42 @@ stations_excluded:
   PS:      {stations: ['CEV','COV','TIT','GOS']}
   PMSL:    {stations: []}
 
+# Stations excluded from FGT only — other tests still apply
+# Useful for isolated high-altitude stations where FGT is unreliable
+# but buddy/isolation checks should still run
+fgt_excluded:
+  T_2M:    {stations: [OSSOK, OSBRU, IYSIG, SIKRE, IYULW, SIKAN]}
+  TD_2M:   {stations: []}
+  T_G:     {stations: []}
+  SP_10M:  {stations: [OSSOK, MMKLM]}
+  VMAX10M: {stations: []}
+  PS:      {stations: []}
+  PMSL:    {stations: []}
+
 # Test selection and scoring per parameter — tests_QC: {test_name: weight}
+# with 0.15 threshold need 2 points test for flagging  (value=1/sum(weights))
 titan_ntests_threshold:
   T_2M:
-    threshold_summary: 0.1
-    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 1, buddy_diff: 1, fgt: 1, plateau_test: 1, DWH_flag: 1}
+    threshold_summary: 0.15
+    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 2, buddy_diff: 2, fgt: 1, plateau_test: 2, DWH_flag: 1}
   TD_2M:
-    threshold_summary: 0.1
-    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 1, buddy_diff: 1, fgt: 1, plateau_test: 1, DWH_flag: 1}
+    threshold_summary: 0.15
+    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 2, buddy_diff: 2, fgt: 1, plateau_test: 2, DWH_flag: 1}
   T_G:
-    threshold_summary: 0.1
-    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 1, buddy_diff: 1, fgt: 1, plateau_test: 1, DWH_flag: 1}
+    threshold_summary: 0.15
+    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 1, buddy_diff: 2, fgt: 1, plateau_test: 2, DWH_flag: 1}
   SP_10M:
-    threshold_summary: 0.1
-    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 1, buddy_diff: 1, fgt: 1, plateau_test: 1, DWH_flag: 1}
+    threshold_summary: 0.15
+    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 2, buddy_diff: 2, fgt: 1, plateau_test: 2, DWH_flag: 1}
   VMAX10M:
-    threshold_summary: 0.1
-    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 1, buddy_diff: 1, fgt: 1, plateau_test: 1, DWH_flag: 1}
+    threshold_summary: 0.15
+    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 2, buddy_diff: 2, fgt: 1, plateau_test: 2, DWH_flag: 1}
   PS:
-    threshold_summary: 0.1
-    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 1, buddy_diff: 1, fgt: 1, plateau_test: 1, DWH_flag: 1}
+    threshold_summary: 0.15
+    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 2, buddy_diff: 2, fgt: 1, plateau_test: 2, DWH_flag: 1}
   PMSL:
-    threshold_summary: 0.1
-    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 1, buddy_diff: 1, fgt: 1, plateau_test: 1, DWH_flag: 1}
+    threshold_summary: 0.15
+    tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 2, buddy_diff: 2, fgt: 1, plateau_test: 2, DWH_flag: 1}
 
 # Hard test: plausibility range per parameter
 plausibility_thresholds:
@@ -210,13 +223,13 @@ buddy_diff:
 fgt:
   T_2M:
     background_elab_type: 3
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 100000
-    outer_radius: 200000
+    num_min_outer: 3
+    num_max_outer: 20
+    inner_radius: 150000
+    outer_radius: 250000
     num_iterations: 10
     num_min_prof: 0
-    min_elev_diff: 500
+    min_elev_diff: 750
     min_horizontal_scale: 250
     max_horizontal_scale: 300000
     kth_closest_obs_horizontal_scale: 2
@@ -225,13 +238,13 @@ fgt:
     tpostneg: [4.5, 3.0]
   TD_2M:
     background_elab_type: 3
-    num_min_outer: 2
-    num_max_outer: 15
-    inner_radius: 100000
-    outer_radius: 200000
+    num_min_outer: 3
+    num_max_outer: 20
+    inner_radius: 150000
+    outer_radius: 250000
     num_iterations: 10
     num_min_prof: 0
-    min_elev_diff: 700
+    min_elev_diff: 750
     min_horizontal_scale: 250
     max_horizontal_scale: 300000
     kth_closest_obs_horizontal_scale: 2
@@ -240,13 +253,13 @@ fgt:
     tpostneg: [6.0, 4.5]
   T_G:
     background_elab_type: 3
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 100000
-    outer_radius: 200000
+    num_min_outer: 3
+    num_max_outer: 20
+    inner_radius: 150000
+    outer_radius: 250000
     num_iterations: 10
     num_min_prof: 0
-    min_elev_diff: 500
+    min_elev_diff: 750
     min_horizontal_scale: 250
     max_horizontal_scale: 300000
     kth_closest_obs_horizontal_scale: 2
@@ -255,13 +268,13 @@ fgt:
     tpostneg: [6.5, 5.0]
   SP_10M:
     background_elab_type: 3
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 100000
-    outer_radius: 200000
+    num_min_outer: 3
+    num_max_outer: 20
+    inner_radius: 150000
+    outer_radius: 250000
     num_iterations: 10
     num_min_prof: 0
-    min_elev_diff: 500
+    min_elev_diff: 750
     min_horizontal_scale: 400
     max_horizontal_scale: 300000
     kth_closest_obs_horizontal_scale: 2
@@ -270,13 +283,13 @@ fgt:
     tpostneg: [9.5, 8.0]
   VMAX10M:
     background_elab_type: 3
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 100000
-    outer_radius: 200000
+    num_min_outer: 3
+    num_max_outer: 20
+    inner_radius: 150000
+    outer_radius: 250000
     num_iterations: 10
     num_min_prof: 0
-    min_elev_diff: 500
+    min_elev_diff: 750
     min_horizontal_scale: 400
     max_horizontal_scale: 300000
     kth_closest_obs_horizontal_scale: 2
@@ -285,13 +298,13 @@ fgt:
     tpostneg: [9.5, 8.0]
   PS:
     background_elab_type: 3
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 100000
-    outer_radius: 200000
+    num_min_outer: 3
+    num_max_outer: 20
+    inner_radius: 150000
+    outer_radius: 250000
     num_iterations: 10
     num_min_prof: 0
-    min_elev_diff: 500
+    min_elev_diff: 750
     min_horizontal_scale: 250
     max_horizontal_scale: 300000
     kth_closest_obs_horizontal_scale: 2
@@ -300,229 +313,19 @@ fgt:
     tpostneg: [5.5, 4.5]
   PMSL:
     background_elab_type: 3
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 100000
-    outer_radius: 200000
+    num_min_outer: 3
+    num_max_outer: 20
+    inner_radius: 150000
+    outer_radius: 250000
     num_iterations: 10
     num_min_prof: 0
-    min_elev_diff: 500
+    min_elev_diff: 750
     min_horizontal_scale: 250
     max_horizontal_scale: 300000
     kth_closest_obs_horizontal_scale: 2
     debug: false
     basic: true
     tpostneg: [5.5, 4.5]
-
-# Spatial consistency test — resistant variant
-# (background_elab_type 1 = VerticalProfileTheilSen)
-spt_resistant:
-  T_2M:
-    background_elab_type: 1
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 100000
-    outer_radius: 200000
-    num_iterations: 10
-    num_min_prof: 1
-    min_elev_diff: 500
-    min_horizontal_scale: 250
-    max_horizontal_scale: 300000
-    kth_closest_obs_horizontal_scale: 2
-    vertical_scale: 300
-    debug: false
-    basic: true
-  TD_2M:
-    background_elab_type: 1
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 50000
-    outer_radius: 100000
-    num_iterations: 10
-    num_min_prof: 1
-    min_elev_diff: 700
-    min_horizontal_scale: 250
-    max_horizontal_scale: 150000
-    kth_closest_obs_horizontal_scale: 2
-    vertical_scale: 300
-    debug: false
-    basic: false
-  T_G:
-    background_elab_type: 1
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 50000
-    outer_radius: 100000
-    num_iterations: 10
-    num_min_prof: 1
-    min_elev_diff: 500
-    min_horizontal_scale: 250
-    max_horizontal_scale: 150000
-    kth_closest_obs_horizontal_scale: 2
-    vertical_scale: 300
-    debug: false
-    basic: false
-  SP_10M:
-    background_elab_type: 1
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 50000
-    outer_radius: 100000
-    num_iterations: 10
-    num_min_prof: 1
-    min_elev_diff: 500
-    min_horizontal_scale: 250
-    max_horizontal_scale: 150000
-    kth_closest_obs_horizontal_scale: 2
-    vertical_scale: 400
-    debug: false
-    basic: false
-  VMAX10M:
-    background_elab_type: 1
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 50000
-    outer_radius: 100000
-    num_iterations: 10
-    num_min_prof: 1
-    min_elev_diff: 500
-    min_horizontal_scale: 250
-    max_horizontal_scale: 150000
-    kth_closest_obs_horizontal_scale: 2
-    vertical_scale: 400
-    debug: false
-    basic: false
-  PS:
-    background_elab_type: 1
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 100000
-    outer_radius: 200000
-    num_iterations: 10
-    num_min_prof: 1
-    min_elev_diff: 500
-    min_horizontal_scale: 250
-    max_horizontal_scale: 300000
-    kth_closest_obs_horizontal_scale: 2
-    vertical_scale: 300
-    debug: false
-    basic: true
-  PMSL:
-    background_elab_type: 1
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 100000
-    outer_radius: 200000
-    num_iterations: 10
-    num_min_prof: 1
-    min_elev_diff: 500
-    min_horizontal_scale: 250
-    max_horizontal_scale: 300000
-    kth_closest_obs_horizontal_scale: 2
-    vertical_scale: 300
-    debug: false
-    basic: true
-
-# Spatial consistency test — dual variant
-sct_dual:
-  T_2M:
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 100000
-    outer_radius: 200000
-    num_iterations: 10
-    min_horizontal_scale: 250
-    max_horizontal_scale: 300000
-    kth_closest_obs_horizontal_scale: 2
-    vertical_scale: 1000
-    debug: false
-    condition: 0
-    event_thresholds: 0.05
-    test_thresholds: 0.95
-  TD_2M:
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 50000
-    outer_radius: 100000
-    num_iterations: 10
-    min_horizontal_scale: 250
-    max_horizontal_scale: 100000
-    kth_closest_obs_horizontal_scale: 2
-    vertical_scale: 300
-    debug: false
-    condition: 0
-    event_thresholds: 0.05
-    test_thresholds: 0.95
-  T_G:
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 50000
-    outer_radius: 100000
-    num_iterations: 10
-    min_horizontal_scale: 250
-    max_horizontal_scale: 100000
-    kth_closest_obs_horizontal_scale: 2
-    vertical_scale: 300
-    debug: false
-    condition: 0
-    event_thresholds: 0.05
-    test_thresholds: 0.95
-  SP_10M:
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 50000
-    outer_radius: 100000
-    num_iterations: 10
-    min_horizontal_scale: 250
-    max_horizontal_scale: 100000
-    kth_closest_obs_horizontal_scale: 2
-    vertical_scale: 400
-    debug: false
-    condition: 0
-    event_thresholds: 0.05
-    test_thresholds: 0.95
-  VMAX10M:
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 50000
-    outer_radius: 100000
-    num_iterations: 10
-    min_horizontal_scale: 250
-    max_horizontal_scale: 100000
-    kth_closest_obs_horizontal_scale: 2
-    vertical_scale: 400
-    debug: false
-    condition: 0
-    event_thresholds: 0.05
-    test_thresholds: 0.95
-  PS:
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 100000
-    outer_radius: 200000
-    num_iterations: 10
-    min_horizontal_scale: 250
-    max_horizontal_scale: 300000
-    kth_closest_obs_horizontal_scale: 2
-    vertical_scale: 1000
-    debug: false
-    condition: 0
-    event_thresholds: 0.05
-    test_thresholds: 0.95
-  PMSL:
-    num_min_outer: 2
-    num_max_outer: 10
-    inner_radius: 100000
-    outer_radius: 200000
-    num_iterations: 10
-    min_horizontal_scale: 250
-    max_horizontal_scale: 300000
-    kth_closest_obs_horizontal_scale: 2
-    vertical_scale: 1000
-    debug: false
-    condition: 0
-    event_thresholds: 0.05
-    test_thresholds: 0.95
 
 # Set to true to write one PNG per parameter alongside the output parquet (requires cartopy)
 plot_maps: false

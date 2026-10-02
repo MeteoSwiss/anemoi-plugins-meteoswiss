@@ -65,6 +65,7 @@ def _load_qc_config() -> SimpleNamespace:
         return x
 
     ns = SimpleNamespace(**cfg)
+    ns.fgt_excluded   = cfg.get("fgt_excluded", {})
     ns.obs_only_tests = _OBS_ONLY_TESTS
     ns.par2pi        = _PAR2PI
     ns.parquet_to_qc = {col: (qp, _identity) for col, qp in _PARQUET_TO_QC.items()}
@@ -678,14 +679,34 @@ class CleanObservation(Filter):
 
         if "fgt" in tests_to_do:
             fg = cfg.fgt[para]
-            runners["fgt"] = lambda: fns["first_guess_test"](
-                stations, lats, lons, elevs, values, mods, para, current_f,
-                fg['background_elab_type'], fg['num_min_outer'], fg['num_max_outer'],
-                fg['inner_radius'], fg['outer_radius'], fg['num_iterations'],
-                fg['num_min_prof'], fg['min_elev_diff'], fg['min_horizontal_scale'],
-                fg['max_horizontal_scale'], fg['kth_closest_obs_horizontal_scale'],
-                bool(fg['debug']), bool(fg['basic']), fg['tpostneg'],
-            )
+            _fgt_excl = set(cfg.fgt_excluded.get(para, {}).get("stations", []))
+
+            def _run_fgt(
+                _stations=stations, _lats=lats, _lons=lons, _elevs=elevs,
+                _values=values, _mods=mods, _fg=fg, _excl=_fgt_excl,
+            ):
+                if _excl:
+                    mask = [s not in _excl for s in _stations]
+                    import numpy as np
+                    idx  = [i for i, m in enumerate(mask) if m]
+                    _s   = [_stations[i] for i in idx]
+                    _la  = _lats[idx] if hasattr(_lats, '__getitem__') else [_lats[i] for i in idx]
+                    _lo  = _lons[idx] if hasattr(_lons, '__getitem__') else [_lons[i] for i in idx]
+                    _el  = _elevs[idx] if hasattr(_elevs, '__getitem__') else [_elevs[i] for i in idx]
+                    _v   = _values[idx] if hasattr(_values, '__getitem__') else [_values[i] for i in idx]
+                    _m   = _mods[idx] if hasattr(_mods, '__getitem__') else [_mods[i] for i in idx]
+                else:
+                    _s, _la, _lo, _el, _v, _m = _stations, _lats, _lons, _elevs, _values, _mods
+                return fns["first_guess_test"](
+                    _s, _la, _lo, _el, _v, _m, para, current_f,
+                    _fg['background_elab_type'], _fg['num_min_outer'], _fg['num_max_outer'],
+                    _fg['inner_radius'], _fg['outer_radius'], _fg['num_iterations'],
+                    _fg['num_min_prof'], _fg['min_elev_diff'], _fg['min_horizontal_scale'],
+                    _fg['max_horizontal_scale'], _fg['kth_closest_obs_horizontal_scale'],
+                    bool(_fg['debug']), bool(_fg['basic']), _fg['tpostneg'],
+                )
+
+            runners["fgt"] = _run_fgt
 
         if "spt_resistant" in tests_to_do:
             sp = cfg.spt_resistant[para]

@@ -6,7 +6,6 @@ from anemoi.transform.fields import new_field_from_numpy
 from anemoi.transform.fields import new_fieldlist_from_list
 from earthkit.data.core.metadata import RawMetadata
 from earthkit.data.sources.array_list import ArrayField
-from scipy.interpolate import RegularGridInterpolator
 
 from anemoi_plugins_meteoswiss.transform import filters
 from anemoi_plugins_meteoswiss.transform.filters import GaussianSmoother
@@ -14,10 +13,16 @@ from anemoi_plugins_meteoswiss.transform.filters import IconRemapToRegLatLon
 from anemoi_plugins_meteoswiss.transform.filters import Keep
 from anemoi_plugins_meteoswiss.transform.filters import ModelToPressureLevel
 from anemoi_plugins_meteoswiss.transform.filters.nudging import NudgeTowardObservation
-from anemoi_plugins_meteoswiss.transform.filters.nudging import barrier_distances
 from anemoi_plugins_meteoswiss.transform.filters.nudging import ned_interp
 
 ICONREMAP_WEIGHTS = "/store_new/mch/msopr/icon_workflow_2/iconremap-weights/icon-ch1-eps-rotlatlon.nc"
+
+# Placeholder input files for NudgeTowardObservation; the tests mock the loaders.
+NUDGE_PATHS = {
+    "icon_grid_file": "icon_grid.nc",
+    "d_eff_file": "d_eff.nc",
+    "icon_orog_file": "icon_orog.nc",
+}
 
 
 def test_filter_imports():
@@ -100,14 +105,6 @@ def test_gaussian_smoother(data_dir, hostname):
 # ── NudgeTowardObservation unit tests ─────────────────────────────────────
 
 
-def _make_mock_dem_rgi():
-    """Flat 100 m DEM on a 200 × 200 km LV95 grid."""
-    x = np.linspace(2_500_000, 2_700_000, 50)
-    y = np.linspace(1_100_000, 1_300_000, 50)
-    z = np.full((len(y), len(x)), 100.0)
-    return RegularGridInterpolator((y, x), z, method="linear", bounds_error=False, fill_value=0.0)
-
-
 def _make_mock_transformer():
     """WGS84 → LV95 transformer (real pyproj)."""
     from pyproj import Transformer
@@ -115,8 +112,8 @@ def _make_mock_transformer():
     return Transformer.from_crs("EPSG:4326", "EPSG:2056", always_xy=True)
 
 
-def test_ned_interp_no_topo():
-    """ned_interp without topo falls back to pure IDW and produces finite outputs."""
+def test_ned_interp_idw():
+    """ned_interp produces finite IDW outputs when every POI has stations in range."""
     rng = np.random.default_rng(0)
     n_sta, n_poi = 5, 10
     sta_ids = [f"S{i}" for i in range(n_sta)]
@@ -166,93 +163,6 @@ def test_ned_interp_max_dist_masking():
     assert np.all(np.isnan(result["T_2M"].values))
 
 
-def test_barrier_distances_flat_terrain():
-    """On a flat DEM with same station/POI elevation, barrier=0 and d_eff ≈ d_euc."""
-    dem_rgi = _make_mock_dem_rgi()
-    transformer = _make_mock_transformer()
-
-    poi_lon = np.array([8.0], dtype=np.float32)
-    poi_lat = np.array([47.0], dtype=np.float32)
-    sta_lon = np.array([8.0], dtype=np.float32)
-    sta_lat = np.array([47.1], dtype=np.float32)
-    sta_elev = np.array([100.0], dtype=np.float32)  # same as flat DEM → elev_diff = 0
-
-    d_raw = float(np.sqrt((47.0 - 47.1) ** 2))  # delta-lon=0, delta-lat=0.1
-    d_euc = np.array([[d_raw]], dtype=np.float32)
-
-    d_eff = barrier_distances(
-        poi_lon,
-        poi_lat,
-        sta_lon,
-        sta_lat,
-        d_euc,
-        max_dist=0.5,
-        sta_elev=sta_elev,
-        dem_rgi=dem_rgi,
-        wgs84_to_lv95=transformer,
-        n_samples=10,
-        elev_scale=2000.0,
-        elev_diff_scale=4000.0,
-        n_barrier_width_samples=1,
-        barrier_width=0.0,
-    )
-    np.testing.assert_allclose(d_eff, d_euc, rtol=1e-4)
-
-
-def test_barrier_distances_same_valley_no_penalty():
-    """Two points at the same altitude in a flat valley get no barrier penalty."""
-    dem_rgi = _make_mock_dem_rgi()
-    transformer = _make_mock_transformer()
-
-    poi_lon = np.array([8.0])
-    poi_lat = np.array([47.0])
-    sta_lon = np.array([8.2])
-    sta_lat = np.array([47.0])
-    sta_elev = np.array([100.0])  # matches flat DEM → elev_diff = 0, barrier = 0
-
-    lat0 = np.deg2rad(47.0)
-    d_raw = float(np.sqrt((0.2 * np.cos(lat0)) ** 2))
-    d_euc = np.array([[d_raw]], dtype=np.float32)
-
-    d_eff = barrier_distances(
-        poi_lon,
-        poi_lat,
-        sta_lon,
-        sta_lat,
-        d_euc,
-        max_dist=0.5,
-        sta_elev=sta_elev,
-        dem_rgi=dem_rgi,
-        wgs84_to_lv95=transformer,
-        n_samples=5,
-        elev_scale=2000.0,
-        elev_diff_scale=4000.0,
-        n_barrier_width_samples=1,
-        barrier_width=0.0,
-    )
-    np.testing.assert_allclose(d_eff, d_euc, rtol=1e-4)
-
-
-def test_barrier_distances_no_close_pairs():
-    """When no pairs are within max_dist, d_euc is returned unchanged."""
-    dem_rgi = _make_mock_dem_rgi()
-    transformer = _make_mock_transformer()
-
-    d_euc = np.array([[1.0, 2.0]], dtype=np.float32)
-    d_eff = barrier_distances(
-        np.array([8.0]),
-        np.array([47.0]),
-        np.array([8.0, 8.5]),
-        np.array([48.0, 48.0]),
-        d_euc,
-        max_dist=0.3,
-        sta_elev=np.array([100.0, 200.0]),
-        dem_rgi=dem_rgi,
-        wgs84_to_lv95=transformer,
-    )
-    np.testing.assert_array_equal(d_eff, d_euc)
-
-
 def test_nudge_toward_observation_invalid_run_mode(tmp_path):
     """Invalid run_mode raises ValueError at construction."""
     from unittest.mock import patch
@@ -262,11 +172,11 @@ def test_nudge_toward_observation_invalid_run_mode(tmp_path):
 
     with (
         patch.object(NudgeTowardObservation, "_load_icon_grid"),
-        patch.object(NudgeTowardObservation, "_load_topo"),
-        patch.object(NudgeTowardObservation, "_load_dem"),
+        patch.object(NudgeTowardObservation, "_load_icon_orog"),
+        patch.object(NudgeTowardObservation, "_project_icon_grid"),
     ):
         with pytest.raises(ValueError, match="run_mode"):
-            NudgeTowardObservation(obs_path=str(obs), run_mode="bad")
+            NudgeTowardObservation(obs_path=str(obs), **NUDGE_PATHS, run_mode="bad")
 
 
 def test_nudge_toward_observation_mutual_exclusion(tmp_path):
@@ -278,12 +188,13 @@ def test_nudge_toward_observation_mutual_exclusion(tmp_path):
 
     with (
         patch.object(NudgeTowardObservation, "_load_icon_grid"),
-        patch.object(NudgeTowardObservation, "_load_topo"),
-        patch.object(NudgeTowardObservation, "_load_dem"),
+        patch.object(NudgeTowardObservation, "_load_icon_orog"),
+        patch.object(NudgeTowardObservation, "_project_icon_grid"),
     ):
         with pytest.raises(ValueError, match="mutually exclusive"):
             NudgeTowardObservation(
                 obs_path=str(obs),
+                **NUDGE_PATHS,
                 holdout_fraction=0.1,
                 exclude_stations=["ABC"],
             )
@@ -298,11 +209,11 @@ def test_nudge_toward_observation_invalid_reliability_min_dist_frac(tmp_path):
 
     with (
         patch.object(NudgeTowardObservation, "_load_icon_grid"),
-        patch.object(NudgeTowardObservation, "_load_topo"),
-        patch.object(NudgeTowardObservation, "_load_dem"),
+        patch.object(NudgeTowardObservation, "_load_icon_orog"),
+        patch.object(NudgeTowardObservation, "_project_icon_grid"),
     ):
         with pytest.raises(ValueError, match="reliability_min_dist_frac"):
-            NudgeTowardObservation(obs_path=str(obs), reliability_min_dist_frac=1.5)
+            NudgeTowardObservation(obs_path=str(obs), **NUDGE_PATHS, reliability_min_dist_frac=1.5)
 
 
 def test_nudge_toward_observation_invalid_number_of_std(tmp_path):
@@ -314,17 +225,17 @@ def test_nudge_toward_observation_invalid_number_of_std(tmp_path):
 
     with (
         patch.object(NudgeTowardObservation, "_load_icon_grid"),
-        patch.object(NudgeTowardObservation, "_load_topo"),
-        patch.object(NudgeTowardObservation, "_load_dem"),
+        patch.object(NudgeTowardObservation, "_load_icon_orog"),
+        patch.object(NudgeTowardObservation, "_project_icon_grid"),
     ):
         with pytest.raises(ValueError, match="number_of_std"):
-            NudgeTowardObservation(obs_path=str(obs), number_of_std=0.0)
+            NudgeTowardObservation(obs_path=str(obs), **NUDGE_PATHS, number_of_std=0.0)
 
 
 def _make_mock_d_eff_sta_cache(sta_ids: list, sta_xy: np.ndarray) -> dict:
     """Synthetic station<->station d_eff cache for _compute_reliability tests:
-    on a flat DEM (barrier=elev_diff=0), d_eff reduces to plain Euclidean
-    distance — see test_barrier_distances_flat_terrain. Self-distance is +inf,
+    on flat terrain (barrier=elev_diff=0), d_eff reduces to plain Euclidean
+    distance. Self-distance is +inf,
     matching generate_d_eff_cache.py's own convention (a station is never its
     own neighbour). Only the two keys _get_d_eff_sta actually reads are
     included — see NudgeTowardObservation._load_d_eff_cache."""
@@ -341,9 +252,8 @@ def _make_mock_d_eff_sta_cache(sta_ids: list, sta_xy: np.ndarray) -> dict:
 def test_compute_reliability_flags_outlier_station(tmp_path):
     """Leave-one-out spatial-consistency check: a station whose residual wildly
     disagrees with its neighbours gets reliability=0; consistent stations stay
-    close to 1. Uses the same mock DEM/transformer as the barrier_distances tests
-    above, plus a synthetic d_eff cache (see _make_mock_d_eff_sta_cache) — no
-    real ICON/DEM/topo/d_eff files needed."""
+    close to 1. Uses a synthetic d_eff cache (see _make_mock_d_eff_sta_cache),
+    so no real ICON/d_eff files are needed."""
     from unittest.mock import patch
 
     obs = tmp_path / "obs.parquet"
@@ -352,7 +262,6 @@ def test_compute_reliability_flags_outlier_station(tmp_path):
     sta_ids = ["AAA", "BBB", "CCC", "DDD", "BAD"]
     st_lat = np.array([47.00, 47.02, 46.98, 47.01, 46.99])
     st_lon = np.array([8.00, 8.02, 7.98, 8.05, 8.01])
-    st_elev = np.full(5, 100.0)  # matches the flat mock DEM → barrier/elev_diff = 0
     transformer = _make_mock_transformer()
     sta_x, sta_y = transformer.transform(st_lon, st_lat)
     sta_xy = np.c_[sta_x, sta_y] / 1000.0
@@ -361,35 +270,28 @@ def test_compute_reliability_flags_outlier_station(tmp_path):
 
     with (
         patch.object(NudgeTowardObservation, "_load_icon_grid"),
-        patch.object(NudgeTowardObservation, "_load_topo"),
-        patch.object(NudgeTowardObservation, "_load_dem"),
+        patch.object(NudgeTowardObservation, "_load_icon_orog"),
+        patch.object(NudgeTowardObservation, "_project_icon_grid"),
         patch.object(NudgeTowardObservation, "_load_d_eff_cache", return_value=d_eff_sta_cache),
     ):
         filt = NudgeTowardObservation(
             obs_path=str(obs),
+            **NUDGE_PATHS,
             max_dist=50_000.0,  # meters (50 km)
             weight_power=2.0,
-            min_topo_w=0.2,
             lim_effective=0.0,
             number_of_std=4.0,
             reliability_min_dist_frac=0.1,
         )
-    filt._dem_rgi = _make_mock_dem_rgi()
     filt._wgs84_to_lv95 = transformer
 
-    # A single topo descriptor is enough to exercise ned_interp's topo-similarity
-    # branch (its importance normalises to 1 trivially with only one descriptor).
-    sta_topo = xr.Dataset({"ELEV": xr.DataArray(st_elev.astype(np.float32), dims=["sta"], coords={"sta": sta_ids})})
     sta_res = xr.Dataset({"T_2M": xr.DataArray(r_at_st.astype(np.float32), dims=["sta"], coords={"sta": sta_ids})})
 
     reliability = filt._compute_reliability(
         "T_2M",
         sta_ids,
-        st_lon,
-        st_lat,
         r_at_st,
         sta_res,
-        sta_topo,
         filt._max_dist_by_var["T_2M"],
     )
 
@@ -421,7 +323,6 @@ def test_compute_reliability_isolated_station_does_not_poison_others(tmp_path):
     sta_ids = ["AAA", "BBB", "CCC", "DDD", "ISO"]
     st_lat = np.array([47.00, 47.02, 46.98, 47.01, 46.20])
     st_lon = np.array([8.00, 8.02, 7.98, 8.05, 9.90])
-    st_elev = np.full(5, 100.0)
     transformer = _make_mock_transformer()
     sta_x, sta_y = transformer.transform(st_lon, st_lat)
     sta_xy = np.c_[sta_x, sta_y] / 1000.0
@@ -430,33 +331,28 @@ def test_compute_reliability_isolated_station_does_not_poison_others(tmp_path):
 
     with (
         patch.object(NudgeTowardObservation, "_load_icon_grid"),
-        patch.object(NudgeTowardObservation, "_load_topo"),
-        patch.object(NudgeTowardObservation, "_load_dem"),
+        patch.object(NudgeTowardObservation, "_load_icon_orog"),
+        patch.object(NudgeTowardObservation, "_project_icon_grid"),
         patch.object(NudgeTowardObservation, "_load_d_eff_cache", return_value=d_eff_sta_cache),
     ):
         filt = NudgeTowardObservation(
             obs_path=str(obs),
+            **NUDGE_PATHS,
             max_dist=50_000.0,  # meters (50 km)
             weight_power=2.0,
-            min_topo_w=0.2,
             lim_effective=0.0,
             number_of_std=4.0,
             reliability_min_dist_frac=0.1,
         )
-    filt._dem_rgi = _make_mock_dem_rgi()
     filt._wgs84_to_lv95 = transformer
 
-    sta_topo = xr.Dataset({"ELEV": xr.DataArray(st_elev.astype(np.float32), dims=["sta"], coords={"sta": sta_ids})})
     sta_res = xr.Dataset({"T_2M": xr.DataArray(r_at_st.astype(np.float32), dims=["sta"], coords={"sta": sta_ids})})
 
     reliability = filt._compute_reliability(
         "T_2M",
         sta_ids,
-        st_lon,
-        st_lat,
         r_at_st,
         sta_res,
-        sta_topo,
         filt._max_dist_by_var["T_2M"],
     )
     values = reliability.values
@@ -464,6 +360,94 @@ def test_compute_reliability_isolated_station_does_not_poison_others(tmp_path):
     assert not np.any(np.isnan(values)), f"NaN leaked into reliability: {values}"
     assert values[-1] == 1.0, f"isolated station should default to reliability=1.0, got {values[-1]}"
     assert np.all(values[:-1] > 0.5), f"consistent cluster stations should stay trusted, got {values[:-1]}"
+
+
+def test_nudge_field_writes_diagnostics(tmp_path):
+    """With write_diagnostics=True, _nudge_field writes one NetCDF holding the
+    holdin and holdout station residuals, the reliability results and the
+    gridded correction; with it False, nothing is written."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    import pandas as pd
+    from scipy.spatial import cKDTree
+
+    obs = tmp_path / "obs.parquet"
+    obs.touch()
+    transformer = _make_mock_transformer()
+
+    # 15 x 15 grid of "ICON cells" around 8E/47N, flat 500 m orography.
+    lon_g, lat_g = np.meshgrid(np.linspace(7.8, 8.2, 15), np.linspace(46.9, 47.1, 15))
+    lon_icon, lat_icon = lon_g.ravel(), lat_g.ravel()
+    gx, gy = transformer.transform(lon_icon, lat_icon)
+    grid_xy = np.c_[gx, gy] / 1000.0
+
+    all_ids = ["AAA", "BBB", "CCC", "DDD", "HHH"]
+    all_stations = pd.DataFrame(
+        {
+            "latitude": [47.00, 47.02, 46.98, 47.01, 47.03],
+            "longitude": [8.00, 8.02, 7.98, 8.05, 7.95],
+            "elevation": [500.0] * 5,
+            "2t": [280.0, 280.2, 279.8, 280.1, 280.3],
+        },
+        index=pd.Index(all_ids, name="station"),
+    )
+    stations = all_stations.drop(index=["HHH"])
+    held_out = all_stations.loc[["HHH"]]
+    sta_ids = stations.index.tolist()
+
+    sx, sy = transformer.transform(stations["longitude"].to_numpy(), stations["latitude"].to_numpy())
+    sta_xy = np.c_[sx, sy] / 1000.0
+    d_poi = np.sqrt(((grid_xy[:, None, :] - sta_xy[None, :, :]) ** 2).sum(axis=-1)).astype(np.float32)
+    d_eff_poi_full = xr.DataArray(d_poi, dims=["poi", "sta"], coords={"poi": np.arange(len(lon_icon)), "sta": sta_ids})
+    cache = _make_mock_d_eff_sta_cache(sta_ids, sta_xy) | {
+        "d_eff_poi_full": d_eff_poi_full,
+        "poi_index": pd.Index(d_eff_poi_full["poi"].values),
+        "sta_index": pd.Index(sta_ids),
+        "poi_set": set(range(len(lon_icon))),
+    }
+
+    def _make_filter(write_diagnostics):
+        with (
+            patch.object(NudgeTowardObservation, "_load_icon_grid"),
+            patch.object(NudgeTowardObservation, "_load_icon_orog"),
+            patch.object(NudgeTowardObservation, "_project_icon_grid"),
+            patch.object(NudgeTowardObservation, "_load_d_eff_cache", return_value=cache),
+        ):
+            filt = NudgeTowardObservation(
+                obs_path=str(obs),
+                **NUDGE_PATHS,
+                nudge_variables=["T_2M"],
+                use_reliability_check=True,
+                write_diagnostics=write_diagnostics,
+                diagnostics_dir=str(tmp_path / "diag"),
+            )
+        filt._lat_icon, filt._lon_icon = lat_icon, lon_icon
+        filt._icon_orog = np.full(len(lon_icon), 500.0, dtype=np.float32)
+        filt._wgs84_to_lv95 = transformer
+        filt._grid_xy_km = grid_xy
+        filt._grid_tree = cKDTree(grid_xy)
+        return filt
+
+    field = SimpleNamespace(values=np.full(len(lon_icon), 281.0, dtype=np.float32))
+    ref_time = pd.Timestamp("2026-01-01 06:00").to_pydatetime()
+
+    _make_filter(False)._nudge_field(field, stations, "T_2M", "2t", ref_time, held_out)
+    assert not (tmp_path / "diag").exists()
+
+    corrected = _make_filter(True)._nudge_field(field, stations, "T_2M", "2t", ref_time, held_out)
+    ds = xr.open_dataset(tmp_path / "diag" / "nudging_diag_T_2M_202601010600.nc")
+
+    assert list(ds["station"].values) == ["AAA", "BBB", "CCC", "DDD", "HHH"]
+    assert list(ds["is_holdout"].values) == [0, 0, 0, 0, 1]
+    np.testing.assert_allclose(ds["residual_pre"].values, 281.0 - all_stations["2t"].to_numpy(), rtol=1e-6)
+    assert np.all(np.isfinite(ds["reliability"].values[:4]))
+    assert np.isnan(ds["reliability"].values[4])
+    np.testing.assert_allclose(
+        ds["correction"].values, field.values[ds["cell"].values] - corrected[ds["cell"].values], atol=1e-4
+    )
+    assert ds.attrs["variable"] == "T_2M"
+    assert ds.sizes["qc_station"] == 0
 
 
 def test_keep(caplog):

@@ -2,10 +2,6 @@
 cache consumed by ``NudgeTowardObservation``'s ``d_eff_file`` parameter
 (``anemoi_plugins_meteoswiss/transform/filters/nudging.py``).
 
-Converted from ``notebooks/d_eff_generator.ipynb`` (see that repo's git
-history for the original) so it can run headlessly, e.g. from
-``ci/d_eff_generator.yaml``.
-
 Steps
 -----
 1.  Retrieve the station catalog via ``jretrieve`` — metadata only, no
@@ -16,18 +12,15 @@ Steps
 2.  Trim the retrieved stations to either a bounding box **or** the real
     Swiss national border (``--station-filter-mode``).
 3.  Compute ``d_eff_poi`` (POI<->station) and ``d_eff_sta``
-    (station<->station) via the production ``barrier_distances()`` (imported
-    directly from ``nudging.py``, not re-implemented here, so this is
-    guaranteed to match what ``NudgeTowardObservation`` itself uses offline).
-4.  Write both to a NetCDF file, with the barrier hyperparameters and the
-    station count attached as metadata — both as NetCDF attrs (so
+    (station<->station) via ``barrier_distances()``.
+4.  Write both to a NetCDF file, together with each station's
+    longitude/latitude, LV95 x/y and elevation (``station_*`` variables along
+    ``sta``), with the barrier hyperparameters and the station count attached
+    as metadata — both as NetCDF attrs (so
     ``xr.open_dataset(...).attrs`` works) and as a JSON sidecar file (so they
     can be checked without loading xarray at all).
 
-Skips everything specific to running the nudging algorithm itself (no GRIB
-loading, no ``ned_interp``, no topographic descriptors, no reliability check,
-no diagnostic plots beyond the optional station map) — this script's only job
-is producing the cache file.
+This script's only job is producing the cache file.
 """
 
 import argparse
@@ -42,8 +35,6 @@ import pandas as pd
 import xarray as xr
 from pyproj import Transformer
 from scipy.interpolate import RegularGridInterpolator
-
-from anemoi_plugins_meteoswiss.transform.filters.nudging import barrier_distances
 
 LOG = logging.getLogger(__name__)
 
@@ -112,12 +103,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--icon-grid-file", default=DEFAULT_ICON_GRID_FILE)
     p.add_argument("--dem-barrier-file", default=DEFAULT_DEM_BARRIER_FILE)
     # Barrier-aware distance hyperparameters — baked into the cache at build
-    # time, NOT read back by consumers, and no longer configurable on
-    # NudgeTowardObservation itself (see its d_eff_file parameter). Defaults
-    # below match the notebook's own "currently active" configuration; the
-    # production configs' d_eff_file currently points at a different combo
-    # (max-dist=50000, elev-scale=50, elev-diff-scale=100 — the
-    # 'd_eff_5' cache) — override below to reproduce that one instead.
+    # time, NOT read back by consumers, and not configurable on
+    # NudgeTowardObservation itself (see its d_eff_file parameter). The
+    # defaults below reproduce the cache used by the production configs
+    # (d_eff_cache_domain_maxdist50km_nbar50x3_bw1500m_elev50_elevdiff100_*).
     p.add_argument(
         "--n-barrier-samples",
         type=int,
@@ -165,18 +154,121 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "tells you what's inside without opening it.",
     )
     p.add_argument(
-        "--plot-out",
-        default=None,
-        help="If given, save a PNG map of the stations considered for d_eff to this "
-        "path (matplotlib Agg backend — safe in a headless/batch job). Skipped "
-        "by default.",
-    )
-    p.add_argument(
         "--force",
         action="store_true",
         help="Recompute even if a matching cache file (same cache key) already exists.",
     )
     return p.parse_args(argv)
+
+
+def barrier_distances(
+    poi_lon: np.ndarray,
+    poi_lat: np.ndarray,
+    sta_lon: np.ndarray,
+    sta_lat: np.ndarray,
+    d_euc: np.ndarray,
+    max_dist: float,
+    sta_elev: np.ndarray,
+    dem_rgi: RegularGridInterpolator,
+    wgs84_to_lv95: Transformer,
+    n_samples: int = 50,
+    elev_scale: float = 50,
+    elev_diff_scale: float = 100,
+    n_barrier_width_samples: int = 3,
+    barrier_width: float = 1500.0,
+) -> np.ndarray:
+    """Replace Euclidean distances with elevation-aware distances.
+
+    For each (POI, station) pair with d_euc < max_dist:
+        d_eff = sqrt(d_euc² + (barrier / elev_scale)² + (elev_diff / elev_diff_scale)²)
+
+    d_euc and max_dist are in km, elev_scale and elev_diff_scale in m/km,
+    barrier_width in m (LV95).
+
+    Barrier term: n_samples points along the straight path (endpoints
+    excluded), each the Gaussian-weighted mean (sigma = barrier_width / 2) of
+    n_barrier_width_samples DEM values across a ±barrier_width corridor
+    perpendicular to the path. The barrier is the 95th percentile of these
+    values above the higher endpoint:
+        barrier = max(0, percentile_95(elev_path) − max(elev_poi, elev_sta))
+
+    Elevation term: elev_diff = |elev_poi − elev_sta| penalises pairs at
+    different altitudes even without a ridge in between.
+
+    sta_elev is the station elevation from metadata
+    """
+    close_mask = d_euc < max_dist
+    pi_idx, si_idx = np.where(close_mask)
+
+    if len(pi_idx) == 0:
+        return d_euc
+
+    u_poi, inv_poi = np.unique(pi_idx, return_inverse=True)
+    u_sta, inv_sta = np.unique(si_idx, return_inverse=True)
+
+    poi_x_u, poi_y_u = wgs84_to_lv95.transform(poi_lon[u_poi], poi_lat[u_poi])
+    sta_x_u, sta_y_u = wgs84_to_lv95.transform(sta_lon[u_sta], sta_lat[u_sta])
+
+    elev_poi = dem_rgi(np.c_[poi_y_u, poi_x_u])[inv_poi]
+    elev_sta = sta_elev[si_idx]
+
+    ref_elev = np.maximum(elev_poi, elev_sta)
+
+    poi_xp = poi_x_u[inv_poi]
+    poi_yp = poi_y_u[inv_poi]
+    sta_xp = sta_x_u[inv_sta]
+    sta_yp = sta_y_u[inv_sta]
+
+    t = np.linspace(0, 1, n_samples + 2)[1:-1]
+    x_path = poi_xp[None, :] + t[:, None] * (sta_xp - poi_xp)[None, :]  # (n_samples, n_close)
+    y_path = poi_yp[None, :] + t[:, None] * (sta_yp - poi_yp)[None, :]
+
+    # Unit vector 90° to the path: rotate (dx, dy) -> (-dy, dx), then normalise.
+    dx = sta_xp - poi_xp
+    dy = sta_yp - poi_yp
+    path_len = np.sqrt(dx**2 + dy**2)
+    safe_len = np.where(path_len > 0, path_len, 1.0)  # avoid /0 for co-located pairs
+    perp_x = -dy / safe_len
+    perp_y = dx / safe_len
+
+    perp_offsets = np.linspace(-barrier_width, barrier_width, n_barrier_width_samples)
+
+    # sigma=0 (barrier_width=0, single centre sample) -> uniform weight of 1.
+    sigma = barrier_width / 2.0
+    if sigma > 0:
+        gauss_w = np.exp(-0.5 * (perp_offsets / sigma) ** 2)
+    else:
+        gauss_w = np.ones(n_barrier_width_samples)
+    gauss_w /= gauss_w.sum()
+
+    # (n_samples, n_perp, n_close): LV95 position of each along-path/corridor sample point.
+    x_slab = x_path[:, None, :] + perp_offsets[None, :, None] * perp_x[None, None, :]
+    y_slab = y_path[:, None, :] + perp_offsets[None, :, None] * perp_y[None, None, :]
+
+    # RGI expects (northing, easting).
+    n_perp = n_barrier_width_samples
+    n_close = len(pi_idx)
+    elev_slab = dem_rgi(np.c_[y_slab.ravel(), x_slab.ravel()]).reshape(n_samples, n_perp, n_close)
+
+    elev_mean_cross = (elev_slab * gauss_w[None, :, None]).sum(axis=1)
+
+    barrier = np.maximum(0.0, np.percentile(elev_mean_cross, 95, axis=0) - ref_elev).astype(np.float32)
+
+    elev_diff = np.abs(elev_poi - elev_sta).astype(np.float32)
+
+    d_eff = d_euc.copy()
+    d_eff[pi_idx, si_idx] = np.sqrt(
+        d_euc[pi_idx, si_idx] ** 2 + (barrier / elev_scale) ** 2 + (elev_diff / elev_diff_scale) ** 2
+    ).astype(np.float32)
+
+    n_blocked = int((d_eff[pi_idx, si_idx] >= max_dist).sum())
+    LOG.debug(
+        "barrier_distances: %d close pairs → %d newly blocked by barrier+elev_diff (%.1f%%)",
+        len(pi_idx),
+        n_blocked,
+        100.0 * n_blocked / max(len(pi_idx), 1),
+    )
+    return d_eff
 
 
 def load_icon_grid(icon_grid_file: str) -> tuple[np.ndarray, np.ndarray]:
@@ -294,83 +386,23 @@ def trim_stations(
     return stations
 
 
-def save_station_plot(
-    stations: pd.DataFrame,
-    mode: str,
-    domain_bbox: list[float],
-    out_path: str,
-) -> None:
-    """Save a PNG map of the stations considered for d_eff. Never raises: a
-    plotting failure (missing matplotlib/cartopy, bad data, ...) is logged
-    and skipped, since it never affects the cache itself."""
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg")  # non-interactive backend — safe in headless/batch jobs
-        import cartopy.crs as ccrs
-        import cartopy.feature as cfeature
-        import matplotlib.patches as mpatches
-        import matplotlib.pyplot as plt
-
-        pad = 0.4
-        extent = [
-            stations["longitude"].min() - pad,
-            stations["longitude"].max() + pad,
-            stations["latitude"].min() - pad,
-            stations["latitude"].max() + pad,
-        ]
-
-        fig, ax = plt.subplots(figsize=(9, 6), subplot_kw={"projection": ccrs.PlateCarree()})
-        ax.set_extent(extent, crs=ccrs.PlateCarree())
-        ax.add_feature(cfeature.LAND, facecolor="#f5f5f0", zorder=0)
-        ax.add_feature(cfeature.OCEAN, facecolor="#c8dff0", alpha=0.6, zorder=0)
-        ax.add_feature(cfeature.BORDERS, linewidth=0.9, edgecolor="#444444", zorder=3)
-        ax.add_feature(cfeature.COASTLINE, linewidth=0.9, zorder=3)
-        ax.add_feature(cfeature.LAKES, facecolor="#a8cce0", alpha=0.7, zorder=2)
-
-        ax.scatter(
-            stations["longitude"],
-            stations["latitude"],
-            s=20,
-            c="#d62728",
-            marker="o",
-            edgecolors="black",
-            linewidths=0.3,
-            transform=ccrs.PlateCarree(),
-            zorder=4,
-        )
-
-        if mode == "domain":
-            lat_min, lat_max, lon_min, lon_max = domain_bbox
-            ax.add_patch(
-                mpatches.Rectangle(
-                    (lon_min, lat_min),
-                    lon_max - lon_min,
-                    lat_max - lat_min,
-                    fill=False,
-                    edgecolor="#1565C0",
-                    linewidth=1.5,
-                    linestyle="--",
-                    transform=ccrs.PlateCarree(),
-                    zorder=5,
-                )
-            )
-
-        ax.gridlines(draw_labels=True, linewidth=0.3, alpha=0.4)
-        ax.set_title(f"Stations considered for d_eff (mode={mode!r}, n={len(stations)})")
-
-        out_path = Path(out_path)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out_path, dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        LOG.info("Saved station map to %s", out_path)
-    except ImportError as e:
-        LOG.warning(
-            "Skipping station map: %s not installed (the cache itself is unaffected).",
-            e.name or e,
-        )
-    except Exception:
-        LOG.exception("Station map plotting failed; continuing without it.")
+def station_dataset(stations: pd.DataFrame, wgs84_to_lv95: Transformer) -> xr.Dataset:
+    """Position and elevation of each cached station, along the ``sta`` dim of
+    ``d_eff_poi``/``d_eff_sta``: longitude/latitude [deg], LV95 x/y [m] and
+    elevation [m] from the station catalog."""
+    lon = stations["longitude"].to_numpy()
+    lat = stations["latitude"].to_numpy()
+    x, y = wgs84_to_lv95.transform(lon, lat)
+    return xr.Dataset(
+        {
+            "station_longitude": ("sta", lon, {"units": "degrees_east"}),
+            "station_latitude": ("sta", lat, {"units": "degrees_north"}),
+            "station_x": ("sta", x, {"units": "m", "long_name": "LV95 easting (EPSG:2056)"}),
+            "station_y": ("sta", y, {"units": "m", "long_name": "LV95 northing (EPSG:2056)"}),
+            "station_elevation": ("sta", stations["elevation"].to_numpy(dtype=float), {"units": "m"}),
+        },
+        coords={"sta": stations.index.tolist()},
+    )
 
 
 def cache_key(
@@ -572,9 +604,6 @@ def main(argv: list[str] | None = None) -> None:
     )
     stations = trim_stations(stations, args.station_filter_mode, args.domain_bbox)
 
-    if args.plot_out:
-        save_station_plot(stations, args.station_filter_mode, args.domain_bbox, args.plot_out)
-
     out_file = cache_file_path(
         args.output_dir,
         args.station_filter_mode,
@@ -607,6 +636,7 @@ def main(argv: list[str] | None = None) -> None:
         d_eff_poi_full = existing["d_eff_poi"].load()
         d_eff_sta_full = existing["d_eff_sta"].load()
         meta = dict(existing.attrs)
+        has_station_vars = "station_x" in existing
         existing.close()
         LOG.info(
             "d_eff cache HIT (%s): loaded POI x station %s and station x station %s — barrier_distances() skipped.",
@@ -614,6 +644,11 @@ def main(argv: list[str] | None = None) -> None:
             d_eff_poi_full.shape,
             d_eff_sta_full.shape,
         )
+        if not has_station_vars:
+            # Same cache key, hence the same stations: add their positions to
+            # a cache built before they were stored.
+            station_dataset(stations, wgs84_to_lv95).to_netcdf(out_file, mode="a")
+            LOG.info("Added station positions and elevations to %s", out_file)
     else:
         if existing is not None:
             existing.close()
@@ -638,7 +673,12 @@ def main(argv: list[str] | None = None) -> None:
             args.elev_diff_scale,
         )
 
-        out_ds = xr.Dataset({"d_eff_poi": d_eff_poi_full, "d_eff_sta": d_eff_sta_full})
+        out_ds = xr.merge(
+            [
+                xr.Dataset({"d_eff_poi": d_eff_poi_full, "d_eff_sta": d_eff_sta_full}),
+                station_dataset(stations, wgs84_to_lv95),
+            ]
+        )
         out_ds.attrs["cache_key"] = key
         out_ds.attrs["station_filter_mode"] = args.station_filter_mode
         out_ds.attrs["N_BARRIER_SAMPLES"] = args.n_barrier_samples

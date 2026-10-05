@@ -9,8 +9,9 @@ from anemoi.transform.filter import Filter
 
 LOG = logging.getLogger(__name__)
 
-# GRIB shortName -> station DataFrame column
-_PARAM_TO_COL = {
+# ICON GRIB shortName -> ECMWF shortName, used as the station column name
+# ("vmax" has no ECMWF equivalent)
+_ICON_TO_ECMWF_NAME = {
     "T_2M": "2t",
     "TD_2M": "2d",
     "U_10M": "10u",
@@ -21,8 +22,8 @@ _PARAM_TO_COL = {
     "VMAX_10M": "vmax",
 }
 
-# Station column -> DWH (jretrieve) parameter names
-_COL_TO_JR_PARAMS = {
+# ECMWF shortName -> DWH (jretrieve) parameter names
+_ECMWF_NAME_TO_DWH_PARAMS = {
     "2t": ["tre200s0"],
     "2d": ["tde200s0"],
     "10u": ["fkl010z0", "dkl010z0"],
@@ -40,8 +41,6 @@ class RetrieveObservation(Filter):
     Retrieves the DWH parameters required for the requested variables,
     applies unit conversions to SI (°C→K, hPa→Pa, speed+direction→U/V),
     and saves the result as a Parquet file for use by the nudging filter.
-    The data is passed through unchanged; this filter is used for its
-    side effect of writing the observations file before nudging runs.
 
     Parameters
     ----------
@@ -50,44 +49,31 @@ class RetrieveObservation(Filter):
     jretrieve_src_path : str
         Directory containing the ``data_input`` package (``data_input/jretrieve.py``).
     station_group : str, optional
-        DWH station group IDs (comma-separated) passed to jretrieve
-        ``-a stn_group_id``. Mutually exclusive with ``retrieval_bbox``.
-        Use this to match the truth data station selector exactly.
+        DWH station group IDs (comma-separated) passed to jretrieve.
+        Mutually exclusive with ``retrieval_bbox``.
     retrieval_bbox : list, optional
         Bounding box ``[minlat, maxlat, minlon, maxlon]`` for station
         selection. Mutually exclusive with ``station_group``.
-        Defaults to ``[40.5, 53.0, 0.0, 17.5]`` when neither station_group
-        nor retrieval_bbox is specified.
     variables : list of str, optional
-        GRIB shortNames to fetch (must be keys of ``_PARAM_TO_COL``).
+        GRIB shortNames to fetch (must be keys of ``_ICON_TO_ECMWF_NAME``).
         Defaults to all available variables.
     use_limitation : int, optional
-        Passed to jretrieve ``--use-limitation``; limits the observation
-        time window in minutes (e.g. 50 means observations within ±50 min).
+        Passed to jretrieve ``--use-limitation``. Indirectly specifies the
+        groups of stations to retrieve. See jretrieve documentation for details.
     run_mode : str
         ``'depl'`` (default): ref_time = minimum valid_time across all
         fields. ``'devt'``: ref_time = valid_time of the first field.
     station_filter_mode : str, optional
         Extra trim applied to the retrieved stations, on top of
-        *station_group*/*retrieval_bbox* — matches the station selection in
-        ``notebooks/d_eff_generator.ipynb`` so the set of stations
-        retrieved here stays a subset of whatever ``NudgeTowardObservation``'s
-        ``d_eff_file`` cache was built from (a station outside that cache
-        raises an error there rather than silently recomputing). One of:
-        - ``None`` (default): no extra trim — retrieves exactly whatever
-          *station_group*/*retrieval_bbox* selects, unchanged from before
-          this parameter existed.
+        *station_group*/*retrieval_bbox*``. One of:
+        - ``None`` (default): no extra trim applied.
         - ``"domain"``: keep only stations inside *trim_bbox*.
-        - ``"switzerland"``: keep only stations inside the real Swiss
-          national border (Natural Earth ``admin_0_countries``,
-          ``ADM0_A3 == "CHE"``).
+        - ``"switzerland"``: keep only stations inside the Swiss
+          national border.
     trim_bbox : list, optional
         ``[lat_min, lat_max, lon_min, lon_max]`` used to trim stations when
         *station_filter_mode* is ``"domain"``. Required in that case; unused
-        otherwise. Not the same thing as *retrieval_bbox* above —
-        *retrieval_bbox* controls what jretrieve itself queries, *trim_bbox*
-        is a second, independent trim applied afterwards to the stations
-        jretrieve returned.
+        otherwise.
     """
 
     def __init__(
@@ -125,17 +111,18 @@ class RetrieveObservation(Filter):
         self.trim_bbox = list(trim_bbox) if trim_bbox is not None else None
 
         if variables is not None:
-            unknown = set(variables) - _PARAM_TO_COL.keys()
+            unknown = set(variables) - _ICON_TO_ECMWF_NAME.keys()
             if unknown:
-                raise ValueError(f"Unknown variables: {unknown}. Valid: {list(_PARAM_TO_COL)}")
-            self.cols = {_PARAM_TO_COL[v] for v in variables}
+                raise ValueError(f"Unknown variables: {unknown}. Valid: {list(_ICON_TO_ECMWF_NAME)}")
+            self.ecmwf_names = {_ICON_TO_ECMWF_NAME[v] for v in variables}
         else:
-            self.cols = set(_PARAM_TO_COL.values())
+            self.ecmwf_names = set(_ICON_TO_ECMWF_NAME.values())
 
         super().__init__()
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
         """Retrieve observations and write Parquet, then return *data* unchanged.
+        Used to trigger the retrieval with the correct time stamp (ref_time).
 
         Parameters
         ----------
@@ -161,9 +148,9 @@ class RetrieveObservation(Filter):
             sys.path.insert(0, self.jretrieve_src_path)
         from data_input import jretrieve as jr
 
-        jr_params = list(dict.fromkeys(p for col in self.cols for p in _COL_TO_JR_PARAMS.get(col, [])))
+        jr_params = list(dict.fromkeys(p for name in self.ecmwf_names for p in _ECMWF_NAME_TO_DWH_PARAMS.get(name, [])))
         if not jr_params:
-            raise ValueError(f"No jretrieve parameters found for columns: {self.cols}")
+            raise ValueError(f"No jretrieve parameters found for variables: {self.ecmwf_names}")
 
         jr.check_prerequisites()
 
@@ -211,27 +198,24 @@ class RetrieveObservation(Filter):
         if "fkl010z1" in df.columns:
             df["vmax"] = df["fkl010z1"]
 
-        result_cols = [c for c in self.cols if c in df.columns] + [
+        result_cols = [name for name in self.ecmwf_names if name in df.columns] + [
             "latitude",
             "longitude",
             "elevation",
         ]
         df = df[result_cols].copy()
 
-        for col in _PARAM_TO_COL.values():
-            if col in df.columns:
-                n_valid = int(df[col].notna().sum())
-                LOG.info("Stations with valid %s: %d / %d stations", col, n_valid, len(df))
+        for name in _ICON_TO_ECMWF_NAME.values():
+            if name in df.columns:
+                n_valid = int(df[name].notna().sum())
+                LOG.info("Stations with valid %s: %d / %d stations", name, n_valid, len(df))
 
         Path(self.obs_path).parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(self.obs_path)
         LOG.info("Saved %d stations to %s", len(df), self.obs_path)
 
     def _trim_stations(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Trim retrieved stations to *station_filter_mode* — same logic as
-        the station-trim cell in notebooks/d_eff_generator.ipynb, so the
-        stations retrieved here stay in sync with whatever
-        NudgeTowardObservation's d_eff_file cache was built from."""
+        """Trim retrieved stations to *station_filter_mode*."""
         mode = self.station_filter_mode
         if mode == "switzerland":
             try:

@@ -36,12 +36,8 @@ average-flux-to-cumulative-quantity = "anemoi_plugins_meteoswiss.transform.filte
 model-to-pressure-level = "anemoi_plugins_meteoswiss.transform.filters:ModelToPressureLevel"
 assign-grid = "anemoi_plugins_meteoswiss.transform.filters:AssignGrid"
 geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:GeopotentialFromHeight"
-clean-observation = "anemoi_plugins_meteoswiss.transform.filters:CleanObservation"
 copy-prognostic-from-forecaster = "anemoi_plugins_meteoswiss.transform.filters:CopyPrognosticFromForecaster"
 keep = "anemoi_plugins_meteoswiss.transform.filters:Keep"
-
-nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
-retrieve-observation = "anemoi_plugins_meteoswiss.transform.filters:RetrieveObservation"
 
 [project.entry-points."anemoi.transform.filters.fields"]
 nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
@@ -49,6 +45,7 @@ gaussian-smoother = "anemoi_plugins_meteoswiss.transform.filters:GaussianSmoothe
 icon-remap-to-reg-lat-lon = "anemoi_plugins_meteoswiss.transform.filters:IconRemapToRegLatLon"
 retrieve-observation = "anemoi_plugins_meteoswiss.transform.filters:RetrieveObservation"
 clean-observation = "anemoi_plugins_meteoswiss.transform.filters:CleanObservation"
+surface-diagnostics = "anemoi_plugins_meteoswiss.transform.filters:SurfaceDiagnostics"
 
 [project.entry-points."anemoi.inference.outputs"]
 grib-with-step-zero = "anemoi_plugins_meteoswiss.outputs:GribWithStepZero"

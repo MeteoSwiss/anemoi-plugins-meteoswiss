@@ -304,15 +304,13 @@ def test_compute_reliability_flags_outlier_station(tmp_path):
 
 
 def test_compute_reliability_isolated_station_does_not_poison_others(tmp_path):
-    """Regression test: a station with no neighbour within max_dist gets e=NaN
-    from ned_interp's leave-one-out call (min_count=1 makes a fully-masked POI
-    return NaN, not 0). Before the fix, a single NaN silently propagated through
-    np.median/np.abs(...).median() into EVERY station's reliability (all NaN),
-    which then made ned_interp mask every pair (`dist < NaN` is always False),
-    zeroing the correction for the whole field — exactly what was observed in
-    production (see dashboard investigation, 2026-08-19). The isolated station
-    itself should land at reliability=1.0 (no evidence to judge it against);
-    every other, mutually-consistent station should stay finite and high."""
+    """A station with no neighbour within max_dist gets e=NaN from ned_interp's
+    leave-one-out call (min_count=1 makes a fully-masked POI return NaN, not 0).
+    That NaN must not reach the median/MAD: otherwise every station's
+    reliability becomes NaN, ned_interp masks every pair (`dist < NaN` is
+    always False) and the whole field gets no correction. The isolated station
+    itself gets reliability=1.0 (no neighbours to judge it against); every
+    other, mutually consistent station stays finite and high."""
     from unittest.mock import patch
 
     obs = tmp_path / "obs.parquet"

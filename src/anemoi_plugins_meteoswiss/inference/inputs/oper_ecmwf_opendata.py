@@ -209,6 +209,7 @@ class OperEcmwfOpenDataInput(OpenDataInputPlugin):
         kwargs = self.kwargs.copy()
         kwargs.setdefault("grid", self.metadata.grid)
         kwargs.setdefault("area", self.metadata.area)
+        kwargs.setdefault("source", self._source)
 
         result = ekd.FieldList()
         for target in dates:

@@ -7,6 +7,7 @@ from .keep import Keep
 from .nudging import NudgeTowardObservation
 from .retrieve_observation import RetrieveObservation
 from .smoothing import GaussianSmoother
+from .surface_diagnostics import SurfaceDiagnostics
 from .time_processing import AverageFluxToCumulativeQuantity
 from .vertical_interpolation import ModelToPressureLevel
 
@@ -21,5 +22,6 @@ __all__ = [
     "RetrieveObservation",
     "IconRemapToRegLatLon",
     "GaussianSmoother",
+    "SurfaceDiagnostics",
     "Keep",
 ]

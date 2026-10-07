@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import functools
 import logging
+import re
 from datetime import datetime
-from typing import Any
+from typing import Any, Sequence
 
 import earthkit.data as ekd
 import numpy as np
@@ -19,6 +20,37 @@ from . import jretrieve
 from .stations import StationCatalog
 
 LOG = logging.getLogger(__name__)
+
+# SwissMetNet stations carry an official WMO-synop WIGOS id (Swiss block 06,
+# e.g. 0-20000-0-06710); agrometeo / precip-only gauges have only a national
+# 0-756-... id or none. This is the dynamic way to isolate SMN from the
+# inventory, which has no station-group filter.
+DEFAULT_SMN_WIGOS_REGEX = r"^0-20000-0-06\d{3}$"
+# Drop co-located networks that also carry WMO ids (NABEL air quality).
+DEFAULT_SMN_EXCLUDE_PREFIXES: tuple[str, ...] = ("NAB",)
+
+
+def _filter_inventory_stations(
+    df: pd.DataFrame,
+    wigos_regex: str = DEFAULT_SMN_WIGOS_REGEX,
+    exclude_nat_abbr_prefixes: Sequence[str] = DEFAULT_SMN_EXCLUDE_PREFIXES,
+) -> list[str]:
+    """Select stations from an inventory response by WIGOS id, returning sorted
+    unique nat_abbr. See the module constants for why the WIGOS pattern isolates
+    SwissMetNet."""
+    if df.empty or "location" not in df.columns or "wigosId" not in df.columns:
+        return []
+    rx = re.compile(wigos_regex)
+    keep: set[str] = set()
+    for nat_abbr, wigos in zip(df["location"], df["wigosId"]):
+        if not isinstance(nat_abbr, str) or not isinstance(wigos, str):
+            continue
+        if not rx.match(wigos):
+            continue
+        if any(nat_abbr.startswith(p) for p in exclude_nat_abbr_prefixes):
+            continue
+        keep.add(nat_abbr)
+    return sorted(keep)
 
 
 class SynopDwhSource(Source):
@@ -43,6 +75,12 @@ class SynopDwhSource(Source):
             raise ValueError("param must be a non-empty list of DWH short names.")
         if stage != "prod":
             raise ValueError(f"Only 'prod' stage is supported, got {stage!r}.")
+        recognized = ("group", "locations", "bbox", "inventory")
+        present = [k for k in recognized if stations.get(k) is not None]
+        if len(present) != 1:
+            raise ValueError(
+                f"stations must specify exactly one of {list(recognized)}, got {present}"
+            )
         self.param: list[str] = list(param)
         self.stations: dict[str, Any] = stations
         self.stage: str = stage
@@ -74,21 +112,55 @@ class SynopDwhSource(Source):
             return None, None
 
     @functools.cached_property
+    def resolved_stations(self) -> dict[str, Any]:
+        """The station selection actually sent to DWH.
+
+        `inventory:` mode resolves — once, via the inventory endpoint — to an
+        explicit `locations` nat_abbr list, and is deterministic across workers
+        (same params, period, and filter). Other modes pass through unchanged.
+        The inventory endpoint has no station-group filter, so SwissMetNet is
+        isolated in Python by WIGOS id (see `_filter_inventory_stations`)."""
+        inv = self.stations.get("inventory")
+        if inv is None:
+            return self.stations
+        opts = inv if isinstance(inv, dict) else {}
+        start, end = self._recipe_date_range()
+        if start is None or end is None:
+            raise ValueError("inventory station selection requires recipe dates.")
+        df = jretrieve.fetch_inventory(
+            params=self.param, start=start, end=end, timeout_s=min(self.timeout, 180)
+        )
+        nat_abbr = _filter_inventory_stations(
+            df,
+            wigos_regex=opts.get("wigos_regex", DEFAULT_SMN_WIGOS_REGEX),
+            exclude_nat_abbr_prefixes=opts.get(
+                "exclude_nat_abbr_prefixes", DEFAULT_SMN_EXCLUDE_PREFIXES
+            ),
+        )
+        if not nat_abbr:
+            raise jretrieve.JretrieveError(
+                "inventory station selection matched no stations — "
+                "check params/dates/filter."
+            )
+        LOG.info("synop-dwh: inventory selected %d stations", len(nat_abbr))
+        return {"locations": nat_abbr}
+
+    @functools.cached_property
     def catalog(self) -> StationCatalog:
         """Canonical station catalog — fetched once per process, deterministic
         across parallel workers because it is scoped to the recipe's fixed date
         range and station selection.
 
-        With an explicit `locations:` list the `-i nat_abbr,...` selector filters
-        the meta response to exactly those stations, so the catalog is precisely
-        the requested set. (A `group:` selector is *not* honoured by
-        `--meta-info`, so avoid it here — pin the stations you want.)"""
+        The catalog is built from a `--meta-info` call over `resolved_stations`,
+        whose `-i nat_abbr,...` selector filters the meta response to exactly
+        those stations. (`group:` is *not* honoured by `--meta-info`; prefer
+        `inventory:` or an explicit `locations:` list.)"""
         # Fail fast on a missing binary / conf / credentials before we start a
         # potentially long build, rather than hours in.
         jretrieve.check_prerequisites(self.stage)
         start, end = self._recipe_date_range()
         meta = jretrieve.fetch_meta(
-            stations=self.stations,
+            stations=self.resolved_stations,
             params=self.param,
             start=start,
             end=end,
@@ -111,7 +183,7 @@ class SynopDwhSource(Source):
         catalog = self.catalog
 
         df = jretrieve.fetch_data(
-            stations=self.stations,
+            stations=self.resolved_stations,
             params=self.param,
             start=date_list[0],
             end=date_list[-1],

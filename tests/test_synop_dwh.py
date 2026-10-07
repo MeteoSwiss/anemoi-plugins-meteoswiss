@@ -12,8 +12,37 @@ import pandas as pd
 import pytest
 
 from anemoi_plugins_meteoswiss.transform.sources.synop_dwh import jretrieve as jr
-from anemoi_plugins_meteoswiss.transform.sources.synop_dwh.source import SynopDwhSource
+from anemoi_plugins_meteoswiss.transform.sources.synop_dwh.source import (
+    SynopDwhSource,
+    _filter_inventory_stations,
+)
 from anemoi_plugins_meteoswiss.transform.sources.synop_dwh.stations import StationCatalog
+
+
+# --- inventory WIGOS filter (SwissMetNet isolation) ------------------------
+
+def test_filter_inventory_stations_by_wigos():
+    # KLO/BER: WMO synop WIGOS -> kept. AGAAB/BIA: national 0-756 id -> dropped.
+    # NABZUE: WMO WIGOS but NABEL prefix -> excluded. BAD: no wigos -> dropped.
+    df = pd.DataFrame(
+        {
+            "location": ["KLO", "BER", "KLO", "AGAAB", "BIA", "NABZUE", "BAD"],
+            "wigosId": [
+                "0-20000-0-06670", "0-20000-0-06631", "0-20000-0-06670",
+                "0-756-0-AGAAB", "0-756-0-BIA", "0-20000-0-06695", None,
+            ],
+        }
+    )
+    assert _filter_inventory_stations(df) == ["BER", "KLO"]  # sorted, deduped
+
+
+def test_filter_inventory_stations_custom_filter():
+    df = pd.DataFrame({"location": ["AAA", "BBB"], "wigosId": ["x-1", "x-2"]})
+    assert _filter_inventory_stations(df, wigos_regex=r"^x-\d$", exclude_nat_abbr_prefixes=()) == ["AAA", "BBB"]
+
+
+def test_filter_inventory_stations_empty():
+    assert _filter_inventory_stations(pd.DataFrame()) == []
 
 
 # --- recipe date coercion (load path passes ISO strings) -------------------

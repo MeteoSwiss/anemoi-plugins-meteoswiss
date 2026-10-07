@@ -11,11 +11,16 @@ pandas DataFrames. Only the `prod` stage is supported.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import runpy
 import shutil
+import ssl
 import subprocess
 import time
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
@@ -71,6 +76,70 @@ def _locate_conf_dir() -> Path | None:
         if (candidate / CONF_NAME).is_file():
             return candidate
     return None
+
+
+def _load_rest_conf() -> tuple[str, str]:
+    """Return (jretrieve_url, auth_header) from the committed conf.
+
+    The `jretrievedwh.py` binary covers the data/meta endpoints, but the REST
+    `inventory` endpoint has no CLI wrapper, so we talk to it directly — reusing
+    the conf's OAuth token and base URL rather than duplicating auth."""
+    conf_dir = _locate_conf_dir()
+    if conf_dir is None:
+        raise JretrieveError(
+            f"jretrieve conf {CONF_NAME!r} not found at the repo root "
+            f"(or via $JRETRIEVE_CONF_DIR)."
+        )
+    os.environ["JRETRIEVE_CONF_DIR"] = str(conf_dir)
+    ns = runpy.run_path(str(conf_dir / CONF_NAME))
+    try:
+        return ns["jretrieve_url"], ns["auth_header"]
+    except KeyError as e:
+        raise JretrieveError(
+            f"conf {CONF_NAME!r} must define jretrieve_url and auth_header ({e})."
+        ) from e
+
+
+def fetch_inventory(
+    *,
+    params: list[str],
+    start: datetime,
+    end: datetime,
+    info_options: Sequence[str] = ("nat_abbr", "lat", "lon", "elev", "name", "wigos_id"),
+    timeout_s: int = 180,
+) -> pd.DataFrame:
+    """Query the DWH surface `inventory` endpoint for the stations that measure
+    any of `params` in the [start, end] period, with the requested metadata.
+
+    Unlike `--meta-info`/data retrieval this is a lightweight metadata call whose
+    cost doesn't scale with the time range, so it stays fast over multi-year
+    windows. It has no station-group filter — callers select in Python (e.g. by
+    WIGOS id). Returns a DataFrame with a row per (station × parameter); columns
+    include `location` (nat_abbr), `latitude`, `longitude`, `elevation`,
+    `stationName`, `wigosId`.
+    """
+    if not params:
+        raise ValueError("params must be non-empty.")
+    base_url, auth = _load_rest_conf()
+    query = urllib.parse.urlencode(
+        {
+            "parameterShortNames": ",".join(params),
+            "date": f"{start.year}-{end.year}",
+            "infoOptions": ",".join(info_options),
+            "viewType": "nat_abbr",
+            "format": "json",
+        }
+    )
+    url = f"{base_url}/inventory/surface?{query}"
+    LOG.info("jretrieve inventory: %s", url)
+    req = urllib.request.Request(url, headers={"Authorization": auth})
+    try:
+        with urllib.request.urlopen(req, context=ssl.create_default_context(), timeout=timeout_s) as r:
+            data = json.loads(r.read().decode())
+    except Exception as e:
+        raise JretrieveError(f"inventory request failed: {e}") from e
+    rows = data if isinstance(data, list) else data.get("data", data)
+    return pd.DataFrame(rows)
 
 
 def _build_env(stage: str) -> dict[str, str]:
@@ -318,12 +387,15 @@ def fetch_data(
     seq_type: str = "surface",
     stage: str = "prod",
     use_limitation: int = DEFAULT_USE_LIMITATION,
+    info: Sequence[str] | None = None,
     timeout_s: int = 600,
 ) -> pd.DataFrame:
     """Fetch observation data for the given selection / time range.
 
     Returns a DataFrame with columns: station (int), termin (str YYYYMMDDhhmmss),
-    plus one column per requested parameter.
+    plus one column per requested parameter. `info` adds per-station metadata
+    columns to each row via jretrieve's `-j` option (e.g. ("nat_abbr","lat","lon")),
+    so callers can key on nat_abbr without a separate meta join.
     """
     if not params:
         raise ValueError("params must be non-empty.")
@@ -339,6 +411,8 @@ def fetch_data(
         "--format", "csv",
         *_stations_to_argv(stations),
     ]
+    if info:
+        argv += ["-j", ",".join(info)]
     LOG.info("jretrieve data: %s", " ".join(argv))
     text = _run_with_retry(argv, env=env, timeout_s=timeout_s)
     df = _parse_csv(text)

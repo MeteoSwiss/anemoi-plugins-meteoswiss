@@ -179,25 +179,51 @@ def test_nudge_toward_observation_invalid_run_mode(tmp_path):
             NudgeTowardObservation(obs_path=str(obs), **NUDGE_PATHS, run_mode="bad")
 
 
-def test_nudge_toward_observation_mutual_exclusion(tmp_path):
-    """holdout_fraction and exclude_stations together raise ValueError."""
+def test_nudge_toward_observation_holdout_station_file(tmp_path):
+    """Stations listed in holdout_station_file are removed from the nudging set;
+    IDs absent from the observations are ignored."""
+    from unittest.mock import patch
+
+    import pandas as pd
+
+    obs = tmp_path / "obs.parquet"
+    obs.touch()
+    holdout_station_file = tmp_path / "holdout.yaml"
+    holdout_station_file.write_text("- BBB\n- ZZZ\n")
+
+    with (
+        patch.object(NudgeTowardObservation, "_load_icon_grid"),
+        patch.object(NudgeTowardObservation, "_load_icon_orog"),
+        patch.object(NudgeTowardObservation, "_project_icon_grid"),
+        patch.object(NudgeTowardObservation, "_load_d_eff_cache"),
+    ):
+        filt = NudgeTowardObservation(obs_path=str(obs), **NUDGE_PATHS, holdout_station_file=str(holdout_station_file))
+
+    assert filt.holdout_stations == ["BBB", "ZZZ"]
+    stations = pd.DataFrame({"2t": [280.0, 281.0, 282.0]}, index=pd.Index(["AAA", "BBB", "CCC"], name="station"))
+    assert filt._apply_holdout(stations).index.tolist() == ["AAA", "CCC"]
+
+
+def test_nudge_toward_observation_invalid_holdout_station_file(tmp_path):
+    """A missing holdout_station_file, or one that is not a list of station IDs, raises at construction."""
     from unittest.mock import patch
 
     obs = tmp_path / "obs.parquet"
     obs.touch()
+    not_a_list = tmp_path / "holdout.yaml"
+    not_a_list.write_text("stations: [AAA]\n")
 
     with (
         patch.object(NudgeTowardObservation, "_load_icon_grid"),
         patch.object(NudgeTowardObservation, "_load_icon_orog"),
         patch.object(NudgeTowardObservation, "_project_icon_grid"),
     ):
-        with pytest.raises(ValueError, match="mutually exclusive"):
+        with pytest.raises(FileNotFoundError, match="Holdout station file"):
             NudgeTowardObservation(
-                obs_path=str(obs),
-                **NUDGE_PATHS,
-                holdout_fraction=0.1,
-                exclude_stations=["ABC"],
+                obs_path=str(obs), **NUDGE_PATHS, holdout_station_file=str(tmp_path / "missing.yaml")
             )
+        with pytest.raises(ValueError, match="YAML list"):
+            NudgeTowardObservation(obs_path=str(obs), **NUDGE_PATHS, holdout_station_file=str(not_a_list))
 
 
 def test_nudge_toward_observation_invalid_reliability_min_dist_frac(tmp_path):

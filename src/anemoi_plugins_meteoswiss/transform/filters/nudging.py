@@ -46,6 +46,7 @@ import earthkit.data as ekd
 import numpy as np
 import pandas as pd
 import xarray as xr
+import yaml
 from anemoi.transform.fields import new_field_from_numpy
 from anemoi.transform.fields import new_fieldlist_from_list
 from anemoi.transform.filter import Filter
@@ -191,14 +192,10 @@ class NudgeTowardObservation(Filter):
     run_mode : str
         ``'depl'``: ref_time = minimum valid_time across all fields.
         ``'devt'``: ref_time = valid_time of the first field.
-    holdout_fraction : float, optional
-        Fraction of stations to withhold for cross-validation. Mutually
-        exclusive with *exclude_stations*.
-    holdout_seed : int
-        RNG seed for station holdout (default 42).
-    exclude_stations : list of str, optional
-        Station nat_abbr identifiers to unconditionally exclude. Mutually
-        exclusive with *holdout_fraction*.
+    holdout_station_file : str, optional
+        YAML file listing station nat_abbr to withhold from nudging, e.g. for
+        independent verification. Use the same file as the evalml
+        experiment's ``station_holdout_list``.
     write_diagnostics : bool
         If ``True``, write one NetCDF per nudged variable with the station
         residuals before/after nudging, the reliability check results and the
@@ -233,16 +230,10 @@ class NudgeTowardObservation(Filter):
         pressure_lapse_rate_vars: Optional[list] = None,
         nudge_variables: Optional[list] = None,
         run_mode: str = "depl",
-        holdout_fraction: Optional[float] = None,
-        holdout_seed: int = 42,
-        exclude_stations: Optional[list] = None,
+        holdout_station_file: Optional[str] = None,
     ):
         if run_mode not in ("devt", "depl"):
             raise ValueError(f"run_mode must be 'devt' or 'depl', got {run_mode!r}")
-        if holdout_fraction is not None and exclude_stations is not None:
-            raise ValueError("holdout_fraction and exclude_stations are mutually exclusive.")
-        if holdout_fraction is not None and not (0.0 <= holdout_fraction <= 1.0):
-            raise ValueError(f"holdout_fraction must be in [0, 1], got {holdout_fraction!r}")
         if not (0.0 <= reliability_min_dist_frac <= 1.0):
             raise ValueError(f"reliability_min_dist_frac must be in [0, 1], got {reliability_min_dist_frac!r}")
         if number_of_std <= 0:
@@ -281,9 +272,8 @@ class NudgeTowardObservation(Filter):
             else _DEFAULT_PRESSURE_LAPSE_RATE_VARS
         )
         self.run_mode = run_mode
-        self.holdout_fraction = holdout_fraction
-        self.holdout_seed = holdout_seed
-        self.exclude_stations = list(exclude_stations) if exclude_stations is not None else None
+        self.holdout_station_file = Path(holdout_station_file) if holdout_station_file is not None else None
+        self.holdout_stations = self._load_holdout_stations() if self.holdout_station_file is not None else []
         self._nudging_done = False
         self._reliability_diag = {}
 
@@ -946,48 +936,30 @@ class NudgeTowardObservation(Filter):
 
     # ── Holdout and station loading ───────────────────────────────────────────
 
-    def _apply_holdout(self, stations: pd.DataFrame) -> pd.DataFrame:
-        """Remove stations from the nudging set according to holdout configuration."""
-        if self.exclude_stations is not None:
-            before = len(stations)
-            missing = [s for s in self.exclude_stations if s not in stations.index]
-            if missing:
-                LOG.warning("Excluded station IDs not found in observations: %s", missing)
-            stations = stations.drop(index=[s for s in self.exclude_stations if s in stations.index])
-            LOG.info(
-                "Excluded %d station(s) by ID: %s",
-                before - len(stations),
-                self.exclude_stations,
+    def _load_holdout_stations(self) -> list:
+        """Read the station nat_abbr list from *holdout_station_file*."""
+        if not self.holdout_station_file.exists():
+            raise FileNotFoundError(f"Holdout station file not found: {self.holdout_station_file}")
+        with open(self.holdout_station_file) as f:
+            holdout_stations = yaml.safe_load(f)
+        if not isinstance(holdout_stations, list) or not all(isinstance(s, str) for s in holdout_stations):
+            raise ValueError(
+                f"Holdout station file {self.holdout_station_file} must contain a YAML list of "
+                f"station nat_abbr, got {holdout_stations!r}."
             )
+        LOG.info("Loaded %d holdout station(s) from %s", len(holdout_stations), self.holdout_station_file)
+        return holdout_stations
 
-        elif self.holdout_fraction is not None:
-            if self.holdout_fraction == 0.0:
-                LOG.info("holdout_fraction=0: all stations used.")
-            elif self.holdout_fraction == 1.0:
-                LOG.info("holdout_fraction=1: all stations withheld, nudging will have no effect.")
-                stations = stations.iloc[0:0]
-            else:
-                n_holdout = round(len(stations) * self.holdout_fraction)
-                if n_holdout == 0:
-                    LOG.warning(
-                        "holdout_fraction=%.4f rounds to 0 station(s) held out "
-                        "of %d — no cross-validation holdout set will be "
-                        "available this run.",
-                        self.holdout_fraction,
-                        len(stations),
-                    )
-                rng = np.random.default_rng(self.holdout_seed)
-                held_out = rng.choice(stations.index, size=n_holdout, replace=False)
-                stations = stations.drop(index=held_out)
-                LOG.info(
-                    "Held out %d/%d station(s) (%.0f%%, seed=%d): %s",
-                    n_holdout,
-                    n_holdout + len(stations),
-                    self.holdout_fraction * 100,
-                    self.holdout_seed,
-                    list(held_out),
-                )
-
+    def _apply_holdout(self, stations: pd.DataFrame) -> pd.DataFrame:
+        """Remove the holdout stations from the nudging set."""
+        if not self.holdout_stations:
+            return stations
+        missing = [s for s in self.holdout_stations if s not in stations.index]
+        if missing:
+            LOG.warning("Holdout station IDs not found in observations: %s", missing)
+        before = len(stations)
+        stations = stations.drop(index=[s for s in self.holdout_stations if s in stations.index])
+        LOG.info("Held out %d station(s) listed in %s", before - len(stations), self.holdout_station_file)
         return stations
 
     def _load_stations(self) -> pd.DataFrame:

@@ -100,6 +100,9 @@ def _cached_fields(cache_dir: str | None, subdir: str, hrefs_by_filename: dict[s
 
     Downloads are guarded by a per-file lock so that concurrent processes/threads sharing
     ``cache_dir`` don't race to download the same asset."""
+    if not hrefs_by_filename:
+        # e.g. a request for grid constants only; earthkit's url source fails on an empty list
+        return ekd.SimpleFieldList([])
     if not cache_dir:
         return ekd.from_source("url", list(hrefs_by_filename.values()))
 

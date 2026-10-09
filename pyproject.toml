@@ -27,10 +27,6 @@ oper-inference = [
     "filelock",
     "requests",
 ]
-plotting = [
-    "matplotlib",
-    "cartopy",
-]
 
 [project.scripts]
 anemoi-plugins-meteoswiss = "anemoi_plugins_meteoswiss:main"

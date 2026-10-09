@@ -190,8 +190,8 @@ def test_nudge_toward_observation_holdout_station_file(tmp_path):
 
     obs = tmp_path / "obs.parquet"
     obs.touch()
-    holdout_station_file = tmp_path / "holdout.yaml"
-    holdout_station_file.write_text("- BBB\n- ZZZ\n")
+    holdout_station_file = tmp_path / "holdout_stations.csv"
+    holdout_station_file.write_text("nat_abbr\nBBB\nZZZ\nNA\n")
 
     with (
         patch.object(NudgeTowardObservation, "_load_icon_grid"),
@@ -201,19 +201,22 @@ def test_nudge_toward_observation_holdout_station_file(tmp_path):
     ):
         filt = NudgeTowardObservation(obs_path=str(obs), **NUDGE_PATHS, holdout_station_file=str(holdout_station_file))
 
-    assert filt.holdout_stations == ["BBB", "ZZZ"]
-    stations = pd.DataFrame({"2t": [280.0, 281.0, 282.0]}, index=pd.Index(["AAA", "BBB", "CCC"], name="station"))
+    # "NA" is a valid station code and must not be read as missing.
+    assert filt.holdout_stations == ["BBB", "ZZZ", "NA"]
+    stations = pd.DataFrame(
+        {"2t": [280.0, 281.0, 282.0, 283.0]}, index=pd.Index(["AAA", "BBB", "CCC", "NA"], name="station")
+    )
     assert filt._apply_holdout(stations).index.tolist() == ["AAA", "CCC"]
 
 
 def test_nudge_toward_observation_invalid_holdout_station_file(tmp_path):
-    """A missing holdout_station_file, or one that is not a list of station IDs, raises at construction."""
+    """A missing holdout_station_file, or a CSV without a nat_abbr column, raises at construction."""
     from unittest.mock import patch
 
     obs = tmp_path / "obs.parquet"
     obs.touch()
-    not_a_list = tmp_path / "holdout.yaml"
-    not_a_list.write_text("stations: [AAA]\n")
+    no_nat_abbr = tmp_path / "holdout_stations.csv"
+    no_nat_abbr.write_text("station\nAAA\n")
 
     with (
         patch.object(NudgeTowardObservation, "_load_icon_grid"),
@@ -222,10 +225,10 @@ def test_nudge_toward_observation_invalid_holdout_station_file(tmp_path):
     ):
         with pytest.raises(FileNotFoundError, match="Holdout station file"):
             NudgeTowardObservation(
-                obs_path=str(obs), **NUDGE_PATHS, holdout_station_file=str(tmp_path / "missing.yaml")
+                obs_path=str(obs), **NUDGE_PATHS, holdout_station_file=str(tmp_path / "missing.csv")
             )
-        with pytest.raises(ValueError, match="YAML list"):
-            NudgeTowardObservation(obs_path=str(obs), **NUDGE_PATHS, holdout_station_file=str(not_a_list))
+        with pytest.raises(ValueError, match="'nat_abbr' column"):
+            NudgeTowardObservation(obs_path=str(obs), **NUDGE_PATHS, holdout_station_file=str(no_nat_abbr))
 
 
 def test_nudge_toward_observation_invalid_reliability_min_dist_frac(tmp_path):
@@ -588,3 +591,27 @@ def test_pipe_or_fdb_xarray_returns_piped_value_when_present(data_dir):
     interpolator = ModelToPressureLevel(interpolate_levels=[500])
     da = interpolator._get_field(fieldlist, "T_2M").to_xarray()["T_2M"]
     assert da.shape == (1147980,)
+
+
+def test_retrieve_observation_once_per_ref_time():
+    """Repeated calls with the same ref_time retrieve observations only once."""
+    from datetime import datetime
+    from unittest.mock import patch
+
+    from anemoi_plugins_meteoswiss.transform.filters import RetrieveObservation
+
+    class _Field:
+        def __init__(self, valid_time):
+            self._valid_time = valid_time
+
+        def datetime(self):
+            return {"valid_time": self._valid_time}
+
+    t0, t1 = datetime(2025, 3, 1, 0), datetime(2025, 3, 1, 6)
+    filt = RetrieveObservation(obs_path="obs.parquet", jretrieve_src_path="/unused", run_mode="devt")
+    with patch.object(RetrieveObservation, "_retrieve") as retrieve:
+        data = [_Field(t0)]
+        assert filt.forward(data) is data
+        filt.forward([_Field(t0)])
+        filt.forward([_Field(t1)])
+    assert [c.args[0] for c in retrieve.call_args_list] == [t0, t1]

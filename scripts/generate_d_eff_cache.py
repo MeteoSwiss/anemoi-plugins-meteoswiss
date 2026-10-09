@@ -4,23 +4,17 @@ cache consumed by ``NudgeTowardObservation``'s ``d_eff_file`` parameter
 
 Steps
 -----
-1.  Retrieve the station catalog via ``jretrieve`` — metadata only, no
-    ``ref_time`` and no actual observation values. ``barrier_distances()`` is
-    a pure function of station/POI geometry and the DEM; it never depends on
-    a specific timestamp or observed value, so ``jretrieve.fetch_meta()``
-    alone (no ``fetch_data()``) is enough.
-2.  Trim the retrieved stations to either a bounding box **or** the real
-    Swiss national border (``--station-filter-mode``).
-3.  Compute ``d_eff_poi`` (POI<->station) and ``d_eff_sta``
-    (station<->station) via ``barrier_distances()``.
+1.  Retrieve the station catalog with ``jretrieve.fetch_meta()``. Only
+    station metadata is needed: d_eff depends on station/POI geometry and the
+    DEM, not on observed values or a reference time.
+2.  Trim the stations to a bounding box or to the Swiss national border
+    (``--station-filter-mode``).
+3.  Compute ``d_eff_poi`` (POI <-> station) and ``d_eff_sta``
+    (station <-> station) with ``barrier_distances()``.
 4.  Write both to a NetCDF file, together with each station's
     longitude/latitude, LV95 x/y and elevation (``station_*`` variables along
-    ``sta``), with the barrier hyperparameters and the station count attached
-    as metadata — both as NetCDF attrs (so
-    ``xr.open_dataset(...).attrs`` works) and as a JSON sidecar file (so they
-    can be checked without loading xarray at all).
-
-This script's only job is producing the cache file.
+    ``sta``). The barrier hyperparameters and the station count are stored as
+    NetCDF attributes and in a JSON sidecar file.
 """
 
 import argparse
@@ -38,10 +32,10 @@ from scipy.interpolate import RegularGridInterpolator
 
 LOG = logging.getLogger(__name__)
 
-# Same DWH params the production observation-retrieval filter queries —
-# fetch_meta() only returns stations that report these, so keep this in sync
-# with whatever RetrieveObservation is actually configured with, or the
-# station catalog here may not match what nudging.py sees at run time.
+# DWH parameters queried by RetrieveObservation (_ECMWF_NAME_TO_DWH_PARAMS).
+# fetch_meta() only returns stations that report these, so keep them in sync
+# with RetrieveObservation; otherwise this catalog may miss stations that
+# NudgeTowardObservation sees at run time.
 DEFAULT_DWH_PARAMS = [
     "tre200s0",
     "tde200s0",
@@ -52,14 +46,8 @@ DEFAULT_DWH_PARAMS = [
     "dkl010z0",
     "fkl010z1",
 ]
-DEFAULT_JRETRIEVE_SRC_PATH = "/scratch/mch/llanzila/sruc/evalml/src"
-DEFAULT_ICON_GRID_FILE = "/scratch/mch/llanzila/sruc/aux_files/icon_grid_0001_R19B08_mch.nc"
-DEFAULT_DEM_BARRIER_FILE = "/store_new/mch/msclim/appclim/data/grids/topodem/v2/topo/radar_100/topo_DEM_1000M.nc"
-DEFAULT_OUTPUT_DIR = "/scratch/mch/llanzila/sruc/aux_files"
 
-# Batch size for barrier_distances() calls: processes stations in chunks so
-# progress is visible in the logs — otherwise a single call covering every
-# station at once gives no feedback until it's entirely done.
+# Stations per barrier_distances() call, so progress is visible in the logs.
 PROGRESS_EVERY = 50
 
 
@@ -70,7 +58,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--jretrieve-src-path",
-        default=DEFAULT_JRETRIEVE_SRC_PATH,
+        required=True,
         help="Directory containing the 'data_input' package (data_input/jretrieve.py).",
     )
     p.add_argument("--dwh-params", nargs="+", default=DEFAULT_DWH_PARAMS)
@@ -81,16 +69,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         nargs=4,
         default=[40.5, 53.0, 0.0, 17.5],
         metavar=("LAT_MIN", "LAT_MAX", "LON_MIN", "LON_MAX"),
-        help="Broad domain passed to jretrieve.fetch_meta() — this is metadata "
-        "only, so retrieving broadly here is cheap; trimmed down below.",
+        help="Bounding box passed to jretrieve.fetch_meta(). The stations are then "
+        "trimmed with --station-filter-mode.",
     )
     p.add_argument(
         "--station-filter-mode",
         choices=["domain", "switzerland"],
         default="domain",
         help="'domain': keep stations inside --domain-bbox. 'switzerland': keep "
-        "stations inside the real Swiss national border (Natural Earth "
-        "admin_0_countries, ADM0_A3 == 'CHE').",
+        "stations inside the Swiss national border (Natural Earth "
+        "admin_0_countries, ADM0_A3 == 'CHE'; requires cartopy).",
     )
     p.add_argument(
         "--domain-bbox",
@@ -100,13 +88,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar=("LAT_MIN", "LAT_MAX", "LON_MIN", "LON_MAX"),
         help="Only used when --station-filter-mode=domain.",
     )
-    p.add_argument("--icon-grid-file", default=DEFAULT_ICON_GRID_FILE)
-    p.add_argument("--dem-barrier-file", default=DEFAULT_DEM_BARRIER_FILE)
-    # Barrier-aware distance hyperparameters — baked into the cache at build
-    # time, NOT read back by consumers, and not configurable on
-    # NudgeTowardObservation itself (see its d_eff_file parameter). The
-    # defaults below reproduce the cache used by the production configs
-    # (d_eff_cache_domain_maxdist50km_nbar50x3_bw1500m_elev50_elevdiff100_*).
+    p.add_argument(
+        "--icon-grid-file",
+        required=True,
+        help="ICON grid NetCDF (clat/clon in radians); the same file as NudgeTowardObservation's icon_grid_file.",
+    )
+    p.add_argument(
+        "--dem-barrier-file",
+        required=True,
+        help="DEM NetCDF on the LV95 grid (variable DEM_1000M, coordinates x/y) used for the barrier term.",
+    )
+    # Barrier-aware distance hyperparameters. They are fixed in the cache when
+    # it is built; NudgeTowardObservation only reads the resulting d_eff values
+    # and cannot change them.
     p.add_argument(
         "--n-barrier-samples",
         type=int,
@@ -141,17 +135,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--max-dist",
         type=float,
         default=50000.0,
-        help="meters: station influence radius — barrier-distance cutoff "
-        "(converted to km internally, same convention as NudgeTowardObservation's max_dist).",
+        help="Station influence radius [m]; pairs farther apart keep their Euclidean "
+        "distance. Same unit as NudgeTowardObservation's max_dist.",
     )
     p.add_argument(
         "--output-dir",
-        default=DEFAULT_OUTPUT_DIR,
-        help="Directory the cache NetCDF (and its .meta.json sidecar) is written to. "
-        "Only the directory is fixed here — the filename is derived from the "
-        "metadata (station filter, barrier hyperparameters, station count) once "
-        "the station catalog is retrieved and trimmed, so the file name itself "
-        "tells you what's inside without opening it.",
+        required=True,
+        help="Directory for the cache NetCDF and its .meta.json sidecar. The file "
+        "name is built from the station filter, the barrier hyperparameters and "
+        "the station count.",
     )
     p.add_argument(
         "--force",
@@ -195,7 +187,7 @@ def barrier_distances(
     Elevation term: elev_diff = |elev_poi − elev_sta| penalises pairs at
     different altitudes even without a ridge in between.
 
-    sta_elev is the station elevation from metadata
+    sta_elev is the station elevation from the station catalog.
     """
     close_mask = d_euc < max_dist
     pi_idx, si_idx = np.where(close_mask)
@@ -312,10 +304,8 @@ def fetch_station_catalog(
     jr.check_prerequisites()
 
     stations_sel = {"bbox": list(stations_bbox)}
-    # fetch_meta() returns the station catalog (nat_abbr, lat, lon, elevation,
-    # ...) for whichever stations report dwh_params within stations_sel. No
-    # fetch_data() call, and no ref_time: station geometry doesn't depend on
-    # either.
+    # Station catalog (nat_abbr, lat, lon, elevation, ...) of the stations
+    # reporting dwh_params inside stations_sel.
     meta = jr.fetch_meta(stations=stations_sel, params=dwh_params, seq_type=seq_type)
     catalog = jr.StationCatalog.from_meta(meta)
 
@@ -452,10 +442,9 @@ def cache_file_path(
     elev_diff_scale_km: float,
     n_stations: int,
 ) -> Path:
-    """Filename encodes the metadata that actually distinguishes one cache
-    from another (station filter/domain, barrier hyperparameters, station
-    count) — so two different configurations never collide on the same file,
-    and you can tell what a given file contains without opening it."""
+    """Cache file name built from the station filter, the barrier
+    hyperparameters and the station count, so different configurations
+    never share a file."""
     return Path(output_dir) / (
         f"d_eff_cache_{mode}"
         f"_maxdist{max_dist_km:g}km"
@@ -532,15 +521,14 @@ def build_d_eff(
         name="d_eff_poi",
     )
 
-    # ── Station <-> station (for compute_reliability's leave-one-out check) ──
+    # ── Station <-> station (for the leave-one-out reliability check) ───────
     d_euc_sta = np.sqrt(((sta_xy[:, None, :] - sta_xy[None, :, :]) ** 2).sum(axis=-1)).astype(np.float32)
     np.fill_diagonal(d_euc_sta, np.inf)  # a station is never its own neighbour
     d_eff_sta = np.empty_like(d_euc_sta)
     for start in range(0, n_sta, PROGRESS_EVERY):
         end = min(start + PROGRESS_EVERY, n_sta)
-        # This batch of stations plays the "poi" role (rows); the "sta" role
-        # (columns, and therefore sta_elev) stays the FULL station set — only
-        # the row side is chunked.
+        # The batch of stations is the "poi" side (rows); the "sta" side
+        # (columns, and sta_elev) is always the full station set.
         d_eff_sta[start:end, :] = barrier_distances(
             st_lon[start:end],
             st_lat[start:end],
@@ -558,9 +546,9 @@ def build_d_eff(
             barrier_width=barrier_width_m,
         )
         LOG.info("d_eff_sta: %d/%d stations processed", end, n_sta)
-    # dim named "sta_i" (not "poi"): keeps this matrix's coordinate (station
-    # IDs, str) from colliding with d_eff_poi_full's "poi" coordinate (ICON
-    # cell indices, int) when both are saved into the same on-disk Dataset.
+    # Row dim "sta_i" rather than "poi": its coordinate (station IDs, str) must
+    # not clash with d_eff_poi's "poi" coordinate (ICON cell indices, int) in
+    # the same Dataset.
     d_eff_sta_full = xr.DataArray(
         d_eff_sta,
         dims=["sta_i", "sta"],
@@ -574,10 +562,7 @@ def build_d_eff(
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     args = parse_args(argv)
-    # --max-dist is given in meters at the CLI; converted to km once here —
-    # every downstream function (cache_key, cache_file_path, build_d_eff,
-    # barrier_distances) stays km-only, same convention as
-    # NudgeTowardObservation's own max_dist.
+    # --max-dist is in m; everything below works in km.
     max_dist_km = args.max_dist / 1000.0
 
     LOG.info(
@@ -645,8 +630,8 @@ def main(argv: list[str] | None = None) -> None:
             d_eff_sta_full.shape,
         )
         if not has_station_vars:
-            # Same cache key, hence the same stations: add their positions to
-            # a cache built before they were stored.
+            # Same cache key, hence the same stations: add the station
+            # positions and elevations if the file does not contain them.
             station_dataset(stations, wgs84_to_lv95).to_netcdf(out_file, mode="a")
             LOG.info("Added station positions and elevations to %s", out_file)
     else:

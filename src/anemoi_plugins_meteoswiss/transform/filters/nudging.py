@@ -46,7 +46,6 @@ import earthkit.data as ekd
 import numpy as np
 import pandas as pd
 import xarray as xr
-import yaml
 from anemoi.transform.fields import new_field_from_numpy
 from anemoi.transform.fields import new_fieldlist_from_list
 from anemoi.transform.filter import Filter
@@ -193,9 +192,11 @@ class NudgeTowardObservation(Filter):
         ``'depl'``: ref_time = minimum valid_time across all fields.
         ``'devt'``: ref_time = valid_time of the first field.
     holdout_station_file : str, optional
-        YAML file listing station nat_abbr to withhold from nudging, e.g. for
-        independent verification. Use the same file as the evalml
-        experiment's ``station_holdout_list``.
+        CSV file with a ``nat_abbr`` column listing the stations to withhold
+        from nudging, e.g. for independent verification. A relative path is
+        resolved against the working directory. evalml writes this file from
+        the experiment's ``station_holdout`` and stages it as
+        ``holdout_stations.csv`` in the inference working directory.
     write_diagnostics : bool
         If ``True``, write one NetCDF per nudged variable with the station
         residuals before/after nudging, the reliability check results and the
@@ -940,13 +941,14 @@ class NudgeTowardObservation(Filter):
         """Read the station nat_abbr list from *holdout_station_file*."""
         if not self.holdout_station_file.exists():
             raise FileNotFoundError(f"Holdout station file not found: {self.holdout_station_file}")
-        with open(self.holdout_station_file) as f:
-            holdout_stations = yaml.safe_load(f)
-        if not isinstance(holdout_stations, list) or not all(isinstance(s, str) for s in holdout_stations):
+        # dtype=str and keep_default_na=False keep codes such as "NA" as strings.
+        holdout = pd.read_csv(self.holdout_station_file, dtype=str, keep_default_na=False)
+        if "nat_abbr" not in holdout.columns:
             raise ValueError(
-                f"Holdout station file {self.holdout_station_file} must contain a YAML list of "
-                f"station nat_abbr, got {holdout_stations!r}."
+                f"Holdout station file {self.holdout_station_file} must be a CSV with a "
+                f"'nat_abbr' column, got columns {list(holdout.columns)}."
             )
+        holdout_stations = holdout["nat_abbr"].tolist()
         LOG.info("Loaded %d holdout station(s) from %s", len(holdout_stations), self.holdout_station_file)
         return holdout_stations
 

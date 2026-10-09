@@ -4,7 +4,6 @@ from pathlib import Path
 
 import earthkit.data as ekd
 import numpy as np
-import pandas as pd
 from anemoi.transform.filter import Filter
 
 LOG = logging.getLogger(__name__)
@@ -63,17 +62,6 @@ class RetrieveObservation(Filter):
     run_mode : str
         ``'depl'`` (default): ref_time = minimum valid_time across all
         fields. ``'devt'``: ref_time = valid_time of the first field.
-    station_filter_mode : str, optional
-        Extra trim applied to the retrieved stations, on top of
-        *station_group*/*retrieval_bbox*``. One of:
-        - ``None`` (default): no extra trim applied.
-        - ``"domain"``: keep only stations inside *trim_bbox*.
-        - ``"switzerland"``: keep only stations inside the Swiss
-          national border.
-    trim_bbox : list, optional
-        ``[lat_min, lat_max, lon_min, lon_max]`` used to trim stations when
-        *station_filter_mode* is ``"domain"``. Required in that case; unused
-        otherwise.
     """
 
     def __init__(
@@ -85,19 +73,11 @@ class RetrieveObservation(Filter):
         variables: list = None,
         use_limitation: int = None,
         run_mode: str = "depl",
-        station_filter_mode: str = None,
-        trim_bbox: list = None,
     ):
         if run_mode not in ("devt", "depl"):
             raise ValueError(f"run_mode must be 'devt' or 'depl', got {run_mode!r}")
         if station_group is not None and retrieval_bbox is not None:
             raise ValueError("Specify at most one of 'station_group' or 'retrieval_bbox', not both.")
-        if station_filter_mode not in (None, "domain", "switzerland"):
-            raise ValueError(
-                f"station_filter_mode must be None, 'domain', or 'switzerland', got {station_filter_mode!r}"
-            )
-        if station_filter_mode == "domain" and trim_bbox is None:
-            raise ValueError("trim_bbox is required when station_filter_mode='domain'.")
 
         self.obs_path = obs_path
         self.jretrieve_src_path = str(jretrieve_src_path)
@@ -107,8 +87,7 @@ class RetrieveObservation(Filter):
         )
         self.use_limitation = use_limitation
         self.run_mode = run_mode
-        self.station_filter_mode = station_filter_mode
-        self.trim_bbox = list(trim_bbox) if trim_bbox is not None else None
+        self._retrieved_ref_time = None
 
         if variables is not None:
             unknown = set(variables) - _ICON_TO_ECMWF_NAME.keys()
@@ -123,6 +102,7 @@ class RetrieveObservation(Filter):
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
         """Retrieve observations and write Parquet, then return *data* unchanged.
         Used to trigger the retrieval with the correct time stamp (ref_time).
+        Observations are retrieved only once per ref_time.
 
         Parameters
         ----------
@@ -139,8 +119,11 @@ class RetrieveObservation(Filter):
             if self.run_mode == "devt"
             else min(f.datetime()["valid_time"] for f in data)
         )
+        if ref_time == self._retrieved_ref_time:
+            return data
         LOG.info("Retrieving observations for %s", ref_time)
         self._retrieve(ref_time)
+        self._retrieved_ref_time = ref_time
         return data
 
     def _retrieve(self, ref_time) -> None:
@@ -178,9 +161,6 @@ class RetrieveObservation(Filter):
         df = df.dropna(subset=["nat_abbr"]).set_index("nat_abbr")
         df.index.name = "station"
 
-        if self.station_filter_mode is not None:
-            df = self._trim_stations(df)
-
         if "tre200s0" in df.columns:
             df["2t"] = df["tre200s0"] + 273.15
         if "tde200s0" in df.columns:
@@ -213,61 +193,3 @@ class RetrieveObservation(Filter):
         Path(self.obs_path).parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(self.obs_path)
         LOG.info("Saved %d stations to %s", len(df), self.obs_path)
-
-    def _trim_stations(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Trim retrieved stations to *station_filter_mode*."""
-        mode = self.station_filter_mode
-        if mode == "switzerland":
-            try:
-                import cartopy.io.shapereader  # noqa: F401
-            except ImportError:
-                LOG.warning(
-                    "cartopy is not installed — cannot filter to the Swiss national "
-                    "border; falling back to station_filter_mode='domain'."
-                )
-                mode = "domain"
-                if self.trim_bbox is None:
-                    LOG.warning(
-                        "No trim_bbox configured for the domain fallback either — skipping station trimming entirely."
-                    )
-                    return df
-
-        if mode == "domain":
-            lat_min, lat_max, lon_min, lon_max = self.trim_bbox
-            mask = (
-                (df["latitude"] >= lat_min)
-                & (df["latitude"] <= lat_max)
-                & (df["longitude"] >= lon_min)
-                & (df["longitude"] <= lon_max)
-            )
-            desc = (
-                f"domain bbox {self.trim_bbox}"
-                if self.station_filter_mode == "domain"
-                else f"domain bbox {self.trim_bbox} (cartopy unavailable, fell back from 'switzerland')"
-            )
-
-        elif mode == "switzerland":
-            import cartopy.io.shapereader as shpreader
-            from shapely.geometry import Point
-
-            shp_path = shpreader.natural_earth(resolution="10m", category="cultural", name="admin_0_countries")
-            ch_country = next(r for r in shpreader.Reader(shp_path).records() if r.attributes["ADM0_A3"] == "CHE")
-            swiss_geom = ch_country.geometry
-
-            def _in_switzerland(lat, lon):
-                if pd.isna(lat) or pd.isna(lon):
-                    return False
-                return swiss_geom.contains(Point(lon, lat))
-
-            mask = [_in_switzerland(lat, lon) for lat, lon in zip(df["latitude"], df["longitude"])]
-            desc = "Swiss national border (Natural Earth)"
-
-        else:
-            raise ValueError(
-                f"Unknown station_filter_mode: {self.station_filter_mode!r} (expected None, 'domain', or 'switzerland')"
-            )
-
-        n_before = len(df)
-        df = df[mask]
-        LOG.info("Station filter [%s]: %d -> %d stations", desc, n_before, len(df))
-        return df

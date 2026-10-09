@@ -8,24 +8,27 @@ from anemoi.transform.filter import Filter
 
 LOG = logging.getLogger(__name__)
 
-# GRIB shortName -> station DataFrame column
-_PARAM_TO_COL = {
+# ICON GRIB shortName -> ECMWF shortName, used as the station column name
+# ("vmax" has no ECMWF equivalent)
+_ICON_TO_ECMWF_NAME = {
     "T_2M": "2t",
     "TD_2M": "2d",
     "U_10M": "10u",
     "V_10M": "10v",
     "PMSL": "msl",
+    "PS": "sp",
     "TOT_PREC": "tp",
     "VMAX_10M": "vmax",
 }
 
-# Station column -> DWH (jretrieve) parameter names
-_COL_TO_JR_PARAMS = {
+# ECMWF shortName -> DWH (jretrieve) parameter names
+_ECMWF_NAME_TO_DWH_PARAMS = {
     "2t": ["tre200s0"],
     "2d": ["tde200s0"],
     "10u": ["fkl010z0", "dkl010z0"],
     "10v": ["fkl010z0", "dkl010z0"],
     "msl": ["pp0qffs0"],
+    "sp": ["prestas0"],
     "tp": ["rre150h0"],
     "vmax": ["fkl010z1"],
 }
@@ -37,30 +40,25 @@ class RetrieveObservation(Filter):
     Retrieves the DWH parameters required for the requested variables,
     applies unit conversions to SI (°C→K, hPa→Pa, speed+direction→U/V),
     and saves the result as a Parquet file for use by the nudging filter.
-    The data is passed through unchanged; this filter is used for its
-    side effect of writing the observations file before nudging runs.
 
     Parameters
     ----------
     obs_path : str
         Path where the output Parquet file will be written.
     jretrieve_src_path : str
-        Directory containing ``jretrieve.py``.
-    group : str, optional
-        DWH station group IDs (comma-separated) passed to jretrieve
-        ``-a stn_group_id``. Mutually exclusive with ``bbox``.
-        Use this to match the truth data station selector exactly.
-    bbox : list, optional
+        Directory containing the ``data_input`` package (``data_input/jretrieve.py``).
+    station_group : str, optional
+        DWH station group IDs (comma-separated) passed to jretrieve.
+        Mutually exclusive with ``retrieval_bbox``.
+    retrieval_bbox : list, optional
         Bounding box ``[minlat, maxlat, minlon, maxlon]`` for station
-        selection. Mutually exclusive with ``group``.
-        Defaults to ``[40.5, 53.0, 0.0, 17.5]`` when neither group nor
-        bbox is specified.
+        selection. Mutually exclusive with ``station_group``.
     variables : list of str, optional
-        GRIB shortNames to fetch (must be keys of ``_PARAM_TO_COL``).
+        GRIB shortNames to fetch (must be keys of ``_ICON_TO_ECMWF_NAME``).
         Defaults to all available variables.
     use_limitation : int, optional
-        Passed to jretrieve ``--use-limitation``; limits the observation
-        time window in minutes (e.g. 50 means observations within ±50 min).
+        Passed to jretrieve ``--use-limitation``. Indirectly specifies the
+        groups of stations to retrieve. See jretrieve documentation for details.
     run_mode : str
         ``'depl'`` (default): ref_time = minimum valid_time across all
         fields. ``'devt'``: ref_time = valid_time of the first field.
@@ -70,36 +68,41 @@ class RetrieveObservation(Filter):
         self,
         obs_path: str,
         jretrieve_src_path: str,
-        group: str = None,
-        bbox: list = None,
+        station_group: str = None,
+        retrieval_bbox: list = None,
         variables: list = None,
         use_limitation: int = None,
         run_mode: str = "depl",
     ):
         if run_mode not in ("devt", "depl"):
             raise ValueError(f"run_mode must be 'devt' or 'depl', got {run_mode!r}")
-        if group is not None and bbox is not None:
-            raise ValueError("Specify at most one of 'group' or 'bbox', not both.")
+        if station_group is not None and retrieval_bbox is not None:
+            raise ValueError("Specify at most one of 'station_group' or 'retrieval_bbox', not both.")
 
         self.obs_path = obs_path
         self.jretrieve_src_path = str(jretrieve_src_path)
-        self.group = group
-        self.bbox = bbox if (bbox is not None or group is not None) else [40.5, 53.0, 0.0, 17.5]
+        self.station_group = station_group
+        self.retrieval_bbox = (
+            retrieval_bbox if (retrieval_bbox is not None or station_group is not None) else [40.5, 53.0, 0.0, 17.5]
+        )
         self.use_limitation = use_limitation
         self.run_mode = run_mode
+        self._retrieved_ref_time = None
 
         if variables is not None:
-            unknown = set(variables) - _PARAM_TO_COL.keys()
+            unknown = set(variables) - _ICON_TO_ECMWF_NAME.keys()
             if unknown:
-                raise ValueError(f"Unknown variables: {unknown}. Valid: {list(_PARAM_TO_COL)}")
-            self.cols = {_PARAM_TO_COL[v] for v in variables}
+                raise ValueError(f"Unknown variables: {unknown}. Valid: {list(_ICON_TO_ECMWF_NAME)}")
+            self.ecmwf_names = {_ICON_TO_ECMWF_NAME[v] for v in variables}
         else:
-            self.cols = set(_PARAM_TO_COL.values())
+            self.ecmwf_names = set(_ICON_TO_ECMWF_NAME.values())
 
         super().__init__()
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
         """Retrieve observations and write Parquet, then return *data* unchanged.
+        Used to trigger the retrieval with the correct time stamp (ref_time).
+        Observations are retrieved only once per ref_time.
 
         Parameters
         ----------
@@ -116,22 +119,27 @@ class RetrieveObservation(Filter):
             if self.run_mode == "devt"
             else min(f.datetime()["valid_time"] for f in data)
         )
+        if ref_time == self._retrieved_ref_time:
+            return data
         LOG.info("Retrieving observations for %s", ref_time)
         self._retrieve(ref_time)
+        self._retrieved_ref_time = ref_time
         return data
 
     def _retrieve(self, ref_time) -> None:
         if self.jretrieve_src_path not in sys.path:
             sys.path.insert(0, self.jretrieve_src_path)
-        import jretrieve as jr
+        from data_input import jretrieve as jr
 
-        jr_params = list(dict.fromkeys(p for col in self.cols for p in _COL_TO_JR_PARAMS.get(col, [])))
+        jr_params = list(dict.fromkeys(p for name in self.ecmwf_names for p in _ECMWF_NAME_TO_DWH_PARAMS.get(name, [])))
         if not jr_params:
-            raise ValueError(f"No jretrieve parameters found for columns: {self.cols}")
+            raise ValueError(f"No jretrieve parameters found for variables: {self.ecmwf_names}")
 
         jr.check_prerequisites()
 
-        stations_sel = {"group": self.group} if self.group is not None else {"bbox": self.bbox}
+        stations_sel = (
+            {"group": self.station_group} if self.station_group is not None else {"bbox": self.retrieval_bbox}
+        )
         meta = jr.fetch_meta(stations=stations_sel, params=jr_params)
         catalog = jr.StationCatalog.from_meta(meta)
         LOG.info("Station catalog: %d stations", catalog.n)
@@ -149,6 +157,7 @@ class RetrieveObservation(Filter):
         df["nat_abbr"] = df["station"].map(dict(zip(catalog.station_id, catalog.nat_abbr)))
         df["latitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.latitude)))
         df["longitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.longitude)))
+        df["elevation"] = df["station"].map(dict(zip(catalog.station_id, catalog.elevation)))
         df = df.dropna(subset=["nat_abbr"]).set_index("nat_abbr")
         df.index.name = "station"
 
@@ -162,16 +171,24 @@ class RetrieveObservation(Filter):
             df["10v"] = -df["fkl010z0"] * np.cos(dd_rad)
         if "pp0qffs0" in df.columns:
             df["msl"] = df["pp0qffs0"] * 100.0
+        if "prestas0" in df.columns:
+            df["sp"] = df["prestas0"] * 100.0
         if "rre150h0" in df.columns:
             df["tp"] = df["rre150h0"]
         if "fkl010z1" in df.columns:
             df["vmax"] = df["fkl010z1"]
 
-        result_cols = [c for c in self.cols if c in df.columns] + [
+        result_cols = [name for name in self.ecmwf_names if name in df.columns] + [
             "latitude",
             "longitude",
+            "elevation",
         ]
         df = df[result_cols].copy()
+
+        for name in _ICON_TO_ECMWF_NAME.values():
+            if name in df.columns:
+                n_valid = int(df[name].notna().sum())
+                LOG.info("Stations with valid %s: %d / %d stations", name, n_valid, len(df))
 
         Path(self.obs_path).parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(self.obs_path)

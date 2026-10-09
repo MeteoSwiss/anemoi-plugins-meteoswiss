@@ -224,9 +224,7 @@ def test_nudge_toward_observation_invalid_holdout_station_file(tmp_path):
         patch.object(NudgeTowardObservation, "_project_icon_grid"),
     ):
         with pytest.raises(FileNotFoundError, match="Holdout station file"):
-            NudgeTowardObservation(
-                obs_path=str(obs), **NUDGE_PATHS, holdout_station_file=str(tmp_path / "missing.csv")
-            )
+            NudgeTowardObservation(obs_path=str(obs), **NUDGE_PATHS, holdout_station_file=str(tmp_path / "missing.csv"))
         with pytest.raises(ValueError, match="'nat_abbr' column"):
             NudgeTowardObservation(obs_path=str(obs), **NUDGE_PATHS, holdout_station_file=str(no_nat_abbr))
 

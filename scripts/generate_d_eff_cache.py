@@ -69,8 +69,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         nargs=4,
         default=[40.5, 53.0, 0.0, 17.5],
         metavar=("LAT_MIN", "LAT_MAX", "LON_MIN", "LON_MAX"),
-        help="Bounding box passed to jretrieve.fetch_meta(). The stations are then "
-        "trimmed with --station-filter-mode.",
+        help="Bounding box passed to jretrieve.fetch_meta(). The stations are then trimmed with --station-filter-mode.",
     )
     p.add_argument(
         "--station-filter-mode",

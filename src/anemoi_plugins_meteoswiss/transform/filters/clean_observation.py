@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import re
 import sys
 import time
@@ -50,12 +51,25 @@ _QC_TO_PARQUET = {
     "T_G":     ["skt"],
 }
 
-_SUMMER_MONTHS = {6, 7, 8}
-_BUDDY_TESTS   = {"buddy_obs", "buddy_diff"}
+_SEASON_MONTHS = {
+    "winter": {12, 1, 2},
+    "spring": {3, 4, 5},
+    "fall":   {9, 10, 11},
+    "summer": {6, 7, 8},
+}
+_BUDDY_TESTS = {"buddy_obs", "buddy_diff"}
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi   = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return 6371.0 * 2 * math.asin(math.sqrt(a))
 
 
 def _load_inversion_stations(yaml_path: Path) -> dict:
-    """Return {station: {ref, alt, ref_alt, alt_diff}} from inversion_stations.yaml."""
+    """Return {station: {ref, alt, ref_alt, alt_diff}} from clean_observation_inversion_stations.yaml."""
     result = {}
     try:
         data = yaml.safe_load(yaml_path.read_text()).get("inversion_stations", {})
@@ -86,14 +100,25 @@ def _check_inversion_protection(station: str, para: str, positive_tests: list,
 
     Conditions (all must hold):
       - para in {"T_2M", "TD_2M"}
-      - month is not in summer (6, 7, 8)
+      - month is in one of the configured active seasons
       - station is in the inversion stations dict
       - positive_tests ⊆ {buddy_obs, buddy_diff}  (no other test fired)
       - actual lapse rate (T_ref - T_sta) / (H_ref - H_sta) is within
-        [inversion_lapse_rate_min, inversion_lapse_rate_max]
+        [lapse_rate_min, lapse_rate_max]
+      - at least min_confirming_stations other inversion stations within
+        confirming_radius_km also show a lapse rate in [lapse_rate_min, lapse_rate_max]
     """
-    if para not in {"T_2M", "TD_2M"} or month in _SUMMER_MONTHS:
+    if para not in {"T_2M", "TD_2M"}:
         return False, None
+
+    inv_cfg = getattr(_qc_config, "inversion_protection", {}) or {}
+    seasons = inv_cfg.get("seasons", ["winter", "spring", "fall"])
+    active_months: set = set()
+    for s in seasons:
+        active_months |= _SEASON_MONTHS.get(s, set())
+    if month not in active_months:
+        return False, None
+
     inv_stations = getattr(_qc_config, "inversion_stations", {})
     if not inv_stations:
         return False, None
@@ -112,13 +137,46 @@ def _check_inversion_protection(station: str, para: str, positive_tests: list,
     if pd.isna(t_sta) or pd.isna(t_ref):
         return False, None
 
-    lr = (t_ref - t_sta) / info["alt_diff"]
-    inv_cfg  = getattr(_qc_config, "inversion_protection", {})
-    lr_min   = float(inv_cfg.get("lapse_rate_min", 0.006))
-    lr_max   = float(inv_cfg.get("lapse_rate_max", 0.1))
-    if lr_min <= lr <= lr_max:
-        return True, lr
-    return False, None
+    lr     = (t_ref - t_sta) / info["alt_diff"]
+    lr_min = float(inv_cfg.get("lapse_rate_min", 0.006))
+    lr_max = float(inv_cfg.get("lapse_rate_max", 0.1))
+    if not lr_min <= lr <= lr_max:
+        return False, None
+
+    # Spatial confirmation: require at least min_confirming_stations other
+    # inversion stations within confirming_radius_km that also show inversion.
+    min_confirming = int(inv_cfg.get("min_confirming_stations", 0))
+    if min_confirming > 0:
+        radius_km = float(inv_cfg.get("confirming_radius_km", 100.0))
+        try:
+            sta_lat = float(df.at[station, "latitude"])
+            sta_lon = float(df.at[station, "longitude"])
+        except (KeyError, ValueError):
+            return False, None
+        confirming = 0
+        for other, other_info in inv_stations.items():
+            if other == station:
+                continue
+            if other not in df.index or other_info["ref"] not in df.index:
+                continue
+            try:
+                other_lat = float(df.at[other, "latitude"])
+                other_lon = float(df.at[other, "longitude"])
+            except (KeyError, ValueError):
+                continue
+            if _haversine_km(sta_lat, sta_lon, other_lat, other_lon) > radius_km:
+                continue
+            t_other     = df.at[other, "2t"]
+            t_other_ref = df.at[other_info["ref"], "2t"]
+            if pd.isna(t_other) or pd.isna(t_other_ref) or other_info["alt_diff"] == 0:
+                continue
+            other_lr = (t_other_ref - t_other) / other_info["alt_diff"]
+            if lr_min <= other_lr <= lr_max:
+                confirming += 1
+        if confirming < min_confirming:
+            return False, None
+
+    return True, lr
 
 
 # Make clean_observation_tests importable via bare import

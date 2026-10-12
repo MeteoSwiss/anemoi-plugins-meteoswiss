@@ -368,8 +368,9 @@ class CleanObservation(Filter):
         inv_prot_cfg = getattr(_qc_config, "inversion_protection", {}) or {}
         if inv_prot_cfg.get("report") and obs_timestamp:
             protected = getattr(self, "_inversion_protected", [])
-            inv_json_path = json_path.parent / f"inversion_protection_{obs_timestamp}.json"
-            self._write_inversion_protection_json(inv_json_path, protected, obs_timestamp)
+            if protected:
+                inv_json_path = json_path.parent / f"inversion_protection_{obs_timestamp}.json"
+                self._write_inversion_protection_json(inv_json_path, protected, obs_timestamp)
 
         if getattr(_qc_config, "plot_maps", False):
             try:

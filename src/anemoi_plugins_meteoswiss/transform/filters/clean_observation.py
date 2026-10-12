@@ -57,7 +57,8 @@ _SEASON_MONTHS = {
     "fall":   {9, 10, 11},
     "summer": {6, 7, 8},
 }
-_BUDDY_TESTS = {"buddy_obs", "buddy_diff"}
+_BUDDY_TESTS             = {"buddy_obs", "buddy_diff"}
+_INVERSION_BLOCKING_TESTS = {"hard", "isolation_check", "plateau_test", "DWH_flag"}
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -93,67 +94,74 @@ def _load_inversion_stations(yaml_path: Path) -> dict:
 
 def _check_inversion_protection(station: str, para: str, positive_tests: list,
                                 df, month: int) -> tuple:
-    """Return (protected, lapse_rate) for this flag candidate.
+    """Return (protected, lapse_rate, confirming_stations) for this flag candidate.
 
-    protected  – True if the flag should be suppressed due to inversion conditions.
-    lapse_rate – measured lapse rate [K/m] when protected, else None.
+    protected            – True if the flag should be suppressed due to inversion conditions.
+    lapse_rate           – measured lapse rate [K/m] when protected, else None.
+    confirming_stations  – list of nearby station names that also showed inversion.
 
     Conditions (all must hold):
-      - para in {"T_2M", "TD_2M"}
+      - para is in the configured parameters list (default: T_2M, TD_2M)
       - month is in one of the configured active seasons
       - station is in the inversion stations dict
-      - positive_tests ⊆ {buddy_obs, buddy_diff}  (no other test fired)
+      - at least one of {buddy_obs, buddy_diff} fired
+      - none of {hard, isolation_check, plateau_test, DWH_flag} also fired
       - actual lapse rate (T_ref - T_sta) / (H_ref - H_sta) is within
         [lapse_rate_min, lapse_rate_max]
       - at least min_confirming_stations other inversion stations within
         confirming_radius_km also show a lapse rate in [lapse_rate_min, lapse_rate_max]
     """
-    if para not in {"T_2M", "TD_2M"}:
-        return False, None
-
     inv_cfg = getattr(_qc_config, "inversion_protection", {}) or {}
+    protected_paras = set(inv_cfg.get("parameters", ["T_2M", "TD_2M"]))
+    if para not in protected_paras:
+        return False, None, []
     seasons = inv_cfg.get("seasons", ["winter", "spring", "fall"])
     active_months: set = set()
     for s in seasons:
         active_months |= _SEASON_MONTHS.get(s, set())
     if month not in active_months:
-        return False, None
+        return False, None, []
 
     inv_stations = getattr(_qc_config, "inversion_stations", {})
     if not inv_stations:
-        return False, None
+        return False, None, []
     info = inv_stations.get(station)
     if not info:
-        return False, None
-    if not positive_tests or not set(positive_tests).issubset(_BUDDY_TESTS):
-        return False, None
+        return False, None, []
+
+    if not any(t in _BUDDY_TESTS for t in positive_tests):
+        return False, None, []
+    blocking = set(inv_cfg.get("blocking_tests", _INVERSION_BLOCKING_TESTS))
+    if any(t in blocking for t in positive_tests):
+        return False, None, []
 
     ref = info["ref"]
     if station not in df.index or ref not in df.index:
-        return False, None
+        return False, None, []
 
     t_sta = df.at[station, "2t"]
     t_ref = df.at[ref,     "2t"]
     if pd.isna(t_sta) or pd.isna(t_ref):
-        return False, None
+        return False, None, []
 
     lr     = (t_ref - t_sta) / info["alt_diff"]
     lr_min = float(inv_cfg.get("lapse_rate_min", 0.006))
     lr_max = float(inv_cfg.get("lapse_rate_max", 0.1))
     if not lr_min <= lr <= lr_max:
-        return False, None
+        return False, None, []
 
     # Spatial confirmation: require at least min_confirming_stations other
     # inversion stations within confirming_radius_km that also show inversion.
     min_confirming = int(inv_cfg.get("min_confirming_stations", 0))
+    confirming_stations: list = []
     if min_confirming > 0:
         radius_km = float(inv_cfg.get("confirming_radius_km", 100.0))
         try:
             sta_lat = float(df.at[station, "latitude"])
             sta_lon = float(df.at[station, "longitude"])
         except (KeyError, ValueError):
-            return False, None
-        confirming = 0
+            return False, None, []
+        _confirming_with_dist: list = []
         for other, other_info in inv_stations.items():
             if other == station:
                 continue
@@ -164,7 +172,8 @@ def _check_inversion_protection(station: str, para: str, positive_tests: list,
                 other_lon = float(df.at[other, "longitude"])
             except (KeyError, ValueError):
                 continue
-            if _haversine_km(sta_lat, sta_lon, other_lat, other_lon) > radius_km:
+            dist = _haversine_km(sta_lat, sta_lon, other_lat, other_lon)
+            if dist > radius_km:
                 continue
             t_other     = df.at[other, "2t"]
             t_other_ref = df.at[other_info["ref"], "2t"]
@@ -172,11 +181,16 @@ def _check_inversion_protection(station: str, para: str, positive_tests: list,
                 continue
             other_lr = (t_other_ref - t_other) / other_info["alt_diff"]
             if lr_min <= other_lr <= lr_max:
-                confirming += 1
-        if confirming < min_confirming:
-            return False, None
+                _confirming_with_dist.append((dist, other))
+        if len(_confirming_with_dist) < min_confirming:
+            return False, None, []
+        _confirming_with_dist.sort()
+        confirming_stations = [
+            {"station": s, "distance_km": round(d, 1)}
+            for d, s in _confirming_with_dist[:min_confirming]
+        ]
 
-    return True, lr
+    return True, lr, confirming_stations
 
 
 # Make clean_observation_tests importable via bare import
@@ -510,16 +524,26 @@ class CleanObservation(Filter):
                         continue
                     pos = [t for t in executed_tests
                            if station in blacklist.get(t, {}).get("Station", [])]
-                    _protected, _lr = _check_inversion_protection(station, para, pos, df, _obs_month)
+                    _protected, _lr, _confirming = _check_inversion_protection(
+                        station, para, pos, df, _obs_month
+                    )
                     if _protected:
                         LOG.info("Inversion protection: suppressing %s buddy flag for %s (lr=%.4f K/m)",
                                  para, station, _lr)
                         qc_summary = qc_summary.drop(columns=[station])
+                        _obs_cols = [c for c in _qc_config.qc_to_parquet.get(para, []) if c in df.columns]
+                        _obs_val = (
+                            round(float(df.at[station, _obs_cols[0]]), 4)
+                            if _obs_cols and not pd.isna(df.at[station, _obs_cols[0]])
+                            else None
+                        )
                         self._inversion_protected.append({
-                            "station":          station,
-                            "qc_parameter":     para,
-                            "lapse_rate":       round(_lr, 6),
-                            "tests_suppressed": pos,
+                            "station":              station,
+                            "qc_parameter":         para,
+                            "obs_value":            _obs_val,
+                            "lapse_rate":           round(_lr, 6),
+                            "tests_suppressed":     pos,
+                            "confirming_stations":  _confirming,
                         })
 
             # stations_excluded: trusted stations (e.g. reference stations) that are
@@ -950,14 +974,28 @@ class CleanObservation(Filter):
     @staticmethod
     def _write_inversion_protection_json(json_path: Path, protected: list, obs_timestamp: str) -> None:
         """Write inversion-protection suppression report to *json_path*."""
-        output = {
-            "obs_timestamp":  obs_timestamp,
-            "n_protected":    len(protected),
-            "protected":      protected,
-        }
-        with open(json_path, "w") as fh:
-            json.dump(output, fh, indent=2)
-            fh.write("\n")
+        def _entry(e: dict) -> str:
+            return (
+                "    {\n"
+                f'      "station": {json.dumps(e["station"])},\n'
+                f'      "qc_parameter": {json.dumps(e["qc_parameter"])},\n'
+                f'      "obs_value": {json.dumps(e.get("obs_value"))},\n'
+                f'      "lapse_rate": {e["lapse_rate"]},\n'
+                f'      "tests_suppressed": {json.dumps(e["tests_suppressed"])},\n'
+                f'      "confirming_stations": {json.dumps(e.get("confirming_stations", []))}\n'
+                "    }"
+            )
+
+        entries = ",\n".join(_entry(e) for e in protected)
+        body = (
+            "{\n"
+            f'  "obs_timestamp": {json.dumps(obs_timestamp)},\n'
+            f'  "n_protected": {len(protected)},\n'
+            '  "protected": [\n'
+            + (entries + "\n" if entries else "")
+            + "  ]\n}\n"
+        )
+        json_path.write_text(body)
         LOG.info(
             "Inversion protection report: %d suppressed flag(s) → %s",
             len(protected), json_path,

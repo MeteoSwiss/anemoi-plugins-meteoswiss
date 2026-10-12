@@ -11,17 +11,21 @@ par2check:
 # Stations permanently set to NaN for the listed parameters (loaded from external file), applied first
 hard_blacklist_file: clean_observation_blacklist_bdp_all.yaml
 
-# Optional: suppress buddy-only T_2M and TD_2M flags during measured moderate-strong inversions
+# Optional: suppress buddy-only flags during measured moderate-strong inversions
 # at stations with low representativeness in the station networks used for buddy checks (e.g. isolated sink-holes stations).
-# Station/reference pairs are loaded from a YAML file (output of lapse_deviation.py); leave file empty to disable.
+# Station/reference pairs are loaded from a YAML file; leave file empty to disable (null).
 # Active seasons are configurable; protection also requires spatial confirmation from neighbouring stations.
+# Protection requires: at least one buddy test (buddy_obs or buddy_diff) positive AND none of
+# the blocking_tests also positive. 
 inversion_protection:
   file: clean_observation_inversion_stations.yaml
-  seasons: [summer, winter, spring, fall]   # active seasons: winter=Dec–Feb, spring=Mar–May, fall=Sep–Nov
+  parameters: [T_2M, TD_2M, T_G]   # QC parameters to which inversion protection applies
+  seasons: [summer, winter, spring, fall]   # active seasons: winter=Dec–Feb, spring=Mar–May, fall=Sep–Nov, summer=Jun-Aug
   lapse_rate_min: 0.003             # K/m — minimum lapse rate to qualify as inversion
   lapse_rate_max: 0.06              # K/m — upper bound (above this likely a data error)
-  min_confirming_stations: 3        # other stations within radius that must also show inversion
-  confirming_radius_km: 100.0       # search radius for spatial confirmation [km]
+  min_confirming_stations: 2        # other stations within radius that must also show inversion
+  confirming_radius_km: 150.0       # search radius for spatial confirmation [km]
+  blocking_tests: [hard, isolation_check, plateau_test, DWH_flag]  # if any of these is positive, protection is suppressed
   report: true                      # write inversion_protection_YYYYmmDDHHMM.json alongside _flagged.json
 
 # Trusted stations — never blacklisted by automated QC regardless of score, suited for SMN stations only

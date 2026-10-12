@@ -11,10 +11,20 @@ par2check:
 # Stations permanently set to NaN for the listed parameters (loaded from external file), applied first
 hard_blacklist_file: blacklist_bdp_all.yaml
 
+# Optional: suppress buddy-only T_2M and TD_2M flags during measured moderate-strong inversions
+# at stations with low representativeness in the station networks used for buddy checks (e.g. isolated sink-holes stations).
+# csv lists station/reference pairs (output of lapse_deviation.py); leave csv empty to disable.
+# Only applied in winter, spring, fall (summer = Jun–Aug is always evaluated normally).
+inversion_protection:
+  csv: /scratch/mch/mbuzzi/obs/plots/flag_stats/lapse_rate_T2M.csv
+  lapse_rate_min: 0.003   # K/m — minimum lapse rate to qualify as moderate inversion
+  lapse_rate_max: 0.06    # K/m — upper bound (above this likely a data error)
+  report: true            # write inversion_protection_YYYYmmDDHHMM.json to test_results_dir
+
 # Trusted stations — never blacklisted by automated QC regardless of score, suited for SMN stations only
 stations_excluded:
-  T_2M:    {stations: ['BRL']}
-  TD_2M:   {stations: ['BRL']}
+  T_2M:    {stations: []}
+  TD_2M:   {stations: []}
   T_G:     {stations: []}
   SP_10M:  {stations: []}
   VMAX10M: {stations: []}

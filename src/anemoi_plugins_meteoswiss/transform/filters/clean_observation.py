@@ -1,3 +1,4 @@
+import csv
 import json
 import logging
 import re
@@ -50,6 +51,77 @@ _QC_TO_PARQUET = {
     "T_G":     ["skt"],
 }
 
+_SUMMER_MONTHS = {6, 7, 8}
+_BUDDY_TESTS   = {"buddy_obs", "buddy_diff"}
+
+
+def _load_inversion_stations(csv_path: Path) -> dict:
+    """Return {station: {ref, alt, ref_alt, alt_diff}} from lapse_rate CSV."""
+    result = {}
+    try:
+        with open(csv_path, newline="") as f:
+            for row in csv.DictReader(f):
+                if not row.get("q99"):
+                    continue
+                dh = int(row["ref_alt"]) - int(row["alt"])
+                if dh == 0:
+                    continue
+                result[row["station"]] = {
+                    "ref":      row["ref"],
+                    "alt":      int(row["alt"]),
+                    "ref_alt":  int(row["ref_alt"]),
+                    "alt_diff": dh,
+                }
+        LOG.info("Inversion protection: loaded %d station pairs from %s", len(result), csv_path)
+    except (FileNotFoundError, OSError) as exc:
+        LOG.warning("Inversion protection CSV not found — protection disabled: %s", exc)
+    return result
+
+
+def _check_inversion_protection(station: str, para: str, positive_tests: list,
+                                df, month: int) -> tuple:
+    """Return (protected, lapse_rate) for this flag candidate.
+
+    protected  – True if the flag should be suppressed due to inversion conditions.
+    lapse_rate – measured lapse rate [K/m] when protected, else None.
+
+    Conditions (all must hold):
+      - para in {"T_2M", "TD_2M"}
+      - month is not in summer (6, 7, 8)
+      - station is in the inversion stations dict
+      - positive_tests ⊆ {buddy_obs, buddy_diff}  (no other test fired)
+      - actual lapse rate (T_ref - T_sta) / (H_ref - H_sta) is within
+        [inversion_lapse_rate_min, inversion_lapse_rate_max]
+    """
+    if para not in {"T_2M", "TD_2M"} or month in _SUMMER_MONTHS:
+        return False, None
+    inv_stations = getattr(_qc_config, "inversion_stations", {})
+    if not inv_stations:
+        return False, None
+    info = inv_stations.get(station)
+    if not info:
+        return False, None
+    if not positive_tests or not set(positive_tests).issubset(_BUDDY_TESTS):
+        return False, None
+
+    ref = info["ref"]
+    if station not in df.index or ref not in df.index:
+        return False, None
+
+    t_sta = df.at[station, "2t"]
+    t_ref = df.at[ref,     "2t"]
+    if pd.isna(t_sta) or pd.isna(t_ref):
+        return False, None
+
+    lr = (t_ref - t_sta) / info["alt_diff"]
+    inv_cfg  = getattr(_qc_config, "inversion_protection", {})
+    lr_min   = float(inv_cfg.get("lapse_rate_min", 0.006))
+    lr_max   = float(inv_cfg.get("lapse_rate_max", 0.1))
+    if lr_min <= lr <= lr_max:
+        return True, lr
+    return False, None
+
+
 # Make clean_observation_tests importable via bare import
 _FILTERS_DIR = str(Path(__file__).parent)
 if _FILTERS_DIR not in sys.path:
@@ -76,6 +148,11 @@ def _load_qc_config() -> SimpleNamespace:
         blacklist_path = config_dir / blacklist_file
         blacklist_cfg = yaml.safe_load(blacklist_path.read_text())
         ns.hard_blacklist = blacklist_cfg["hard_blacklist"]
+
+    inv_prot = cfg.get("inversion_protection", {})
+    ns.inversion_protection = inv_prot
+    inv_csv = inv_prot.get("csv") if inv_prot else None
+    ns.inversion_stations = _load_inversion_stations(Path(inv_csv)) if inv_csv else {}
 
     return ns
 
@@ -217,6 +294,12 @@ class CleanObservation(Filter):
             obs_timestamp,
         )
 
+        inv_prot_cfg = getattr(_qc_config, "inversion_protection", {}) or {}
+        if inv_prot_cfg.get("report") and obs_timestamp:
+            protected = getattr(self, "_inversion_protected", [])
+            inv_json_path = json_path.parent / f"inversion_protection_{obs_timestamp}.json"
+            self._write_inversion_protection_json(inv_json_path, protected, obs_timestamp)
+
         if getattr(_qc_config, "plot_maps", False):
             try:
                 self._plot_station_maps(df)
@@ -268,6 +351,8 @@ class CleanObservation(Filter):
 
         # Flagged observations: list of {"station", "column", "qc_parameter", "original_value"}
         self._flagged: list = []
+        # Inversion-protected entries: flags that were suppressed by inversion_protection
+        self._inversion_protected: list = []
 
         if not _QC_AVAILABLE:
             LOG.warning("QC modules unavailable, skipping cleaning")
@@ -297,6 +382,10 @@ class CleanObservation(Filter):
         for _entry in _qc_config.hard_blacklist.values():
             for _p in _entry["paras"]:
                 _hard_blacklisted.setdefault(_p, set()).add(_entry["station"])
+
+        # Month of the current observation file — used for inversion protection
+        _ts = re.search(r'\d{12}', self.obs_path_in.stem)
+        _obs_month = int(_ts.group()[4:6]) if _ts else 0
 
         # --- Stage 2: automated QC tests per parameter --------------------
         for para in _qc_config.par2check:
@@ -354,6 +443,27 @@ class CleanObservation(Filter):
             threshold = _qc_config.titan_ntests_threshold[para]["threshold_summary"]
 
             flagged_stations = []
+
+            # inversion_protection: suppress buddy-only T_2M flags when the
+            # measured lapse rate to the reference station confirms an inversion.
+            if _qc_config.inversion_stations:
+                for station in list(qc_summary.columns):
+                    score = qc_summary[station].iloc[0]
+                    if score <= threshold:
+                        continue
+                    pos = [t for t in executed_tests
+                           if station in blacklist.get(t, {}).get("Station", [])]
+                    _protected, _lr = _check_inversion_protection(station, para, pos, df, _obs_month)
+                    if _protected:
+                        LOG.info("Inversion protection: suppressing %s buddy flag for %s (lr=%.4f K/m)",
+                                 para, station, _lr)
+                        qc_summary = qc_summary.drop(columns=[station])
+                        self._inversion_protected.append({
+                            "station":          station,
+                            "qc_parameter":     para,
+                            "lapse_rate":       round(_lr, 6),
+                            "tests_suppressed": pos,
+                        })
 
             # stations_excluded: trusted stations (e.g. reference stations) that are
             # never blacklisted by automated QC, regardless of their score.
@@ -779,6 +889,22 @@ class CleanObservation(Filter):
             json.dump(output, fh, indent=2)
             fh.write("\n")
         LOG.info("Wrote %d flagged entries to %s", len(flagged), json_path)
+
+    @staticmethod
+    def _write_inversion_protection_json(json_path: Path, protected: list, obs_timestamp: str) -> None:
+        """Write inversion-protection suppression report to *json_path*."""
+        output = {
+            "obs_timestamp":  obs_timestamp,
+            "n_protected":    len(protected),
+            "protected":      protected,
+        }
+        with open(json_path, "w") as fh:
+            json.dump(output, fh, indent=2)
+            fh.write("\n")
+        LOG.info(
+            "Inversion protection report: %d suppressed flag(s) → %s",
+            len(protected), json_path,
+        )
 
     @staticmethod
     def _nan_frames(df_qc: pd.DataFrame):

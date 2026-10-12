@@ -1,4 +1,3 @@
-import csv
 import json
 import logging
 import re
@@ -55,26 +54,26 @@ _SUMMER_MONTHS = {6, 7, 8}
 _BUDDY_TESTS   = {"buddy_obs", "buddy_diff"}
 
 
-def _load_inversion_stations(csv_path: Path) -> dict:
-    """Return {station: {ref, alt, ref_alt, alt_diff}} from lapse_rate CSV."""
+def _load_inversion_stations(yaml_path: Path) -> dict:
+    """Return {station: {ref, alt, ref_alt, alt_diff}} from inversion_stations.yaml."""
     result = {}
     try:
-        with open(csv_path, newline="") as f:
-            for row in csv.DictReader(f):
-                if not row.get("q99"):
-                    continue
-                dh = int(row["ref_alt"]) - int(row["alt"])
-                if dh == 0:
-                    continue
-                result[row["station"]] = {
-                    "ref":      row["ref"],
-                    "alt":      int(row["alt"]),
-                    "ref_alt":  int(row["ref_alt"]),
-                    "alt_diff": dh,
-                }
-        LOG.info("Inversion protection: loaded %d station pairs from %s", len(result), csv_path)
+        data = yaml.safe_load(yaml_path.read_text()).get("inversion_stations", {})
+        for station, info in data.items():
+            if not info.get("q99"):
+                continue
+            dh = int(info["ref_alt"]) - int(info["alt"])
+            if dh == 0:
+                continue
+            result[station] = {
+                "ref":      info["ref"],
+                "alt":      int(info["alt"]),
+                "ref_alt":  int(info["ref_alt"]),
+                "alt_diff": dh,
+            }
+        LOG.info("Inversion protection: loaded %d station pairs from %s", len(result), yaml_path)
     except (FileNotFoundError, OSError) as exc:
-        LOG.warning("Inversion protection CSV not found — protection disabled: %s", exc)
+        LOG.warning("Inversion protection file not found — protection disabled: %s", exc)
     return result
 
 
@@ -151,8 +150,8 @@ def _load_qc_config() -> SimpleNamespace:
 
     inv_prot = cfg.get("inversion_protection", {})
     ns.inversion_protection = inv_prot
-    inv_csv = inv_prot.get("csv") if inv_prot else None
-    ns.inversion_stations = _load_inversion_stations(Path(inv_csv)) if inv_csv else {}
+    inv_file = inv_prot.get("file") if inv_prot else None
+    ns.inversion_stations = _load_inversion_stations(config_dir / inv_file) if inv_file else {}
 
     return ns
 

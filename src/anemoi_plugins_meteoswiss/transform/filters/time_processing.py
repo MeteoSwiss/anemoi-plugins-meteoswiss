@@ -50,7 +50,15 @@ class AverageFluxToCumulativeQuantity(SingleFieldFilter):
             raise ValueError(f"Expected a time-averaged field, got stepType={steptype}")
         start, end, unit = field.metadata("startStep", "endStep", "stepUnits")
         seconds = _aggregation_period_seconds(end - start, unit)
-        return field.clone(values=field.values * seconds, stepType="accum")
+        # Build a numpy-backed field (as rescale/sum do) rather than
+        # field.clone(values=...). In the create pipeline the incoming field is
+        # anemoi-transform wrapped (grid/flavour), so .clone() dispatches to
+        # WrappedField.clone -> NewClonedField, which stores ``values`` only as
+        # metadata and forwards to_numpy()/values to the *template* field,
+        # silently discarding the override. new_field_from_numpy backs the field
+        # with the array itself, so the transformed values are honoured.
+        return self.new_field_from_numpy(
+            field.to_numpy() * seconds, template=field, stepType="accum")
 
     def backward_transform(self, field: Field) -> Field:
         """Divide a cumulative quantity by its aggregation period."""
@@ -58,7 +66,8 @@ class AverageFluxToCumulativeQuantity(SingleFieldFilter):
             raise ValueError(f"Expected a cumulative field, got stepType={steptype}")
         start, end, unit = field.metadata("startStep", "endStep", "stepUnits")
         seconds = _aggregation_period_seconds(end - start, unit)
-        return field.clone(values=field.values / seconds, stepType="avg")
+        return self.new_field_from_numpy(
+            field.to_numpy() / seconds, template=field, stepType="avg")
 
 
 CumulativeQuantityToAverageFlux = AverageFluxToCumulativeQuantity.reversed

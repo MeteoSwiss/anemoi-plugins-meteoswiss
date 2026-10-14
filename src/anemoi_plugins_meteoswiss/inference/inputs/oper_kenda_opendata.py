@@ -26,6 +26,8 @@ import requests
 from anemoi.inference.inputs import input_registry
 from anemoi.inference.inputs.mars import MarsInput
 from anemoi.inference.types import Date
+from anemoi.transform.fields import new_field_with_valid_datetime
+from anemoi.transform.fields import new_fieldlist_from_list
 from earthkit.data.utils.dates import to_datetime
 from filelock import FileLock
 
@@ -102,9 +104,9 @@ def _cached_fields(cache_dir: str | None, subdir: str, hrefs_by_filename: dict[s
     ``cache_dir`` don't race to download the same asset."""
     if not hrefs_by_filename:
         # e.g. a request for grid constants only; earthkit's url source fails on an empty list
-        return ekd.SimpleFieldList([])
+        return new_fieldlist_from_list([])
     if not cache_dir:
-        return ekd.from_source("url", list(hrefs_by_filename.values()))
+        return ekd.from_source("url", list(hrefs_by_filename.values())).to_fieldlist()
 
     directory = os.path.join(cache_dir, subdir)
     os.makedirs(directory, exist_ok=True)
@@ -117,7 +119,7 @@ def _cached_fields(cache_dir: str | None, subdir: str, hrefs_by_filename: dict[s
                     _download_to_path(href, path)
         paths.append(path)
 
-    return ekd.from_source("file", paths)
+    return ekd.from_source("file", paths).to_fieldlist()
 
 
 def _cached_constants_fields(cache_dir: str | None) -> ekd.FieldList:
@@ -168,7 +170,7 @@ class OperKendaOpenDataInput(MarsInput):
         if names is not None:
             names = set(names)
             fields = [field for field in fields if field.metadata("shortName") in names]
-        return ekd.SimpleFieldList(fields)
+        return new_fieldlist_from_list(list(fields))
 
     def _constant_variable_names(self) -> set[str]:
         """Names of all static grid constants this input can serve (whether or not requested this call).
@@ -181,7 +183,7 @@ class OperKendaOpenDataInput(MarsInput):
 
     def retrieve(self, variables: list[str], dates: list[Date]) -> Any:
         """Retrieve KENDA-CH1 analysis fields (plus static constants) for the given target valid times."""
-        result = ekd.FieldList()
+        result: list[ekd.Field] = []
 
         constant_variable_names = self._constant_variable_names()
 
@@ -216,22 +218,21 @@ class OperKendaOpenDataInput(MarsInput):
                 valid_time,
             )
 
-            result += _cached_fields(
-                self.cache_dir,
-                os.path.join("raw", valid_time.strftime("%Y%m%dT%H%M%S")),
-                {f"{v}.grib2": hrefs_by_variable[v] for v in variables_to_fetch},
+            # extend(), not +=: `list += FieldList` dispatches to FieldList.__radd__ (field arithmetic)
+            result.extend(
+                _cached_fields(
+                    self.cache_dir,
+                    os.path.join("raw", valid_time.strftime("%Y%m%dT%H%M%S")),
+                    {f"{v}.grib2": hrefs_by_variable[v] for v in variables_to_fetch},
+                )
             )
 
-            overrides = {
-                "date": int(valid_time.strftime("%Y%m%d")),
-                "time": int(valid_time.strftime("%H%M")),
-                "step": 0,
-            }
-            result += ekd.SimpleFieldList(
-                [
-                    field.clone(metadata=field.metadata().override(**overrides))
-                    for field in self._constants(names=constants_to_fetch)
-                ]
+            # Constants: valid at `valid_time` as step 0 (base date/time = valid_time; naive, like
+            # the former GRIB date/time override).
+            naive_valid_time = valid_time.replace(tzinfo=None)
+            result.extend(
+                new_field_with_valid_datetime(field, naive_valid_time)
+                for field in self._constants(names=constants_to_fetch)
             )
 
-        return ekd.SimpleFieldList([f for f in result])
+        return new_fieldlist_from_list(result)

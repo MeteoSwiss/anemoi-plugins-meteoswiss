@@ -75,4 +75,4 @@ def test_retrieve_fetches_real_fields_from_ecmwf_open_data():
 
     result = input_.retrieve(variables=["2t", "z"], dates=[reference_date])
 
-    assert {field.metadata("param") for field in result} == {"2t", "z"}
+    assert {field.get("parameter.variable") for field in result} == {"2t", "z"}

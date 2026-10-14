@@ -44,7 +44,10 @@ from anemoi.inference.metadata import Metadata
 from anemoi.inference.types import Date
 from anemoi.plugins.ecmwf.inference.opendata.opendata import OpenDataInputPlugin
 from anemoi.plugins.ecmwf.inference.opendata.opendata import retrieve as _retrieve_opendata
-from anemoi.transform.fields import NewMetadataField
+from anemoi.transform.fields import new_field_with_metadata
+from anemoi.transform.fields import new_field_with_valid_datetime
+from anemoi.transform.fields import new_fieldlist_from_list
+from anemoi.transform.metadata import get_metadata
 from ecmwf.opendata import Client as _EcmwfOpenDataClient
 
 LOG = logging.getLogger(__name__)
@@ -142,11 +145,11 @@ def _cosmo_to_ecmwf_field_param(fields: ekd.FieldList, cosmo_to_ecmwf: dict[str,
     """Same COSMO -> ECMWF mapping, applied to retrieved fields whose ``param`` still decoded
     as the COSMO name (plus ``GH`` -> ``gh``)."""
     translation = {**cosmo_to_ecmwf, "GH": "gh"}
-    return ekd.SimpleFieldList(
+    return new_fieldlist_from_list(
         [
             field
-            if (true_param := translation.get(field.metadata("param", default=None))) is None
-            else NewMetadataField(field, param=true_param)
+            if (true_param := translation.get(get_metadata(field, "param", None))) is None
+            else new_field_with_metadata(field, param=true_param)
             for field in fields
         ]
     )
@@ -217,7 +220,7 @@ class OperEcmwfOpenDataInput(OpenDataInputPlugin):
         kwargs.setdefault("area", self.metadata.area)
         kwargs.setdefault("source", self._source)
 
-        result = ekd.FieldList()
+        result: list[ekd.Field] = []
         for target in dates:
             if self.constant:
                 init_time, lead_hours = guaranteed_init_time, 0
@@ -249,15 +252,10 @@ class OperEcmwfOpenDataInput(OpenDataInputPlugin):
                 batch = _retrieve_opendata(requests, patch=self.patch_data_request, **kwargs)
 
             if self.constant:
-                overrides = {
-                    "date": int(target.strftime("%Y%m%d")),
-                    "time": int(target.strftime("%H%M")),
-                    "step": 0,
-                }
-                batch = ekd.SimpleFieldList(
-                    [field.clone(metadata=field.metadata().override(**overrides)) for field in batch]
-                )
+                # Valid at `target` as step 0 (base date/time = target; naive, like the former
+                # GRIB date/time override).
+                batch = [new_field_with_valid_datetime(field, target.replace(tzinfo=None)) for field in batch]
 
-            result += batch
+            result.extend(batch)  # not +=: `list += FieldList` dispatches to FieldList.__radd__ (field arithmetic)
 
         return _cosmo_to_ecmwf_field_param(result, cosmo_to_ecmwf)

@@ -44,6 +44,7 @@ import earthkit.data as ekd
 from anemoi.transform.fields import new_field_from_numpy
 from anemoi.transform.fields import new_fieldlist_from_list
 from anemoi.transform.filter import Filter
+from anemoi.transform.metadata import get_metadata
 
 LOG = logging.getLogger(__name__)
 
@@ -101,16 +102,15 @@ def _anemoi_name(short_name: str, level: int, type_of_level: str, namer: dict) -
 def _leadtime(field: ekd.Field) -> timedelta | None:
     """Lead time as a timedelta (unit-agnostic match key), or None if unknown.
 
-    Downscaler post-processor fields give ``step`` as a timedelta directly;
-    forecaster GRIB fields give an integer ``step``, so derive it from the
-    datetimes (``valid_time - base_time``) instead.
+    earthkit-data 1.x gives ``time.step`` as a timedelta for every field kind;
+    fall back to the datetimes (``valid_datetime - base_datetime``) if it is
+    missing or not a timedelta.
     """
-    step = field.metadata("step", default=None)
+    step = field.get("time.step")
     if isinstance(step, timedelta):
         return step
     try:
-        dt = field.datetime()
-        return dt["valid_time"] - dt["base_time"]
+        return field.get("time.valid_datetime") - field.get("time.base_datetime")
     except Exception:
         return None
 
@@ -192,7 +192,7 @@ class CopyPrognosticFromForecaster(Filter):
                 f"{self.forecaster_path!r} (cwd={glob.os.getcwd()})"
             )
         index: dict[tuple[str, timedelta], ekd.Field] = {}
-        for f in ekd.from_source("file", files):
+        for f in ekd.from_source("file", files).to_fieldlist():
             name = _anemoi_name(
                 f.metadata("shortName"),
                 f.metadata("level"),
@@ -214,7 +214,7 @@ class CopyPrognosticFromForecaster(Filter):
         copied = []
         leads_copied: set[timedelta] = set()
         for field in data:  # loop through each variable and look for prognostics to copy over.
-            name = field.metadata("name")
+            name = get_metadata(field, "name")
             lead = _leadtime(field)
             # Patch a field only if it is a requested prognostic AND sits at an
             # overlap step (lead a positive multiple of the stride)

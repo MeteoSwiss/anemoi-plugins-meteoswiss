@@ -115,9 +115,9 @@ class RetrieveObservation(Filter):
             The input data, unchanged.
         """
         ref_time = (
-            data[0].datetime()["valid_time"]
+            data[0].get("time.valid_datetime")
             if self.run_mode == "devt"
-            else min(f.datetime()["valid_time"] for f in data)
+            else min(f.get("time.valid_datetime") for f in data)
         )
         if ref_time == self._retrieved_ref_time:
             return data

@@ -13,8 +13,10 @@ from datetime import timedelta
 from typing import Any
 
 import earthkit.data as ekd
+import numpy as np
 from anemoi.datasets.create.source import Source
 from anemoi.transform.fields import new_field_from_grid
+from anemoi.transform.fields import new_field_with_metadata
 from anemoi.transform.fields import new_fieldlist_from_list
 from anemoi.transform.grids import grid_registry
 
@@ -114,14 +116,18 @@ def _get_data_from_fdb(request: dict[str, Any], dates: list[datetime]):
         requests.append(request | time_request)
 
     # load data from FDB
-    fl = ekd.from_source("empty")
+    fields = []
     for request in requests:
-        fl += ekd.from_source("fdb", request, read_all=True)
+        fields.extend(ekd.from_source("fdb", request).to_fieldlist(read_all=True))
 
-    return ekd.FieldList.from_fields([f.clone(level=None, levelist=None) for f in fl])
+    return new_fieldlist_from_list(fields)
 
 
-def _aggregate(fl: ekd.FieldList) -> ekd.FieldList:
+def _aggregate(fl: ekd.FieldList) -> ekd.Field:
     """Compute aggregation for the requested dates."""
-    values = fl.values.max(axis=0)
-    return fl[-1].clone(values=values, startStep=fl[0].metadata("startStep"))
+    values = np.max([f.values for f in fl], axis=0)
+    # startStep is a raw GRIB key: setting it re-encodes the GRIB header (stepRange,
+    # lengthOfTimeRange), while endStep, the valid time and the values are kept.
+    field = fl[-1].set({"values": values, "metadata.startStep": fl[0].metadata("startStep")})
+    # remove the level information (VMAX_10M is on heightAboveGround 10 m), so the variable is named VMAX_10M
+    return new_field_with_metadata(field, levelist=None)

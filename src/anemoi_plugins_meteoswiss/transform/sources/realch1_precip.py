@@ -108,36 +108,49 @@ def _get_data_from_fdb(request: dict[str, Any], dates: list[datetime]):
         requests.append(request | time_request)
 
     # load data from FDB
-    fl = ekd.from_source("empty")
+    fields = []
     for request in requests:
-        fl += ekd.from_source("fdb", request, read_all=True)
+        fields.extend(ekd.from_source("fdb", request).to_fieldlist(read_all=True))
 
-    return fl
+    return new_fieldlist_from_list(fields)
 
 
 def _accumulation_logic(fl: ekd.FieldList, accumulation_period_hours: int) -> ekd.FieldList:
     """Compute accumulation for the requested dates."""
 
-    previous_day_accum = fl.sel(step=24) or None
-    accum_fl = ekd.SimpleFieldList()
-    for i, field in enumerate(fl[accumulation_period_hours:]):
-        previous_field = fl[i]
+    fields = list(fl)
+    previous_day_accum = {f.get("time.base_datetime"): f for f in fields if f.get("time.step") == timedelta(hours=24)}
+    accum_fl = []
+    for i, field in enumerate(fields[accumulation_period_hours:]):
+        previous_field = fields[i]
 
         # if previous field is from previous day
         # then the value is the sum of the current value and the difference between
         # the previous day 24h accumulation and the previous field value
-        if previous_field.metadata("date") < field.metadata("date"):
-            if previous_day_accum is None:
+        if previous_field.get("time.base_datetime") < field.get("time.base_datetime"):
+            if (previous_accum := previous_day_accum.get(previous_field.get("time.base_datetime"))) is None:
                 raise ValueError("Cannot compute accumulation, missing previous day 24h accumulation.")
-            accum_field = field.values + (previous_day_accum.values - previous_field.values)
-            start_step = previous_field.metadata("endStep") - 24
-            md = field.metadata().override(startStep=start_step)
-            accum_fl.append(field.copy(values=accum_field, metadata=md))
+            accum_field = field.values + (previous_accum.values - previous_field.values)
+            start_step = _hours(previous_field.get("time.step")) - 24
+            accum_fl.append(_new_accumulated_field(field, accum_field, start_step))
             continue
 
         # in the regular case, the accumulation is simply the difference
         # between the current and the previous field
         accum_field = field.values - previous_field.values
-        md = field.metadata().override(startStep=previous_field.metadata("endStep"))
-        accum_fl.append(field.copy(values=accum_field, metadata=md))
-    return accum_fl
+        accum_fl.append(_new_accumulated_field(field, accum_field, _hours(previous_field.get("time.step"))))
+    return new_fieldlist_from_list(accum_fl)
+
+
+def _hours(step: timedelta) -> int:
+    """Convert a step to whole hours."""
+    return int(step.total_seconds() // 3600)
+
+
+def _new_accumulated_field(field: ekd.Field, values, start_step: int) -> ekd.Field:
+    """Create a new field with the given values, accumulated from ``start_step`` (in hours) to the field's step.
+
+    ``startStep`` is a raw GRIB key: setting it re-encodes the GRIB header (``stepRange``,
+    ``lengthOfTimeRange``), while ``endStep``, the valid time and the values are kept.
+    """
+    return field.set({"values": values, "metadata.startStep": start_step})

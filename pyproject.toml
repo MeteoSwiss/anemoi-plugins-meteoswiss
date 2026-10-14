@@ -9,7 +9,7 @@ dependencies = [
     "anemoi-datasets",
     "anemoi-plugins",
     "anemoi-transform",
-    "earthkit-meteo",
+    "earthkit-meteo>=1",
     "meteodata-lab",
 ]
 
@@ -42,5 +42,4 @@ dev = [
 
 [tool.uv.sources]
 anemoi-plugins = { git = "https://github.com/ecmwf/anemoi-plugins.git" }
-earthkit-meteo = { git = "https://github.com/ecmwf/earthkit-meteo.git" , rev = "develop" }
 meteodata-lab = { git = "https://github.com/MeteoSwiss/meteodata-lab.git", rev = "main" }

@@ -2,6 +2,9 @@
 
 from pathlib import Path
 
+# earthkit.data sets ECCODES_ECKIT_GEO=1 at import, and eccodes only reads it when its context
+# is created (below). Import it first, or unstructured (ICON) GRIB fields get no geography.
+import earthkit.data  # noqa: F401
 import eccodes  # type: ignore
 import eccodes_cosmo_resources
 

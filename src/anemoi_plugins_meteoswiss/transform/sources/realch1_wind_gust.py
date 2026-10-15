@@ -90,6 +90,10 @@ def _as_fct_time_request(dt: datetime) -> str:
         out["step"] = 24
         return out
 
+    # TODO: the step is floored to whole hours, so the 10-min dates of an aggregation window all
+    # map to the 10-min maximum ending at the full hour. A 60 min window at HH:00 is then the max of
+    # the values ending at (HH-1):00 and HH:00 (period 70 min; at 01 UTC only 10 min, since step 0
+    # has no data). Kept as is for consistency with the released datasets; fixing it changes the data.
     out["date"] = dt.strftime("%Y%m%d")
     out["time"] = "0000"
     out["step"] = int((dt - dt.replace(hour=0, minute=0)).total_seconds() // 3600)

@@ -1,3 +1,4 @@
+import datetime
 import glob
 import logging
 from functools import cached_property
@@ -46,11 +47,11 @@ class GribWithStepZero(GribFileOutput):
                 encoding:
                 typeOfGeneratingProcess: 2
                 templates:
-                samples: resources/templates/templates_index_icon.yaml
+                    samples: resources/templates/templates_index_icon.yaml
                 post_processors:
-                - extract_from_state: lam_0
-                - accumulate_from_start_of_forecast:
-                    accumulations: [tp]
+                    - extract_from_state: lam_0
+                    - accumulate_from_start_of_forecast:
+                        accumulations: [tp]
                 step_zero_template: /path/to/reference/*_000.grib2   # a real step-0 reference message per accumulated var
     """
 
@@ -118,20 +119,14 @@ class GribWithStepZero(GribFileOutput):
         mars = self.metadata.variables_metadata.get(name, {}).get("mars", {})
         return mars.get("param", name)
 
-    def write_initial_state(self, state: State) -> None:
-        """Write the initial state as usual, then additionally emit a
-        zero-valued message for each configured accumulation variable not
-        already present in it."""
-        super().write_initial_state(state)
+    def write_step(self, state: State) -> None:
+        """Write a step as usual; at step=0, additionally emit a zero-valued
+        message for each configured accumulation variable not already present
+        in it."""
+        super().write_step(state)
 
-        if not self.write_step_zero:
-            return
-
-        # The parent writes the post-processed state (e.g. after `extract_mask`)
-        # without handing it back, so re-apply the post-processors here: the
-        # zero-step messages must live on the same grid as the other step=0
-        # messages, not on the full (e.g. multi-dataset) input grid.
-        self._write_zero_step_messages(self.post_process(state))
+        if state.get("step") == datetime.timedelta(0):
+            self._write_zero_step_messages(state)
 
     def _write_zero_step_messages(self, state: State) -> None:
         """Write a zero-valued message for each configured accumulation
@@ -165,6 +160,7 @@ class GribWithStepZero(GribFileOutput):
             self.write_message(
                 values,
                 template=template,
+                **self.encoding,
                 date=int(date.strftime("%Y%m%d")),
                 time=date.hour * 100 + date.minute,
                 step=0,

@@ -138,8 +138,6 @@ class NudgeTowardObservation(Filter):
         ``latitude``, ``longitude``, ``elevation``, and one column per nudged
         variable (e.g. ``2t``, ``10u``), all in SI units. Stations with a NaN
         ``elevation`` are skipped for variables with an elevation correction
-    icon_grid_file : str
-        ICON grid NetCDF (variables ``clat``/``clon`` in radians)
     d_eff_file : str
         Precomputed effective distances (d_eff) for the station catalog:
         ``d_eff_poi`` (dims ``poi``, ``sta``) and ``d_eff_sta`` (dims
@@ -147,9 +145,10 @@ class NudgeTowardObservation(Filter):
         check). Built by ``scripts/generate_d_eff_cache.py``. A POI or
         station missing from the cache raises ``ValueError``.
     icon_orog_file : str
-        ICON extpar NetCDF (variable ``topography_c``), the model's own
-        native orography, on the same grid and cell order as the ICON grid.
-        Used as model elevation in the lapse-rate correction.
+        ICON extpar NetCDF, in the cell order of the forecast fields. Provides
+        the cell centres (``clat``/``clon`` in radians) and the model's own
+        native orography (``topography_c``), used as model elevation in the
+        lapse-rate correction.
     weight_power : float
         IDW distance-decay exponent; higher concentrates weight on the
         nearest station.
@@ -212,7 +211,6 @@ class NudgeTowardObservation(Filter):
     def __init__(
         self,
         obs_path: str,
-        icon_grid_file: str,
         d_eff_file: str,
         icon_orog_file: str,
         weight_power: float = 2.0,
@@ -248,7 +246,6 @@ class NudgeTowardObservation(Filter):
             raise ValueError(f"lim_effective must be >= 0, got {lim_effective!r}")
 
         self.obs_path = Path(obs_path)
-        self.icon_grid_file = Path(icon_grid_file)
         self.d_eff_file = Path(d_eff_file)
         self.icon_orog_file = Path(icon_orog_file)
         self.weight_power = weight_power
@@ -321,7 +318,6 @@ class NudgeTowardObservation(Filter):
         }
 
         # Static data, loaded once.
-        self._load_icon_grid()
         self._load_icon_orog()
         self._project_icon_grid()
         # One entry per distinct cache file; several variables may share one.
@@ -360,30 +356,20 @@ class NudgeTowardObservation(Filter):
 
     # ── Static data loaders ───────────────────────────────────────────────────
 
-    def _load_icon_grid(self) -> None:
-        ds = xr.open_dataset(self.icon_grid_file)
-        # clat/clon are stored in radians in the ICON grid file.
-        self._lat_icon = np.degrees(ds["clat"].values).ravel()
-        self._lon_icon = np.degrees(ds["clon"].values).ravel()
+    def _load_icon_orog(self) -> None:
+        """Load the ICON cell centres and native orography from the extpar file,
+        indexed positionally by ICON cell."""
+        ds = xr.open_dataset(self.icon_orog_file)
+        # clat/clon are stored in radians (float32 in extpar); convert in float64.
+        self._lat_icon = np.degrees(ds["clat"].values.astype(np.float64)).ravel()
+        self._lon_icon = np.degrees(ds["clon"].values.astype(np.float64)).ravel()
+        self._icon_orog = ds["topography_c"].values.astype(np.float32).ravel()
         ds.close()
         LOG.info(
-            "ICON grid loaded: %d cells from %s",
+            "ICON cell centres and native orography loaded: %d cells from %s",
             len(self._lat_icon),
-            self.icon_grid_file,
+            self.icon_orog_file,
         )
-
-    def _load_icon_orog(self) -> None:
-        """Load ICON's native orography, indexed positionally by ICON cell."""
-        ds_orog = xr.open_dataset(self.icon_orog_file)
-        self._icon_orog = ds_orog["topography_c"].values.astype(np.float32).ravel()
-        ds_orog.close()
-        # Checks the cell count only; a different cell order would go undetected.
-        if len(self._icon_orog) != len(self._lat_icon):
-            raise ValueError(
-                f"icon_orog_file {self.icon_orog_file} has {len(self._icon_orog)} cells "
-                f"but the ICON grid ({self.icon_grid_file}) has {len(self._lat_icon)}."
-            )
-        LOG.info("ICON native orography loaded from %s", self.icon_orog_file)
 
     def _project_icon_grid(self) -> None:
         """Project the ICON grid to LV95 [km] and build the nearest-cell tree."""

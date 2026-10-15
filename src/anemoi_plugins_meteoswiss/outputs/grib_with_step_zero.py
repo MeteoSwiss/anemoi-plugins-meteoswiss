@@ -1,5 +1,7 @@
+import datetime
 import glob
 import logging
+import math
 from functools import cached_property
 from typing import Any
 
@@ -118,20 +120,14 @@ class GribWithStepZero(GribFileOutput):
         mars = self.metadata.variables_metadata.get(name, {}).get("mars", {})
         return mars.get("param", name)
 
-    def write_initial_state(self, state: State) -> None:
-        """Write the initial state as usual, then additionally emit a
-        zero-valued message for each configured accumulation variable not
-        already present in it."""
-        super().write_initial_state(state)
+    def write_step(self, state: State) -> None:
+        """Write a step as usual; at step=0, additionally emit a zero-valued
+        message for each configured accumulation variable not already present
+        in it."""
+        super().write_step(state)
 
-        if not self.write_step_zero:
-            return
-
-        # The parent writes the post-processed state (e.g. after `extract_mask`)
-        # without handing it back, so re-apply the post-processors here: the
-        # zero-step messages must live on the same grid as the other step=0
-        # messages, not on the full (e.g. multi-dataset) input grid.
-        self._write_zero_step_messages(self.post_process(state))
+        if state.get("step") == datetime.timedelta(0):
+            self._write_zero_step_messages(state)
 
     def _write_zero_step_messages(self, state: State) -> None:
         """Write a zero-valued message for each configured accumulation
@@ -152,12 +148,12 @@ class GribWithStepZero(GribFileOutput):
                     f"(available: {sorted(self.step_zero_template_index)})"
                 )
 
-            expected_shape = (len(state["latitudes"]),)
-            if template.shape != expected_shape:
+            n_points = math.prod(template.shape)
+            if any(v.size != n_points for v in state["fields"].values()):
                 raise ValueError(
                     f"grib-with-step-zero: template field for {name!r} (param {param!r}) "
-                    f"in {self.step_zero_template!r} has shape {template.shape}, but this "
-                    f"run's state has {expected_shape[0]} grid points. The template file "
+                    f"in {self.step_zero_template!r} has shape {template.shape}, which does "
+                    "not match the grid of the other fields in this output. The template file "
                     "likely comes from a different domain or resolution."
                 )
 
@@ -165,6 +161,7 @@ class GribWithStepZero(GribFileOutput):
             self.write_message(
                 values,
                 template=template,
+                **self.encoding,
                 date=int(date.strftime("%Y%m%d")),
                 time=date.hour * 100 + date.minute,
                 step=0,

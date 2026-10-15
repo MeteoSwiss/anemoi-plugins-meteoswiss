@@ -20,7 +20,6 @@ ICONREMAP_WEIGHTS = "/store_new/mch/msopr/icon_workflow_2/iconremap-weights/icon
 
 # Placeholder input files for NudgeTowardObservation; the tests mock the loaders.
 NUDGE_PATHS = {
-    "icon_grid_file": "icon_grid.nc",
     "d_eff_file": "d_eff.nc",
     "icon_orog_file": "icon_orog.nc",
 }
@@ -182,12 +181,38 @@ def test_nudge_toward_observation_invalid_run_mode(tmp_path):
     obs.touch()
 
     with (
-        patch.object(NudgeTowardObservation, "_load_icon_grid"),
         patch.object(NudgeTowardObservation, "_load_icon_orog"),
         patch.object(NudgeTowardObservation, "_project_icon_grid"),
     ):
         with pytest.raises(ValueError, match="run_mode"):
             NudgeTowardObservation(obs_path=str(obs), **NUDGE_PATHS, run_mode="bad")
+
+
+def test_nudge_toward_observation_loads_cells_and_orography_from_extpar(tmp_path):
+    """Cell centres (radians, float32) and orography are read from icon_orog_file."""
+    from unittest.mock import patch
+
+    obs = tmp_path / "obs.parquet"
+    obs.touch()
+    lat_deg = np.array([46.5, 47.0, 47.5])
+    lon_deg = np.array([7.0, 8.0, 9.0])
+    orog = np.array([400.0, 1500.0, 3000.0])
+    extpar = tmp_path / "extpar.nc"
+    xr.Dataset(
+        {
+            "clat": ("cell", np.radians(lat_deg).astype(np.float32)),
+            "clon": ("cell", np.radians(lon_deg).astype(np.float32)),
+            "topography_c": ("cell", orog.astype(np.float32)),
+        }
+    ).to_netcdf(extpar)
+
+    with patch.object(NudgeTowardObservation, "_load_d_eff_cache"):
+        filt = NudgeTowardObservation(obs_path=str(obs), **(NUDGE_PATHS | {"icon_orog_file": str(extpar)}))
+
+    np.testing.assert_allclose(filt._lat_icon, lat_deg, atol=1e-5)
+    np.testing.assert_allclose(filt._lon_icon, lon_deg, atol=1e-5)
+    np.testing.assert_array_equal(filt._icon_orog, orog.astype(np.float32))
+    assert filt._grid_xy_km.shape == (3, 2)
 
 
 def test_nudge_toward_observation_holdout_station_file(tmp_path):
@@ -203,7 +228,6 @@ def test_nudge_toward_observation_holdout_station_file(tmp_path):
     holdout_station_file.write_text("nat_abbr\nBBB\nZZZ\nNA\n")
 
     with (
-        patch.object(NudgeTowardObservation, "_load_icon_grid"),
         patch.object(NudgeTowardObservation, "_load_icon_orog"),
         patch.object(NudgeTowardObservation, "_project_icon_grid"),
         patch.object(NudgeTowardObservation, "_load_d_eff_cache"),
@@ -228,7 +252,6 @@ def test_nudge_toward_observation_invalid_holdout_station_file(tmp_path):
     no_nat_abbr.write_text("station\nAAA\n")
 
     with (
-        patch.object(NudgeTowardObservation, "_load_icon_grid"),
         patch.object(NudgeTowardObservation, "_load_icon_orog"),
         patch.object(NudgeTowardObservation, "_project_icon_grid"),
     ):
@@ -246,7 +269,6 @@ def test_nudge_toward_observation_invalid_reliability_min_dist_frac(tmp_path):
     obs.touch()
 
     with (
-        patch.object(NudgeTowardObservation, "_load_icon_grid"),
         patch.object(NudgeTowardObservation, "_load_icon_orog"),
         patch.object(NudgeTowardObservation, "_project_icon_grid"),
     ):
@@ -262,7 +284,6 @@ def test_nudge_toward_observation_invalid_number_of_std(tmp_path):
     obs.touch()
 
     with (
-        patch.object(NudgeTowardObservation, "_load_icon_grid"),
         patch.object(NudgeTowardObservation, "_load_icon_orog"),
         patch.object(NudgeTowardObservation, "_project_icon_grid"),
     ):
@@ -307,7 +328,6 @@ def test_compute_reliability_flags_outlier_station(tmp_path):
     d_eff_sta_cache = _make_mock_d_eff_sta_cache(sta_ids, sta_xy)
 
     with (
-        patch.object(NudgeTowardObservation, "_load_icon_grid"),
         patch.object(NudgeTowardObservation, "_load_icon_orog"),
         patch.object(NudgeTowardObservation, "_project_icon_grid"),
         patch.object(NudgeTowardObservation, "_load_d_eff_cache", return_value=d_eff_sta_cache),
@@ -366,7 +386,6 @@ def test_compute_reliability_isolated_station_does_not_poison_others(tmp_path):
     d_eff_sta_cache = _make_mock_d_eff_sta_cache(sta_ids, sta_xy)
 
     with (
-        patch.object(NudgeTowardObservation, "_load_icon_grid"),
         patch.object(NudgeTowardObservation, "_load_icon_orog"),
         patch.object(NudgeTowardObservation, "_project_icon_grid"),
         patch.object(NudgeTowardObservation, "_load_d_eff_cache", return_value=d_eff_sta_cache),
@@ -445,7 +464,6 @@ def test_nudge_field_writes_diagnostics(tmp_path):
 
     def _make_filter(write_diagnostics):
         with (
-            patch.object(NudgeTowardObservation, "_load_icon_grid"),
             patch.object(NudgeTowardObservation, "_load_icon_orog"),
             patch.object(NudgeTowardObservation, "_project_icon_grid"),
             patch.object(NudgeTowardObservation, "_load_d_eff_cache", return_value=cache),

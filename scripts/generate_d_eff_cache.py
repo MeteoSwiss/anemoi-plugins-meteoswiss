@@ -88,9 +88,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Only used when --station-filter-mode=domain.",
     )
     p.add_argument(
-        "--icon-grid-file",
+        "--icon-orog-file",
         required=True,
-        help="ICON grid NetCDF (clat/clon in radians); the same file as NudgeTowardObservation's icon_grid_file.",
+        help="ICON extpar NetCDF (cell centres clat/clon in radians); the same file as "
+        "NudgeTowardObservation's icon_orog_file.",
     )
     p.add_argument(
         "--dem-barrier-file",
@@ -262,11 +263,14 @@ def barrier_distances(
     return d_eff
 
 
-def load_icon_grid(icon_grid_file: str) -> tuple[np.ndarray, np.ndarray]:
-    ds_grid = xr.open_dataset(icon_grid_file)
-    lat_icon = np.degrees(ds_grid["clat"]).values.ravel()
-    lon_icon = np.degrees(ds_grid["clon"]).values.ravel()
-    LOG.info("ICON grid loaded: %d cells from %s", len(lat_icon), icon_grid_file)
+def load_icon_grid(icon_orog_file: str) -> tuple[np.ndarray, np.ndarray]:
+    """ICON cell centres [deg] from the extpar file, as read by NudgeTowardObservation."""
+    ds = xr.open_dataset(icon_orog_file)
+    # clat/clon are stored in radians (float32 in extpar); convert in float64.
+    lat_icon = np.degrees(ds["clat"].values.astype(np.float64)).ravel()
+    lon_icon = np.degrees(ds["clon"].values.astype(np.float64)).ravel()
+    ds.close()
+    LOG.info("ICON cell centres loaded: %d cells from %s", len(lat_icon), icon_orog_file)
     return lat_icon, lon_icon
 
 
@@ -396,7 +400,7 @@ def station_dataset(stations: pd.DataFrame, wgs84_to_lv95: Transformer) -> xr.Da
 
 def cache_key(
     dem_barrier_file: str,
-    icon_grid_file: str,
+    icon_orog_file: str,
     stations: pd.DataFrame,
     n_barrier_samples: int,
     n_barrier_width_samples: int,
@@ -409,14 +413,14 @@ def cache_key(
     trimmed station catalog's positions, and the barrier hyperparameters. Any
     change to one of these must invalidate the cache."""
     dem_stat = Path(dem_barrier_file).stat()
-    grid_stat = Path(icon_grid_file).stat()
+    grid_stat = Path(icon_orog_file).stat()
     sta_identity = stations[["latitude", "longitude", "elevation"]].sort_index().round(6).to_csv()
 
     payload = {
         "dem_file": str(dem_barrier_file),
         "dem_mtime": dem_stat.st_mtime,
         "dem_size": dem_stat.st_size,
-        "grid_file": str(icon_grid_file),
+        "grid_file": str(icon_orog_file),
         "grid_mtime": grid_stat.st_mtime,
         "grid_size": grid_stat.st_size,
         "stations": sta_identity,
@@ -577,7 +581,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     LOG.info("Output directory: %s", args.output_dir)
 
-    lat_icon, lon_icon = load_icon_grid(args.icon_grid_file)
+    lat_icon, lon_icon = load_icon_grid(args.icon_orog_file)
     dem_rgi, wgs84_to_lv95 = load_dem(args.dem_barrier_file)
 
     stations = fetch_station_catalog(
@@ -604,7 +608,7 @@ def main(argv: list[str] | None = None) -> None:
 
     key = cache_key(
         args.dem_barrier_file,
-        args.icon_grid_file,
+        args.icon_orog_file,
         stations,
         args.n_barrier_samples,
         args.n_barrier_width_samples,

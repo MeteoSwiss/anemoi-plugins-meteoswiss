@@ -1,6 +1,7 @@
 import datetime
 import glob
 import logging
+import math
 from functools import cached_property
 from typing import Any
 
@@ -47,11 +48,11 @@ class GribWithStepZero(GribFileOutput):
                 encoding:
                 typeOfGeneratingProcess: 2
                 templates:
-                    samples: resources/templates/templates_index_icon.yaml
+                samples: resources/templates/templates_index_icon.yaml
                 post_processors:
-                    - extract_from_state: lam_0
-                    - accumulate_from_start_of_forecast:
-                        accumulations: [tp]
+                - extract_from_state: lam_0
+                - accumulate_from_start_of_forecast:
+                    accumulations: [tp]
                 step_zero_template: /path/to/reference/*_000.grib2   # a real step-0 reference message per accumulated var
     """
 
@@ -147,12 +148,12 @@ class GribWithStepZero(GribFileOutput):
                     f"(available: {sorted(self.step_zero_template_index)})"
                 )
 
-            expected_shape = (len(state["latitudes"]),)
-            if template.shape != expected_shape:
+            n_points = math.prod(template.shape)
+            if any(v.size != n_points for v in state["fields"].values()):
                 raise ValueError(
                     f"grib-with-step-zero: template field for {name!r} (param {param!r}) "
-                    f"in {self.step_zero_template!r} has shape {template.shape}, but this "
-                    f"run's state has {expected_shape[0]} grid points. The template file "
+                    f"in {self.step_zero_template!r} has shape {template.shape}, which does "
+                    "not match the grid of the other fields in this output. The template file "
                     "likely comes from a different domain or resolution."
                 )
 

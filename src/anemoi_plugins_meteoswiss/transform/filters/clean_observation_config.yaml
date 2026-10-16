@@ -11,8 +11,8 @@ par2check:
 # Stations permanently set to NaN for the listed parameters (loaded from external file), applied first
 hard_blacklist_file: clean_observation_blacklist_bdp_all.yaml
 
-# Optional: suppress buddy-only flags during measured moderate-strong inversions
-# at stations with low representativeness in the station networks used for buddy checks (e.g. isolated sink-holes stations).
+# Optional: suppress flags during measured moderate-strong inversions at stations with low representativeness 
+# in the station networks used for buddy checks (e.g. isolated sink-holes stations).
 # Station/reference pairs are loaded from a YAML file; leave file empty to disable (null).
 # Active seasons are configurable; protection also requires spatial confirmation from neighbouring stations.
 # Protection requires: at least one buddy test (buddy_obs or buddy_diff) positive AND none of
@@ -21,9 +21,9 @@ inversion_protection:
   file: clean_observation_inversion_stations.yaml
   parameters: [T_2M, TD_2M, T_G]   # QC parameters to which inversion protection applies
   seasons: [summer, winter, spring, fall]   # active seasons: winter=Dec–Feb, spring=Mar–May, fall=Sep–Nov, summer=Jun-Aug
-  lapse_rate_min: 0.003             # K/m — minimum lapse rate to qualify as inversion
+  lapse_rate_min: 0.002             # K/m — minimum lapse rate to qualify as inversion
   lapse_rate_max: 0.06              # K/m — upper bound (above this likely a data error)
-  min_confirming_stations: 2        # other stations within radius that must also show inversion
+  min_confirming_stations: 1        # other stations within radius that must also show inversion
   confirming_radius_km: 150.0       # search radius for spatial confirmation [km]
   blocking_tests: [hard, isolation_check, plateau_test, DWH_flag]  # if any of these is positive, protection is suppressed
   report: true                      # write inversion_protection_YYYYmmDDHHMM.json alongside _flagged.json
@@ -76,12 +76,16 @@ titan_ntests_threshold:
     tests_QC: {hard: 2, isolation_check: 2, buddy_obs: 2, buddy_diff: 2, fgt: 1, plateau_test: 2, DWH_flag: 1}
 
 # Hard test: plausibility range per parameter
+# For T_2M, TD_2M, T_G: values are sea-level anchors (pch_min = January lower bound, pch_max = July upper bound).
+# A cosine seasonal evolution and altitude lapse correction are applied at runtime by _seasonal_pch_min/_seasonal_pch_max
+# in clean_observation.py (lapse: −8.3 K/km for min, −6.5 K/km for max; floors: −50°C for T_2M/T_G, −60°C for TD_2M / +25°C).
+# SP_10M, VMAX10M, PS, PMSL use static thresholds (no seasonal/altitude correction).
 plausibility_thresholds:
-  T_2M:    {pch_min: 223.15, pch_max: 323.15}  # K
-  TD_2M:   {pch_min: 203.15, pch_max: 323.15}  # K
-  SP_10M:  {pch_min:      0, pch_max:     80}  # m/s
-  VMAX10M: {pch_min:      0, pch_max:     80}  # m/s
-  T_G:     {pch_min: 223.15, pch_max: 343.15}  # K
+  T_2M:    {pch_min: 230, pch_max: 330}  # K  →  Jan sea-level −43°C / Jul sea-level +57°C
+  TD_2M:   {pch_min: 215, pch_max: 330}  # K  →  Jan sea-level −58°C / Jul sea-level +57°C
+  SP_10M:  {pch_min:   0, pch_max:  80}  # m/s
+  VMAX10M: {pch_min:   0, pch_max:  80}  # m/s
+  T_G:     {pch_min: 225, pch_max: 345}  # K  →  Jan sea-level −48°C / Jul sea-level +72°C
   PS:      {pch_min:  50000, pch_max: 108500}  # Pa
   PMSL:    {pch_min:  87000, pch_max: 108500}  # Pa
 
@@ -146,7 +150,7 @@ buddy:
   SP_10M:
     radius: 100000
     num_min: 2
-    threshold: [9.5, 8.0]
+    threshold: [9.5, 9.0]
     max_elev_diff: 500
     elev_gradient: 0.0015
     min_std: 2
@@ -154,7 +158,7 @@ buddy:
   VMAX10M:
     radius: 100000
     num_min: 2
-    threshold: [9.5, 8.0]
+    threshold: [9.5, 9.0]
     max_elev_diff: 500
     elev_gradient: 0.0015
     min_std: 2
@@ -205,7 +209,7 @@ buddy_diff:
   SP_10M:
     radius: 100000
     num_min: 2
-    threshold: [9.5, 8.0]
+    threshold: [9.5, 9.0]
     max_elev_diff: 500
     elev_gradient: 0
     min_std: 2
@@ -213,7 +217,7 @@ buddy_diff:
   VMAX10M:
     radius: 100000
     num_min: 2
-    threshold: [9.5, 8.0]
+    threshold: [9.5, 9.0]
     max_elev_diff: 500
     elev_gradient: 0
     min_std: 2

@@ -5,7 +5,7 @@ import re
 import sys
 import time
 import yaml
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -60,6 +60,57 @@ _SEASON_MONTHS = {
 _BUDDY_TESTS             = {"buddy_obs", "buddy_diff"}
 _INVERSION_BLOCKING_TESTS = {"hard", "isolation_check", "plateau_test", "DWH_flag"}
 
+# Seasonal altitude-dependent hard-test thresholds.
+# Config stores sea-level values for the most lenient month (winter for pch_min,
+# summer for pch_max). Monthly deltas (K) tighten the bounds for each month,
+# and the lapse-rate correction shifts them with altitude.
+#
+# Anchors used to derive the deltas:
+#   pch_min: Jan/Feb at sea level ≈ 244 K, Nov at sea level ≈ 264 K, Jul ≈ 272 K
+#   pch_max: Aug at sea level = config value, Jan/Feb ≈ config − 35 K
+# pch_min uses dry-adiabatic-like lapse (steeper): cold pools form readily at altitude.
+# pch_max uses moist-adiabatic lapse (ICAO standard): warm events follow slower gradient.
+_HARD_LAPSE_MIN  = 8.3     # K per 1000 m — lapse rate for pch_min altitude correction
+_HARD_LAPSE_MAX  = 6.5     # K per 1000 m — lapse rate for pch_max altitude correction
+_HARD_MIN_FLOOR  = 223.0   # K — absolute lower floor for pch_min (T_2M, T_G)
+_HARD_MIN_FLOOR_TD = 213.0 # K — lower floor for TD_2M (−60°C); dew points at high altitude can be much colder
+
+# Cosine seasonal deltas relative to the config sea-level anchor values.
+# pch_min anchor = coldest month (Jan, delta=0); pch_max anchor = warmest month (Jul, delta=0).
+# Both follow a symmetric cosine: equidistant months from the peak get equal deltas.
+# Swing: pch_min 0→42 K (Jan→Jul); amplitude: pch_max 35→0 K (Jan→Jul).
+# Added to sea-level pch_min_0 (delta=0 in Jan, increases toward summer)
+_PCH_MIN_SEASONAL_DELTA: dict[int, float] = {
+    1:  0, 2:  3, 3: 10, 4: 21, 5: 31, 6: 39,
+    7: 42, 8: 39, 9: 32, 10: 21, 11: 10, 12:  3,
+}
+# Subtracted from sea-level pch_max_0 (delta=0 in Jul, increases toward winter)
+_PCH_MAX_SEASONAL_DELTA: dict[int, float] = {
+    1: 35, 2: 33, 3: 26, 4: 18, 5:  9, 6:  2,
+    7:  0, 8:  2, 9:  9, 10: 17, 11: 26, 12: 33,
+}
+# Parameters for which altitude+seasonal correction applies (temperature-like, in K)
+_HARD_ALTITUDE_PARAS = {"T_2M", "TD_2M", "T_G"}
+
+
+def _seasonal_pch_min(base: float, month: int, alt_m: float, floor: float = _HARD_MIN_FLOOR) -> float:
+    """Lower plausibility limit: sea-level base + seasonal delta − altitude lapse (8.3 K/km)."""
+    delta = _PCH_MIN_SEASONAL_DELTA.get(month, 0)
+    return max(base + delta - _HARD_LAPSE_MIN * (alt_m / 1000), floor)
+
+
+_HARD_MAX_FLOOR = 273.15 + 25  # K — pch_max never drops below 25°C (Foeh protection)
+
+
+def _seasonal_pch_max(base: float, month: int, alt_m: float) -> float:
+    """Upper plausibility limit: seasonal + altitude lapse (6.5 K/km), floored at 20°C.
+
+    Uses moist-adiabatic lapse rate (ICAO standard): warm events decrease more slowly
+    with altitude. Floor at 20°C ensures Foeh events at any elevation are never flagged.
+    """
+    delta = _PCH_MAX_SEASONAL_DELTA.get(month, 0)
+    return max(base - delta - _HARD_LAPSE_MAX * (alt_m / 1000), _HARD_MAX_FLOOR)
+
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
@@ -70,7 +121,7 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def _load_inversion_stations(yaml_path: Path) -> dict:
-    """Return {station: {ref, alt, ref_alt, alt_diff}} from clean_observation_inversion_stations.yaml."""
+    """Return {station: {ref, alt, ref_alt, alt_diff, ref2, ref2_alt, alt_diff2}} from YAML."""
     result = {}
     try:
         data = yaml.safe_load(yaml_path.read_text()).get("inversion_stations", {})
@@ -80,12 +131,16 @@ def _load_inversion_stations(yaml_path: Path) -> dict:
             dh = int(info["ref_alt"]) - int(info["alt"])
             if dh == 0:
                 continue
-            result[station] = {
+            entry = {
                 "ref":      info["ref"],
                 "alt":      int(info["alt"]),
                 "ref_alt":  int(info["ref_alt"]),
                 "alt_diff": dh,
+                "ref2":     info.get("ref2"),
+                "ref2_alt": int(info["ref2_alt"]) if info.get("ref2_alt") is not None else None,
+                "alt_diff2": (int(info["ref2_alt"]) - int(info["alt"])) if info.get("ref2_alt") is not None else None,
             }
+            result[station] = entry
         LOG.info("Inversion protection: loaded %d station pairs from %s", len(result), yaml_path)
     except (FileNotFoundError, OSError) as exc:
         LOG.warning("Inversion protection file not found — protection disabled: %s", exc)
@@ -135,16 +190,27 @@ def _check_inversion_protection(station: str, para: str, positive_tests: list,
     if any(t in blocking for t in positive_tests):
         return False, None, []
 
-    ref = info["ref"]
-    if station not in df.index or ref not in df.index:
+    if station not in df.index:
         return False, None, []
 
     t_sta = df.at[station, "2t"]
-    t_ref = df.at[ref,     "2t"]
-    if pd.isna(t_sta) or pd.isna(t_ref):
+    if pd.isna(t_sta):
         return False, None, []
 
-    lr     = (t_ref - t_sta) / info["alt_diff"]
+    def _lapse_rate(ref_name, alt_diff):
+        if ref_name not in df.index or alt_diff == 0:
+            return None
+        t_ref = df.at[ref_name, "2t"]
+        if pd.isna(t_ref):
+            return None
+        return (t_ref - t_sta) / alt_diff
+
+    lr = _lapse_rate(info["ref"], info["alt_diff"])
+    if lr is None and info.get("ref2") and info.get("alt_diff2"):
+        lr = _lapse_rate(info["ref2"], info["alt_diff2"])
+    if lr is None:
+        return False, None, []
+
     lr_min = float(inv_cfg.get("lapse_rate_min", 0.006))
     lr_max = float(inv_cfg.get("lapse_rate_max", 0.1))
     if not lr_min <= lr <= lr_max:
@@ -163,9 +229,7 @@ def _check_inversion_protection(station: str, para: str, positive_tests: list,
             return False, None, []
         _confirming_with_dist: list = []
         for other, other_info in inv_stations.items():
-            if other == station:
-                continue
-            if other not in df.index or other_info["ref"] not in df.index:
+            if other == station or other not in df.index:
                 continue
             try:
                 other_lat = float(df.at[other, "latitude"])
@@ -175,12 +239,26 @@ def _check_inversion_protection(station: str, para: str, positive_tests: list,
             dist = _haversine_km(sta_lat, sta_lon, other_lat, other_lon)
             if dist > radius_km:
                 continue
-            t_other     = df.at[other, "2t"]
-            t_other_ref = df.at[other_info["ref"], "2t"]
-            if pd.isna(t_other) or pd.isna(t_other_ref) or other_info["alt_diff"] == 0:
+            t_other = df.at[other, "2t"]
+            if pd.isna(t_other):
                 continue
-            other_lr = (t_other_ref - t_other) / other_info["alt_diff"]
-            if lr_min <= other_lr <= lr_max:
+            def _other_lr(oinfo, t_o):
+                r = oinfo["ref"]
+                if r not in df.index or oinfo["alt_diff"] == 0:
+                    return None
+                tv = df.at[r, "2t"]
+                if pd.isna(tv):
+                    r2 = oinfo.get("ref2")
+                    dh2 = oinfo.get("alt_diff2")
+                    if r2 and dh2 and r2 in df.index:
+                        tv = df.at[r2, "2t"]
+                        if pd.isna(tv):
+                            return None
+                        return (tv - t_o) / dh2
+                    return None
+                return (tv - t_o) / oinfo["alt_diff"]
+            other_lr = _other_lr(other_info, t_other)
+            if other_lr is not None and lr_min <= other_lr <= lr_max:
                 _confirming_with_dist.append((dist, other))
         if len(_confirming_with_dist) < min_confirming:
             return False, None, []
@@ -459,6 +537,9 @@ class CleanObservation(Filter):
         _ts = re.search(r'\d{12}', self.obs_path_in.stem)
         _obs_month = int(_ts.group()[4:6]) if _ts else 0
 
+        # Pre-load historical parquets once for all plateau_test calls
+        _historical_raw = self._load_historical_parquets()
+
         # --- Stage 2: automated QC tests per parameter --------------------
         for para in _qc_config.par2check:
             if para not in df_qc.columns:
@@ -497,6 +578,7 @@ class CleanObservation(Filter):
                     0, 0, my_dict, tests_to_do,
                     df_pi=df_pi,
                     obs_path_in=self.obs_path_in,
+                    historical_raw=_historical_raw,
                 )
 
             # executed_tests may be shorter than tests_to_do (e.g. plateau_test skipped)
@@ -591,6 +673,47 @@ class CleanObservation(Filter):
         LOG.info("QC tests completed in %.2f s", self._qc_duration)
         return df
 
+    def _load_historical_parquets(self) -> dict:
+        """Load historical raw parquets needed by plateau_test across all parameters.
+
+        Computes the union of all offsets (minutes back from current) required by
+        every configured plateau_test, reads each unique file exactly once, and
+        returns {offset_minutes: raw_DataFrame}.  plateau_test then selects only
+        the entries matching its own gran_minutes without any further I/O.
+        """
+        needed: set = set()
+        for para in _qc_config.par2check:
+            pt_cfg = (getattr(_qc_config, "plateau_test", None) or {}).get(para)
+            if pt_cfg is None:
+                continue
+            gran   = int(pt_cfg.get("gran",   60))
+            window = int(pt_cfg.get("window", 24))
+            for step in range(1, int(window * 60 / gran) + 1):
+                needed.add(step * gran)
+        if not needed:
+            return {}
+
+        ts_match = re.search(r'\d{12}', self.obs_path_in.stem)
+        if not ts_match:
+            return {}
+        current = datetime.strptime(ts_match.group(), '%Y%m%d%H%M')
+        stem_pattern = self.obs_path_in.stem.replace(ts_match.group(), '{}')
+
+        result = {}
+        for offset_min in sorted(needed):
+            t  = current - timedelta(minutes=offset_min)
+            fn = self.obs_path_in.parent / (
+                stem_pattern.format(t.strftime('%Y%m%d%H%M')) + self.obs_path_in.suffix
+            )
+            if fn.exists():
+                try:
+                    result[offset_min] = pd.read_parquet(fn)
+                except Exception as exc:
+                    LOG.warning('plateau_test preload: could not read %s: %s', fn, exc)
+
+        LOG.info('plateau_test: preloaded %d/%d historical parquet files', len(result), len(needed))
+        return result
+
     def make_tests(
         self,
         current_f,
@@ -608,6 +731,7 @@ class CleanObservation(Filter):
         tests_to_do,
         df_pi=None,
         obs_path_in=None,
+        historical_raw=None,
     ):
         """Run the requested QC tests for a single parameter and accumulate flagged stations.
 
@@ -654,6 +778,7 @@ class CleanObservation(Filter):
             tests_to_do, df_obs, values, diffs, mods,
             stations, lats, lons, elevs,
             para, current_f, df_pi, obs_path_in,
+            historical_raw=historical_raw,
         )
 
         for test in tests_to_do:
@@ -718,6 +843,7 @@ class CleanObservation(Filter):
             if "altitude" in df.columns
             else np.zeros(len(df), dtype=float)
         )
+        df_qc["altitude"] = elevs
         stations = np.array(df.index.to_list())
 
         # Plausibility frame for DWH_flag: index = station name, columns = *_pi.
@@ -836,6 +962,7 @@ class CleanObservation(Filter):
         cls, tests_to_do, df_obs, values, diffs, mods,
         stations, lats, lons, elevs,
         para, current_f, df_pi, obs_path_in,
+        historical_raw=None,
     ):
         """Return a dict mapping each requested test name to a zero-arg callable.
 
@@ -851,7 +978,22 @@ class CleanObservation(Filter):
         if "hard" in tests_to_do:
             pch_min = cfg.plausibility_thresholds[para]['pch_min']
             pch_max = cfg.plausibility_thresholds[para]['pch_max']
-            runners["hard"] = lambda: _hard_test(df_obs, pch_min, pch_max, para, current_f)
+            _hard_limits = None
+            if para in _HARD_ALTITUDE_PARAS and obs_path_in is not None:
+                _ts = re.search(r'\d{12}', Path(obs_path_in).stem)
+                _month = int(_ts.group()[4:6]) if _ts else None
+                if _month and "altitude" in df_obs.columns:
+                    _min_floor = _HARD_MIN_FLOOR_TD if para == "TD_2M" else _HARD_MIN_FLOOR
+                    _hard_limits = {
+                        row["sta_name"]: (
+                            _seasonal_pch_min(pch_min, _month, row["altitude"], floor=_min_floor),
+                            _seasonal_pch_max(pch_max, _month, row["altitude"]),
+                        )
+                        for _, row in df_obs[["sta_name", "altitude"]].iterrows()
+                    }
+            runners["hard"] = lambda: _hard_test(
+                df_obs, pch_min, pch_max, para, current_f, limits=_hard_limits
+            )
 
         if "buddy_obs" in tests_to_do:
             b = cfg.buddy[para]
@@ -937,6 +1079,7 @@ class CleanObservation(Filter):
             runners["plateau_test"] = lambda: _plateau_test(
                 df_obs, pt['window'], pt['sd'], para, current_f,
                 obs_path_in=obs_path_in, gran_minutes=pt['gran'],
+                historical_raw=historical_raw,
             )
 
         if "isolation_check" in tests_to_do:

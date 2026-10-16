@@ -484,39 +484,44 @@ def tests_summary (blacklist,weights,tests):
     df=pd.DataFrame(data=qc,index=times,columns=stations)
    
     return df
-def hard_test (obs_all,datamin,datamax,var,time):
+def hard_test(obs_all, datamin, datamax, var, time, limits=None):
     """Flag stations whose value falls outside absolute physical limits.
 
     Args:
         obs_all (DataFrame): Observation DataFrame (must contain 'sta_name' and var columns).
-        datamin (float): Lower hard limit.
-        datamax (float): Upper hard limit.
+        datamin (float): Lower hard limit (sea-level base; overridden per station by limits).
+        datamax (float): Upper hard limit (sea-level base; overridden per station by limits).
         var (str): Column name of the parameter to test.
         time (str): Timestamp label stored in the returned dict.
+        limits (dict | None): Optional {station: (lo, hi)} with per-station seasonal+altitude
+            thresholds. When provided, overrides datamin/datamax for that station.
 
     Returns:
         dict: Keys 'Station', 'Time', 'Parameter' listing flagged stations.
             Always non-empty structure (never empty dict like other tests).
     """
 
-    LOG.info('hard test %s min=%.2f max=%.2f', var, datamin, datamax)
+    LOG.info('hard test %s min=%.2f max=%.2f%s', var, datamin, datamax,
+             ' (seasonal+altitude)' if limits else '')
     my_dict = {"Station":[],"Time":[],"Parameter":[]}
     n=0
     stations=obs_all['sta_name']
     for s in stations:
         sta_data=obs_all[obs_all['sta_name']==s][var]
         if not sta_data.isna().item():
-            #check if value is outside the hard limits and insert case into the dictionary
-            if (sta_data.iloc[0] < datamin) or (sta_data.iloc[0] > datamax):
+            lo, hi = limits[s] if limits and s in limits else (datamin, datamax)
+            if (sta_data.iloc[0] < lo) or (sta_data.iloc[0] > hi):
                 my_dict["Station"].append(stations[n])
                 my_dict["Time"].append(time)
                 my_dict["Parameter"].append(var)
-                LOG.info('hard test %s %s %.4f', var, stations[n], sta_data.iloc[0])
+                LOG.info('hard test %s %s %.4f (limits: %.2f–%.2f)', var, stations[n],
+                         sta_data.iloc[0], lo, hi)
         n=n+1
     return my_dict
 
 #--------------------------------------------------------------
-def plateau_test(data, window, std_lim, var, time, obs_path_in=None, gran_minutes=60):
+def plateau_test(data, window, std_lim, var, time, obs_path_in=None, gran_minutes=60,
+                 historical_raw=None):
     """
     Plateau test: detect frozen/stuck sensors by checking that observations vary
     over a past time window.
@@ -529,8 +534,11 @@ def plateau_test(data, window, std_lim, var, time, obs_path_in=None, gran_minute
         time (str): Current timestamp in '%Y%m%d%H%M' format.
         obs_path_in (str | Path, optional): Path to the current parquet file.  Historical files
             are discovered by replacing the timestamp in the filename.  If None or no historical
-            files are found, the test is skipped.
+            files are found, the test is skipped.  Ignored when historical_raw is provided.
         gran_minutes (int): Step between historical parquet files in minutes (default 60).
+        historical_raw (dict[int, pd.DataFrame] | None): Pre-loaded raw parquet DataFrames keyed
+            by offset in minutes (e.g. {60: df, 120: df, ...}).  When provided, file I/O is
+            skipped entirely and entries at multiples of gran_minutes are used directly.
 
     Returns:
         dict | None: {'Station': [...], 'Time': [...], 'Parameter': [...]} for flagged stations,
@@ -540,26 +548,7 @@ def plateau_test(data, window, std_lim, var, time, obs_path_in=None, gran_minute
     LOG.info('plateau test for %s', var)
     my_dict = {"Station": [], "Time": [], "Parameter": []}
 
-    if obs_path_in is None:
-        LOG.warning('plateau_test %s: obs_path_in not provided, cannot run test', var)
-        return None
-
-    import re as _re
-    obs_path_in = Path(obs_path_in)
     n_steps = int(window * 60 / gran_minutes)
-
-    # Extract the observation timestamp from the filename (12-digit YYYYMMDDhhmm)
-    ts_match = _re.search(r'\d{12}', obs_path_in.stem)
-    if not ts_match:
-        LOG.warning(
-            'plateau_test %s: no 12-digit timestamp found in filename %s, '
-            'cannot build historical file list',
-            var, obs_path_in.name,
-        )
-        return None
-    file_ts = ts_match.group()
-    current = datetime.strptime(file_ts, '%Y%m%d%H%M')
-    stem_pattern = obs_path_in.stem.replace(file_ts, '{}')
 
     def _normalize_hist(hist_df):
         """Return a two-column DataFrame {sta_name, var} from a raw obs parquet.
@@ -583,17 +572,48 @@ def plateau_test(data, window, std_lim, var, time, obs_path_in=None, gran_minute
 
     historical_dfs = []
     missing = []
-    for step in range(1, n_steps + 1):
-        t = current - timedelta(minutes=step * gran_minutes)
-        fn = obs_path_in.parent / (stem_pattern.format(t.strftime('%Y%m%d%H%M')) + obs_path_in.suffix)
-        if fn.exists():
-            try:
-                historical_dfs.append(_normalize_hist(pd.read_parquet(fn)))
-            except Exception as e:
-                LOG.warning('plateau_test: could not read %s: %s', fn, e)
+
+    if historical_raw is not None:
+        # Fast path: use pre-loaded DataFrames — no file I/O
+        for step in range(1, n_steps + 1):
+            offset_min = step * gran_minutes
+            raw = historical_raw.get(offset_min)
+            if raw is not None:
+                historical_dfs.append(_normalize_hist(raw))
+            else:
+                missing.append(f"offset -{offset_min}min (not preloaded)")
+    else:
+        # Original path: discover and read files from disk
+        if obs_path_in is None:
+            LOG.warning('plateau_test %s: obs_path_in not provided, cannot run test', var)
+            return None
+
+        import re as _re
+        obs_path_in = Path(obs_path_in)
+
+        ts_match = _re.search(r'\d{12}', obs_path_in.stem)
+        if not ts_match:
+            LOG.warning(
+                'plateau_test %s: no 12-digit timestamp found in filename %s, '
+                'cannot build historical file list',
+                var, obs_path_in.name,
+            )
+            return None
+        file_ts = ts_match.group()
+        current = datetime.strptime(file_ts, '%Y%m%d%H%M')
+        stem_pattern = obs_path_in.stem.replace(file_ts, '{}')
+
+        for step in range(1, n_steps + 1):
+            t = current - timedelta(minutes=step * gran_minutes)
+            fn = obs_path_in.parent / (stem_pattern.format(t.strftime('%Y%m%d%H%M')) + obs_path_in.suffix)
+            if fn.exists():
+                try:
+                    historical_dfs.append(_normalize_hist(pd.read_parquet(fn)))
+                except Exception as e:
+                    LOG.warning('plateau_test: could not read %s: %s', fn, e)
+                    missing.append(str(fn))
+            else:
                 missing.append(str(fn))
-        else:
-            missing.append(str(fn))
 
     if missing:
         for mf in missing:

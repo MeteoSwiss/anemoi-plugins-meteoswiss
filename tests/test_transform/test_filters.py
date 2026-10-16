@@ -300,6 +300,27 @@ def _reference_uppermost_crossing(surface_values, level_values, threshold):
     return out
 
 
+def _melting_layer():
+    """SNOWLMT and the internal MELTLAYER_TOP of the test columns, from the
+    filter's own height-level helper (MELTLAYER_TOP is not an output)."""
+    from anemoi_plugins_meteoswiss.transform.filters.surface_diagnostics import _height_levels
+
+    pressure = np.array(_LEVELS, dtype=float) * 100.0
+    tw_levels = wet_bulb_temperature_from_specific_humidity(
+        _T_LEVELS.ravel(), _Q_LEVELS.ravel(), np.repeat(pressure, 4)
+    ).reshape(_T_LEVELS.shape)
+    return _height_levels(
+        ["SNOWLMT", "MELTLAYER_TOP"],
+        t_2m=_T_2M,
+        tw_2m=wet_bulb_temperature_from_dewpoint(_T_2M, _TD_2M, _SP),
+        orography=_OROGRAPHY,
+        t_levels=_T_LEVELS,
+        tw_levels=tw_levels,
+        level_heights=np.repeat(np.array(_LEVEL_HEIGHTS)[:, None], 4, axis=1),
+        above_ground=pressure[:, None] < _SP[None, :],
+    )
+
+
 def _vertical_diagnostics(orography_file, variables, **kwargs):
     return SurfaceDiagnostics(
         temperature="2t",
@@ -330,11 +351,12 @@ def test_surface_diagnostics_tw_2m():
 
 def test_surface_diagnostics_vertical_keeps_pressure_levels(orography_file):
     fieldlist = _vertical_fieldlist()
-    result = _vertical_diagnostics(orography_file, ["TW_2M", "HZEROCL", "SNOWLMT", "MELTLAYER_TOP"]).forward(fieldlist)
+    result = _vertical_diagnostics(orography_file, ["TW_2M", "HZEROCL", "SNOWLMT"]).forward(fieldlist)
 
-    assert len(result) == len(fieldlist) + 4
+    assert len(result) == len(fieldlist) + 3
     params = [f.metadata("param") for f in result]
-    assert {"TW_2M", "HZEROCL", "SNOWLMT", "MELTLAYER_TOP"} <= set(params)
+    assert {"TW_2M", "HZEROCL", "SNOWLMT"} <= set(params)
+    assert "MELTLAYER_TOP" not in params
     for param in ("t", "q", "z"):
         levels = sorted(f.metadata("levelist") for f in result if f.metadata("param") == param)
         assert levels == sorted(_LEVELS)
@@ -352,12 +374,13 @@ def test_surface_diagnostics_rejects_orography_size_mismatch(tmp_path):
 
 
 def test_surface_diagnostics_height_levels(orography_file):
-    result = _vertical_diagnostics(orography_file, ["HZEROCL", "SNOWLMT", "MELTLAYER_TOP"]).forward(
-        _vertical_fieldlist()
-    )
+    result = _vertical_diagnostics(orography_file, ["HZEROCL", "SNOWLMT"]).forward(_vertical_fieldlist())
 
     by_name = {f.metadata("param"): f.to_numpy(flatten=True)[:4] for f in result}
-    z0, zs, zm = by_name["HZEROCL"], by_name["SNOWLMT"], by_name["MELTLAYER_TOP"]
+    z0, zs = by_name["HZEROCL"], by_name["SNOWLMT"]
+    melting_layer = _melting_layer()
+    np.testing.assert_allclose(melting_layer["SNOWLMT"], zs)
+    zm = melting_layer["MELTLAYER_TOP"]
     pressure = np.repeat(np.array(_LEVELS, dtype=float) * 100.0, 4)
     tw_levels = wet_bulb_temperature_from_specific_humidity(_T_LEVELS.ravel(), _Q_LEVELS.ravel(), pressure).reshape(
         _T_LEVELS.shape
@@ -532,9 +555,7 @@ def test_surface_diagnostics_precipitation_type_and_snow(orography_file):
     from anemoi_plugins_meteoswiss.transform.filters.surface_diagnostics import _precipitation_type
     from anemoi_plugins_meteoswiss.transform.filters.surface_diagnostics import _snow_fraction
 
-    diagnostics = _vertical_diagnostics(
-        orography_file, ["SNOWLMT", "MELTLAYER_TOP", "PREC_TYPE", "TOT_SNOW"], precipitation="tp"
-    )
+    diagnostics = _vertical_diagnostics(orography_file, ["SNOWLMT", "PREC_TYPE", "TOT_SNOW"], precipitation="tp")
 
     def step(total, hours):
         result = diagnostics.forward(_with_precipitation(total, hours))
@@ -547,7 +568,7 @@ def test_surface_diagnostics_precipitation_type_and_snow(orography_file):
 
     # 3 mm in 1 h everywhere.
     second = step(3.0, 1)
-    zs, zm = second["SNOWLMT"], second["MELTLAYER_TOP"]
+    zs, zm = second["SNOWLMT"], _melting_layer()["MELTLAYER_TOP"]
     np.testing.assert_array_equal(
         second["PREC_TYPE"],
         _precipitation_type(np.full(4, 3.0), zs, zm, _T_2M, ground_temperature=_T_2M, orography=_OROGRAPHY),
@@ -566,6 +587,11 @@ def test_surface_diagnostics_precipitation_type_and_snow(orography_file):
     restart = step(0.0, 0)
     assert np.all(np.isnan(restart["PREC_TYPE"]))
     np.testing.assert_array_equal(restart["TOT_SNOW"], 0.0)
+
+
+def test_surface_diagnostics_rejects_meltlayer_top(orography_file):
+    with pytest.raises(ValueError, match="Unsupported"):
+        _vertical_diagnostics(orography_file, ["MELTLAYER_TOP"])
 
 
 def test_surface_diagnostics_precipitation_type_requires_precipitation(orography_file):

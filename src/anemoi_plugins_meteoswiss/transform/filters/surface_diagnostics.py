@@ -1,7 +1,6 @@
 """Computes SP_10M (wind speed), DD_10M (wind direction), RELHUM_2M,
 TW_2M (2 m wet-bulb temperature), HZEROCL (freezing level), SNOWLMT
-(snowfall limit), MELTLAYER_TOP (upper limit of the melting layer) and
-mixed-layer and most-unstable CAPE/CIN (CAPE_ML, CIN_ML, CAPE_MU, CIN_MU),
+(snowfall limit), mixed-layer and most-unstable CAPE/CIN (CAPE_ML, CIN_ML, CAPE_MU, CIN_MU),
 precipitation type (PREC_TYPE) and accumulated snowfall (TOT_SNOW) in a
 single pass. Fields are added to Varda inference output.
 
@@ -20,8 +19,6 @@ Usage::
         mars: {param: HZEROCL, levtype: sfc}
       SNOWLMT:
         mars: {param: SNOWLMT, levtype: sfc}
-      MELTLAYER_TOP:
-        mars: {param: MELTLAYER_TOP, levtype: sfc}
       CAPE_ML:
         mars: {param: CAPE_ML, levtype: sfc}
       CIN_ML:
@@ -51,7 +48,7 @@ Usage::
                 geopotential_levels: FI
                 precipitation: TOT_PREC
                 orography_file: /path/to/external_parameter_icon_grid.nc
-                variables: [SP_10M, DD_10M, RELHUM_2M, TW_2M, HZEROCL, SNOWLMT, MELTLAYER_TOP,
+                variables: [SP_10M, DD_10M, RELHUM_2M, TW_2M, HZEROCL, SNOWLMT,
                             CAPE_ML, CIN_ML, CAPE_MU, CIN_MU, PREC_TYPE, TOT_SNOW]
 
 Only the inputs needed by the requested ``variables`` must be given (and
@@ -64,7 +61,8 @@ Notes
 - Wind direction: meteorological convention (FROM, clockwise from North).
 - Temperature/dewpoint in Kelvin; RH returned in percent.
 - TW_2M: earthkit wet-bulb temperature (Normand's rule) from T_2M, TD_2M, PS.
-- HZEROCL (INCA Z0), SNOWLMT (ZS) and MELTLAYER_TOP (ZM) follow INCA's
+- HZEROCL (INCA Z0), SNOWLMT (ZS) and the top of the melting layer
+  (MELTLAYER_TOP, INCA ZM; internal only, see PREC_TYPE) follow INCA's
   ``heightlevel`` (``inca_diagnostics.py``): the *uppermost* crossing of
   the profile through the threshold (0 degC for HZEROCL, wet-bulb +1.3 degC
   for SNOWLMT, wet-bulb +0.2 degC for MELTLAYER_TOP), linear in geometric
@@ -101,8 +99,8 @@ Notes
   unstable parcel is picked from a few candidates: both are rough estimates.
 - PREC_TYPE and TOT_SNOW follow INCA's ``precipitation_type`` and
   ``precip_snow_water_equivalent``, using SNOWLMT and MELTLAYER_TOP from
-  this filter. The melting-layer depth is MELTLAYER_TOP - SNOWLMT, clamped
-  to [150, 375] m. Where it rains or snows (> 0.1 mm/h), PREC_TYPE is
+  this filter (MELTLAYER_TOP is not an output: it has no GRIB code). The
+  melting-layer depth is MELTLAYER_TOP - SNOWLMT, clamped to [150, 375] m. Where it rains or snows (> 0.1 mm/h), PREC_TYPE is
   3 (snow) if the ground is at least that depth above SNOWLMT, 1 (rain) if
   at least that depth below, 2 (mixed) in between, and 4 (freezing rain)
   for rain with T_2M below 0.1 degC; 0 without precipitation. INCA's ground
@@ -129,7 +127,10 @@ Notes
 """
 
 import logging
+import time
 from collections.abc import Iterator
+from contextlib import contextmanager
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -204,7 +205,6 @@ _SUPPORTED_VARIABLES: dict[str, tuple[str, ...]] = {
     "TW_2M": (*_HUMIDITY, "surface_pressure"),
     "HZEROCL": ("temperature", "surface_pressure", "temperature_levels", "geopotential_levels"),
     "SNOWLMT": _MOIST_PROFILE,
-    "MELTLAYER_TOP": _MOIST_PROFILE,
     "CAPE_ML": _MOIST_PROFILE,
     "CIN_ML": _MOIST_PROFILE,
     "CAPE_MU": _MOIST_PROFILE,
@@ -215,7 +215,6 @@ _SUPPORTED_VARIABLES: dict[str, tuple[str, ...]] = {
 _VERTICAL_VARIABLES = {
     "HZEROCL",
     "SNOWLMT",
-    "MELTLAYER_TOP",
     "CAPE_ML",
     "CIN_ML",
     "CAPE_MU",
@@ -223,7 +222,7 @@ _VERTICAL_VARIABLES = {
     "PREC_TYPE",
     "TOT_SNOW",
 }
-# Need SNOWLMT and MELTLAYER_TOP, whether or not they are output.
+# Need SNOWLMT and the internal MELTLAYER_TOP, whether or not SNOWLMT is output.
 _MELTING_LAYER_VARIABLES = {"PREC_TYPE", "TOT_SNOW"}
 _ALL_INPUTS = (
     "u_component",
@@ -267,8 +266,8 @@ class SurfaceDiagnostics(MatchingFieldsFilter):
         """Field names are internal anemoi names (``*_levels`` are the
         pressure-level params, e.g. ``t``). ``variables`` selects one or more
         of ``SP_10M``, ``DD_10M``, ``RELHUM_2M``, ``TW_2M``, ``HZEROCL``,
-        ``SNOWLMT``, ``MELTLAYER_TOP``, ``CAPE_ML``, ``CIN_ML``, ``CAPE_MU``,
-        ``CIN_MU`` to compute.
+        ``SNOWLMT``, ``CAPE_ML``, ``CIN_ML``, ``CAPE_MU``, ``CIN_MU``,
+        ``PREC_TYPE``, ``TOT_SNOW`` to compute.
         ``orography_file`` (NetCDF, variable ``orography_variable`` in m) is
         required for all but the first four. ``PREC_TYPE`` and ``TOT_SNOW``
         also need ``precipitation``, accumulated from the start of the
@@ -362,12 +361,15 @@ class SurfaceDiagnostics(MatchingFieldsFilter):
             u_component, v_component, temperature, dewpoint, surface_pressure = (_single(x) for x in inputs[:5])
             precipitation = _single(precipitation)
 
+        timings: dict[str, float] = {}
+
         if "SP_10M" in self.variables or "DD_10M" in self.variables:
             u = u_component.to_numpy()
             v = v_component.to_numpy()
 
         if "SP_10M" in self.variables:
-            speed = np.sqrt(u**2 + v**2)
+            with _timer(timings, "SP_10M"):
+                speed = np.sqrt(u**2 + v**2)
             yield self.new_field_from_numpy(
                 speed,
                 template=u_component,
@@ -377,7 +379,8 @@ class SurfaceDiagnostics(MatchingFieldsFilter):
             )
 
         if "DD_10M" in self.variables:
-            direction = np.mod(np.degrees(np.arctan2(-u, -v)), 360.0)
+            with _timer(timings, "DD_10M"):
+                direction = np.mod(np.degrees(np.arctan2(-u, -v)), 360.0)
             yield self.new_field_from_numpy(
                 direction,
                 template=u_component,
@@ -387,7 +390,8 @@ class SurfaceDiagnostics(MatchingFieldsFilter):
             )
 
         if "RELHUM_2M" in self.variables:
-            rh = relative_humidity_from_dewpoint(temperature.to_numpy(), dewpoint.to_numpy())
+            with _timer(timings, "RELHUM_2M"):
+                rh = relative_humidity_from_dewpoint(temperature.to_numpy(), dewpoint.to_numpy())
             yield self.new_field_from_numpy(
                 rh,
                 template=temperature,
@@ -397,13 +401,14 @@ class SurfaceDiagnostics(MatchingFieldsFilter):
             )
 
         melting_layer = bool(_MELTING_LAYER_VARIABLES & set(self.variables))
-        wet_bulb_profile = melting_layer or bool({"SNOWLMT", "MELTLAYER_TOP"} & set(self.variables))
+        wet_bulb_profile = melting_layer or "SNOWLMT" in self.variables
         if "TW_2M" in self.variables or wet_bulb_profile:
-            tw_2m = wet_bulb_temperature_from_dewpoint(
-                temperature.to_numpy(flatten=True),
-                dewpoint.to_numpy(flatten=True),
-                surface_pressure.to_numpy(flatten=True),
-            )
+            with _timer(timings, "TW_2M"):
+                tw_2m = wet_bulb_temperature_from_dewpoint(
+                    temperature.to_numpy(flatten=True),
+                    dewpoint.to_numpy(flatten=True),
+                    surface_pressure.to_numpy(flatten=True),
+                )
 
         if "TW_2M" in self.variables:
             yield self.new_field_from_numpy(
@@ -415,6 +420,7 @@ class SurfaceDiagnostics(MatchingFieldsFilter):
             )
 
         if not self.MATCHING.vertical:
+            _log_timings(timings, temperature or u_component)
             return
 
         t_2m = temperature.to_numpy(flatten=True)
@@ -429,48 +435,56 @@ class SurfaceDiagnostics(MatchingFieldsFilter):
         level_inputs = {"t": temperature_levels, "z": geopotential_levels}
         if wet_bulb_profile or parcels:
             level_inputs["q"] = specific_humidity_levels
-        pressure, profiles = _stack_levels(level_inputs)
-        level_heights = geometric_height_from_geopotential(profiles["z"])
-        above_ground = pressure[:, None] < sp[None, :]
+        with _timer(timings, "pressure-level profiles"):
+            pressure, profiles = _stack_levels(level_inputs)
+            level_heights = geometric_height_from_geopotential(profiles["z"])
+            above_ground = pressure[:, None] < sp[None, :]
 
-        outputs = _height_levels(
-            [*self.variables, "SNOWLMT", "MELTLAYER_TOP"] if melting_layer else self.variables,
-            t_2m=t_2m,
-            tw_2m=tw_2m if wet_bulb_profile else None,
-            orography=self._orography,
-            t_levels=profiles["t"],
-            tw_levels=_wet_bulb_levels(profiles, pressure) if wet_bulb_profile else None,
-            level_heights=level_heights,
-            above_ground=above_ground,
-        )
-        if parcels:
-            column = _environment_column(
+        height_variables = [*self.variables, "SNOWLMT", "MELTLAYER_TOP"] if melting_layer else self.variables
+        height_label = "/".join(v for v in ("HZEROCL", "SNOWLMT", "MELTLAYER_TOP") if v in height_variables)
+        with _timer(timings, height_label) if height_label else nullcontext():
+            outputs = _height_levels(
+                height_variables,
                 t_2m=t_2m,
-                td_2m=dewpoint.to_numpy(flatten=True),
-                sp=sp,
+                tw_2m=tw_2m if wet_bulb_profile else None,
                 orography=self._orography,
-                pressure=pressure,
                 t_levels=profiles["t"],
-                q_levels=profiles["q"],
+                tw_levels=_wet_bulb_levels(profiles, pressure) if wet_bulb_profile else None,
                 level_heights=level_heights,
                 above_ground=above_ground,
             )
-        if melting_layer:
-            outputs.update(
-                self._precipitation_type_and_snow(
-                    precipitation,
+        if parcels:
+            with _timer(timings, "CAPE/CIN column"):
+                column = _environment_column(
                     t_2m=t_2m,
-                    snowlmt=outputs["SNOWLMT"],
-                    meltlayer_top=outputs["MELTLAYER_TOP"],
+                    td_2m=dewpoint.to_numpy(flatten=True),
+                    sp=sp,
+                    orography=self._orography,
+                    pressure=pressure,
+                    t_levels=profiles["t"],
+                    q_levels=profiles["q"],
+                    level_heights=level_heights,
+                    above_ground=above_ground,
                 )
-            )
+        if melting_layer:
+            with _timer(timings, "/".join(v for v in ("PREC_TYPE", "TOT_SNOW") if v in self.variables)):
+                outputs.update(
+                    self._precipitation_type_and_snow(
+                        precipitation,
+                        t_2m=t_2m,
+                        snowlmt=outputs["SNOWLMT"],
+                        meltlayer_top=outputs["MELTLAYER_TOP"],
+                    )
+                )
             outputs = {name: values for name, values in outputs.items() if name in self.variables}
         for kind in parcels:
-            start = _mixed_layer_parcel(*column) if kind == "ML" else _most_unstable_parcel(*column)
-            cape, cin = _parcel_cape_cin(*column, *start)
+            with _timer(timings, f"CAPE_{kind}/CIN_{kind}"):
+                start = _mixed_layer_parcel(*column) if kind == "ML" else _most_unstable_parcel(*column)
+                cape, cin = _parcel_cape_cin(*column, *start)
             for name, values in ((f"CAPE_{kind}", cape), (f"CIN_{kind}", cin)):
                 if name in self.variables:
                     outputs[name] = values
+        _log_timings(timings, temperature)
         for name, values in outputs.items():
             yield self.new_field_from_numpy(
                 values.reshape(temperature.shape),
@@ -514,6 +528,29 @@ class SurfaceDiagnostics(MatchingFieldsFilter):
             self._snow_total = self._snow_total + np.nan_to_num(fraction * amount)
             out["TOT_SNOW"] = self._snow_total.copy()
         return out
+
+
+@contextmanager
+def _timer(timings: dict[str, float], label: str) -> Iterator[None]:
+    """Add the wall time spent in the block to ``timings[label]`` (seconds)."""
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        timings[label] = timings.get(label, 0.0) + time.perf_counter() - start
+
+
+def _log_timings(timings: dict[str, float], field: ekd.Field | None) -> None:
+    """Log the time spent on each diagnostic for one output step."""
+    if not timings:
+        return
+    lead = _leadtime(field) if field is not None else None
+    LOG.info(
+        "surface-diagnostics: computed step %s in %.2fs (%s)",
+        "?" if lead is None else f"{lead / timedelta(hours=1):g}h",
+        sum(timings.values()),
+        ", ".join(f"{label} {seconds:.2f}s" for label, seconds in timings.items()),
+    )
 
 
 def _load_orography(path: Path, variable: str) -> np.ndarray:

@@ -466,9 +466,9 @@ class NudgeTowardObservation(Filter):
             return data
 
         ref_time = (
-            data[0].datetime()["valid_time"]
+            data[0].get("time.valid_datetime")
             if self.run_mode == "devt"
-            else min(f.datetime()["valid_time"] for f in data)
+            else min(f.get("time.valid_datetime") for f in data)
         )
         LOG.info("Nudging initial condition at %s", ref_time)
 
@@ -480,10 +480,13 @@ class NudgeTowardObservation(Filter):
         held_out_stations = all_stations.drop(index=stations.index)
 
         nudged = {}
-        for field in data.sel(shortName=list(self.ecmwf_names.keys())):
-            shortname = field.metadata("shortName")
+        for field in data:
+            # parameter.variable is the GRIB shortName for GRIB fields
+            shortname = field.get("parameter.variable")
+            if shortname not in self.ecmwf_names:
+                continue
 
-            if field.datetime()["valid_time"] != ref_time:
+            if field.get("time.valid_datetime") != ref_time:
                 continue
 
             ecmwf_name = self.ecmwf_names[shortname]
@@ -492,16 +495,12 @@ class NudgeTowardObservation(Filter):
                 continue
 
             corrected = self._nudge_field(field, stations, shortname, ecmwf_name, ref_time, held_out_stations)
-            nudged[shortname] = new_field_from_numpy(
-                corrected,
-                template=field,
-                validityDate=field.metadata("validityDate"),
-                validityTime=field.metadata("validityTime"),
-                dataDate=field.metadata("dataDate"),
-                dataTime=field.metadata("dataTime"),
-            )
+            # Replacing only the values keeps all the template's metadata (incl. date/time).
+            nudged[shortname] = new_field_from_numpy(corrected, template=field)
 
-        result = [nudged.get(f.metadata("shortName"), f) if f.datetime()["valid_time"] == ref_time else f for f in data]
+        result = [
+            nudged.get(f.get("parameter.variable"), f) if f.get("time.valid_datetime") == ref_time else f for f in data
+        ]
         self._nudging_done = True
         LOG.info("Nudging complete: %d/%d fields updated", len(nudged), len(result))
         return new_fieldlist_from_list(result)

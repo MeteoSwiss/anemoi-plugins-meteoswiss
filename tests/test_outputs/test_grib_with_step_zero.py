@@ -5,7 +5,10 @@ import numpy as np
 import pytest
 from anemoi.transform.variables import Variable
 
-from anemoi_plugins_meteoswiss.outputs import GribWithStepZero
+# Needs the `inference` extra (anemoi-inference).
+pytest.importorskip("anemoi.inference")
+
+from anemoi_plugins_meteoswiss.outputs import GribWithStepZero  # noqa: E402
 
 REFERENCE_DATE = datetime.datetime(2026, 8, 31, 0, 0)
 
@@ -65,12 +68,12 @@ def test_write_initial_state_emits_zero_field_from_template(output, data_dir):
     output.write_initial_state(state)
     output.close()
 
-    written = list(ekd.from_source("file", output.out))
+    written = list(ekd.from_source("file", output.out).to_fieldlist())
     assert len(written) == 1
 
     field = written[0]
     assert field.metadata("shortName") == "T_2M"
-    assert field.metadata("step") == 0
+    assert field.get("time.step") == datetime.timedelta(0)
     assert field.metadata("dataDate") == 20260831
     assert field.metadata("dataTime") == 0
 
@@ -103,7 +106,7 @@ def test_write_initial_state_resolves_mars_param(data_dir, tmp_path):
     output.write_initial_state(state)
     output.close()
 
-    written = list(ekd.from_source("file", output.out))
+    written = list(ekd.from_source("file", output.out).to_fieldlist())
     assert len(written) == 1
     assert written[0].metadata("shortName") == "T"
 
@@ -126,9 +129,9 @@ def test_write_initial_state_emits_one_message_per_accumulation(data_dir, tmp_pa
     output.write_initial_state(state)
     output.close()
 
-    written = list(ekd.from_source("file", output.out))
+    written = list(ekd.from_source("file", output.out).to_fieldlist())
     assert {f.metadata("shortName") for f in written} == {"T_2M", "T"}
-    assert all(f.metadata("step") == 0 for f in written)
+    assert all(f.get("time.step") == datetime.timedelta(0) for f in written)
 
 
 def test_write_initial_state_skips_field_already_present(output):
@@ -168,7 +171,7 @@ def test_write_initial_state_writes_real_and_zero_step_fields_to_same_file(outpu
     """The whole point of this output: a real field (written by the
     inherited GribFileOutput logic) and the synthetic zero-step field both
     end up in the same GRIB file."""
-    templates = {f.metadata("param"): f for f in ekd.from_source("file", data_dir / "iaf2025010100")}
+    templates = {f.metadata("param"): f for f in ekd.from_source("file", data_dir / "iaf2025010100").to_fieldlist()}
     real_template = templates["T"]
 
     output.typed_variables = {"FIS": VAR_FIS}
@@ -179,7 +182,7 @@ def test_write_initial_state_writes_real_and_zero_step_fields_to_same_file(outpu
     output.write_initial_state(state)
     output.close()
 
-    written_params = {f.metadata("shortName") for f in ekd.from_source("file", output.out)}
+    written_params = {f.metadata("shortName") for f in ekd.from_source("file", output.out).to_fieldlist()}
     assert written_params == {"FIS", "T_2M"}
 
 
@@ -207,6 +210,6 @@ def test_write_initial_state_checks_shape_after_post_processing(output):
     )
     output.close()
 
-    written = list(ekd.from_source("file", output.out))
+    written = list(ekd.from_source("file", output.out).to_fieldlist())
     assert [f.metadata("shortName") for f in written] == ["FIS", "T_2M"]
     assert written[1].to_numpy(flatten=True).shape == (N_POINTS,)

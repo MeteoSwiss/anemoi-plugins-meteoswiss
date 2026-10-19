@@ -16,20 +16,21 @@ class Keep(Filter):
     Parameters
     ----------
     param:
-        Names of the parameters to keep. Fields whose ``param`` metadata is
-        not in this list are dropped.
+        Names of the parameters to keep. Fields whose ``parameter.variable``
+        metadata (the GRIB ``shortName`` for GRIB fields) is not in this list are dropped.
     """
 
     def __init__(self, param: str | list[str]):
         self.param = [param] if isinstance(param, str) else list(param)
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
-        kept = [f for f in data if f.metadata("param") in self.param]
+        params = [f.get("parameter.variable") for f in data]
+        kept = [f for f, p in zip(data, params) if p in self.param]
 
-        dropped_params = sorted({f.metadata("param") for f in data if f.metadata("param") not in self.param})
+        dropped_params = sorted({p for p in params if p not in self.param})
         LOG.info("Dropping %d fields, param=%s", len(dropped_params), dropped_params)
 
-        missing_params = sorted(set(self.param) - {f.metadata("param") for f in data})
+        missing_params = sorted(set(self.param) - set(params))
         if missing_params:
             LOG.warning("Requested params=%s are missing", missing_params)
         return new_fieldlist_from_list(kept)

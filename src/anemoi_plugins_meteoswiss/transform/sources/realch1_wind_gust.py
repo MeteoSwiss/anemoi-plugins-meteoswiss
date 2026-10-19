@@ -13,8 +13,10 @@ from datetime import timedelta
 from typing import Any
 
 import earthkit.data as ekd
+import numpy as np
 from anemoi.datasets.create.source import Source
 from anemoi.transform.fields import new_field_from_grid
+from anemoi.transform.fields import new_field_with_metadata
 from anemoi.transform.fields import new_fieldlist_from_list
 from anemoi.transform.grids import grid_registry
 
@@ -88,6 +90,10 @@ def _as_fct_time_request(dt: datetime) -> str:
         out["step"] = 24
         return out
 
+    # TODO: the step is floored to whole hours, so the 10-min dates of an aggregation window all
+    # map to the 10-min maximum ending at the full hour. A 60 min window at HH:00 is then the max of
+    # the values ending at (HH-1):00 and HH:00 (period 70 min; at 01 UTC only 10 min, since step 0
+    # has no data). Kept as is for consistency with the released datasets; fixing it changes the data.
     out["date"] = dt.strftime("%Y%m%d")
     out["time"] = "0000"
     out["step"] = int((dt - dt.replace(hour=0, minute=0)).total_seconds() // 3600)
@@ -114,14 +120,18 @@ def _get_data_from_fdb(request: dict[str, Any], dates: list[datetime]):
         requests.append(request | time_request)
 
     # load data from FDB
-    fl = ekd.from_source("empty")
+    fields = []
     for request in requests:
-        fl += ekd.from_source("fdb", request, read_all=True)
+        fields.extend(ekd.from_source("fdb", request).to_fieldlist(read_all=True))
 
-    return ekd.FieldList.from_fields([f.clone(level=None, levelist=None) for f in fl])
+    return new_fieldlist_from_list(fields)
 
 
-def _aggregate(fl: ekd.FieldList) -> ekd.FieldList:
+def _aggregate(fl: ekd.FieldList) -> ekd.Field:
     """Compute aggregation for the requested dates."""
-    values = fl.values.max(axis=0)
-    return fl[-1].clone(values=values, startStep=fl[0].metadata("startStep"))
+    values = np.max([f.values for f in fl], axis=0)
+    # startStep is a raw GRIB key: setting it re-encodes the GRIB header (stepRange,
+    # lengthOfTimeRange), while endStep, the valid time and the values are kept.
+    field = fl[-1].set({"values": values, "metadata.startStep": fl[0].metadata("startStep")})
+    # remove the level information (VMAX_10M is on heightAboveGround 10 m), so the variable is named VMAX_10M
+    return new_field_with_metadata(field, levelist=None)

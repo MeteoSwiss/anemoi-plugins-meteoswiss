@@ -64,4 +64,5 @@ def test_retrieve_resolves_each_variable_from_exactly_one_source():
 
     result = input_.retrieve(variables=["t2m", "hsurf"], dates=[valid_time])
 
-    assert {field.metadata("shortName") for field in result} == {"T_2M", "HSURF"}
+    # parameter.variable is the GRIB shortName (raw GRIB keys are dropped once a field's time is reset).
+    assert {field.get("parameter.variable") for field in result} == {"T_2M", "HSURF"}

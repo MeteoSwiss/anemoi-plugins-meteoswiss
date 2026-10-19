@@ -4,9 +4,8 @@ import pytest
 import xarray as xr
 from anemoi.transform.fields import new_field_from_numpy
 from anemoi.transform.fields import new_fieldlist_from_list
-from earthkit.data.core.metadata import RawMetadata
-from earthkit.data.sources.array_list import ArrayField
 from earthkit.meteo.thermo import relative_humidity_from_dewpoint
+from scipy.ndimage import gaussian_filter
 
 from anemoi_plugins_meteoswiss.transform import filters
 from anemoi_plugins_meteoswiss.transform.filters import GaussianSmoother
@@ -49,7 +48,7 @@ def test_icon_remap_to_reg_lat_lon(data_dir, hostname):
     assert regridder._longitudes.max() < 22.0
 
     fn = str(data_dir / "iaf2025010100")
-    fieldlist = ekd.from_source("file", fn).sel(shortName="T_2M")
+    fieldlist = ekd.from_source("file", fn).to_fieldlist().sel({"parameter.variable": "T_2M"})
 
     result = regridder.forward(fieldlist)
 
@@ -57,8 +56,13 @@ def test_icon_remap_to_reg_lat_lon(data_dir, hostname):
     assert len(result) == len(fieldlist)
     for src_field, out_field in zip(fieldlist, result):
         src_values = src_field.to_numpy(flatten=True)
+        # 2-D shape of the regular grid (the gaussian-smoother relies on it).
+        assert out_field.shape == (regridder.ny, regridder.nx)
         values = out_field.to_numpy(flatten=True)
         assert values.shape == (n_out,)
+        lat, lon = (np.asarray(x).ravel() for x in out_field.geography.latlons())
+        np.testing.assert_array_equal(lat, regridder._latitudes)
+        np.testing.assert_array_equal(lon, regridder._longitudes)
         # All output points are valid for this weights file (no sentinel zeros)
         assert not np.any(np.isnan(values))
         # Conservative interpolation: output stays within the source's range.
@@ -74,9 +78,11 @@ def test_gaussian_smoother(data_dir, hostname):
     smoother = GaussianSmoother(sigma=5, params=["T_2M"])
 
     fn = str(data_dir / "iaf2025010100")
-    fs = ekd.from_source("file", fn)
+    fs = ekd.from_source("file", fn).to_fieldlist()
     # T_2M (smoothed) + one level of W (pass-through, not in params)
-    fieldlist = new_fieldlist_from_list(list(fs.sel(shortName="T_2M")) + [fs.sel(shortName="W")[0]])
+    fieldlist = new_fieldlist_from_list(
+        list(fs.sel({"parameter.variable": "T_2M"})) + [fs.sel({"parameter.variable": "W"})[0]]
+    )
 
     regridded = list(regridder.forward(fieldlist))
     synthetic = np.zeros((regridder.ny, regridder.nx))
@@ -95,6 +101,9 @@ def test_gaussian_smoother(data_dir, hostname):
 
     # Smoothed T_2M must differ from raw (sigma=5 is a meaningful kernel)
     assert not np.allclose(t2m_raw, t2m_smo)
+    # ... and be smoothed in 2-D on the (ny, nx) grid, not along the flattened array
+    assert smoothed[0].shape == (regridder.ny, regridder.nx)
+    np.testing.assert_allclose(t2m_smo, gaussian_filter(synthetic, sigma=5).ravel())
     # Smoothed values stay within the original range (conservative property)
     assert t2m_smo.min() >= t2m_raw.min() - 1e-6
     assert t2m_smo.max() <= t2m_raw.max() + 1e-6
@@ -496,7 +505,9 @@ def test_nudge_field_writes_diagnostics(tmp_path):
 
 
 def _synthetic_components(data_dir):
-    template = ekd.from_source("file", str(data_dir / "iaf2025010100")).sel(shortName="T_2M")[0]
+    template = (
+        ekd.from_source("file", str(data_dir / "iaf2025010100")).to_fieldlist().sel({"parameter.variable": "T_2M"})[0]
+    )
 
     rng = np.random.default_rng(0)
     n = template.to_numpy(flatten=True).size
@@ -527,7 +538,7 @@ def test_surface_diagnostics_all_variables(data_dir):
     result = diagnostics.forward(fieldlist)
 
     assert len(result) == 7
-    by_param = {f.metadata("param"): f for f in result}
+    by_param = {f.get("parameter.variable"): f for f in result}
     assert set(by_param) == {"10u", "10v", "2t", "2d", "SP_10M", "DD_10M", "RELHUM_2M"}
 
     # Originals are passed through untouched.
@@ -560,7 +571,7 @@ def test_surface_diagnostics_subset_of_variables(data_dir):
     )
     result = diagnostics.forward(fieldlist)
 
-    by_param = {f.metadata("param"): f for f in result}
+    by_param = {f.get("parameter.variable"): f for f in result}
     assert set(by_param) == {"10u", "10v", "2t", "2d", "SP_10M"}
 
     expected_speed = np.sqrt(u_values**2 + v_values**2)
@@ -590,10 +601,13 @@ def test_surface_diagnostics_rejects_unknown_variable():
 
 
 def test_keep(caplog):
-    fieldlist = new_fieldlist_from_list([ArrayField(np.zeros(4), RawMetadata({"param": p})) for p in ["t", "q", "z"]])
+    fieldlist = ekd.from_source(
+        "list-of-dicts",
+        [{"parameter": {"variable": p}, "data": {"values": np.zeros(4)}} for p in ["t", "q", "z"]],
+    ).to_fieldlist()
 
     kept = Keep(param=["t", "z"]).forward(fieldlist)
-    assert [f.metadata("param") for f in kept] == ["t", "z"]
+    assert [f.get("parameter.variable") for f in kept] == ["t", "z"]
 
     with caplog.at_level("WARNING"):
         Keep(param=["t", "missing"]).forward(fieldlist)
@@ -602,7 +616,7 @@ def test_keep(caplog):
 
 def test_pipe_or_fdb_xarray_returns_piped_value_when_present(data_dir):
     fn = str(data_dir / "iaf2025010100")
-    fieldlist = ekd.from_source("file", fn).sel(shortName="T_2M")
+    fieldlist = ekd.from_source("file", fn).to_fieldlist().sel({"parameter.variable": "T_2M"})
 
     interpolator = ModelToPressureLevel(interpolate_levels=[500])
     da = interpolator._get_field(fieldlist, "T_2M").to_xarray()["T_2M"]
@@ -620,8 +634,9 @@ def test_retrieve_observation_once_per_ref_time():
         def __init__(self, valid_time):
             self._valid_time = valid_time
 
-        def datetime(self):
-            return {"valid_time": self._valid_time}
+        def get(self, key):
+            assert key == "time.valid_datetime"
+            return self._valid_time
 
     t0, t1 = datetime(2025, 3, 1, 0), datetime(2025, 3, 1, 6)
     filt = RetrieveObservation(obs_path="obs.parquet", jretrieve_src_path="/unused", run_mode="devt")

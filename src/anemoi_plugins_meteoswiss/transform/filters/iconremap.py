@@ -91,11 +91,13 @@ class IconRemapToRegLatLon(Filter):
             regridded = np.sum(stencil * self.weights, axis=-1)
             regridded = np.clip(regridded, vmin, vmax)
             regridded[~self.valid_mask] = np.nan
+            # 2-D coordinates give the output field the (ny, nx) shape of the regular grid,
+            # which shape-aware filters downstream (e.g. gaussian-smoother) rely on.
             result.append(
                 new_field_from_latitudes_longitudes(
                     new_field_from_numpy(regridded.reshape(self.ny, self.nx), template=field),
-                    latitudes=self._latitudes,
-                    longitudes=self._longitudes,
+                    latitudes=self._latitudes.reshape(self.ny, self.nx),
+                    longitudes=self._longitudes.reshape(self.ny, self.nx),
                 )
             )
         return new_fieldlist_from_list(result)

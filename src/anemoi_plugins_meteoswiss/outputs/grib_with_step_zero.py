@@ -104,7 +104,7 @@ class GribWithStepZero(GribFileOutput):
         if not files:
             raise FileNotFoundError(f"grib-with-step-zero: no template file(s) match {self.step_zero_template!r}")
         index: dict[str, ekd.Field] = {}
-        for f in ekd.from_source("file", files):
+        for f in ekd.from_source("file", files).to_fieldlist():
             name = f.metadata("param")
             index[name] = f
         LOG.info(

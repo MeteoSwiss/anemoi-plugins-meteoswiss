@@ -61,7 +61,7 @@ class SurfaceDiagnostics(MatchingFieldsFilter):
     """Compute SP_10M/DD_10M/RELHUM_2M from U/V and temperature/dewpoint."""
 
     MATCHING = MatchingSpec(
-        select="param",
+        select="parameter.variable",
         forward=("u_component", "v_component", "temperature", "dewpoint"),
         return_inputs="all",
     )

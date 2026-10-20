@@ -5,10 +5,10 @@
 # Single job that allocates a compute node, syncs the uv environment and runs
 # pytest. The runner and the generic fragments (preamble, logging, workdir, uv)
 # are the shared MeteoSwiss blocks — see
-# https://github.com/MeteoSwiss/mch-cscs-ci-recipes; which cluster the job lands
+# https://github.com/MeteoSwiss/varda-cscs-ci-workflows; which cluster the job lands
 # on is decided there (cluster.yml), not here.
 include:
-  - remote: 'https://raw.githubusercontent.com/MeteoSwiss/mch-cscs-ci-recipes/init/v1/.ci-ext-mch.yml'
+  - remote: 'https://raw.githubusercontent.com/MeteoSwiss/varda-cscs-ci-workflows/init/v1/.ci-ext-mch.yml'
 
 stages:
   - test

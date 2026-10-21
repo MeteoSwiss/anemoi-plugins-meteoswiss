@@ -2,7 +2,6 @@ import json
 import logging
 import math
 import re
-import sys
 import time
 import yaml
 from datetime import datetime, timedelta, timezone
@@ -271,11 +270,6 @@ def _check_inversion_protection(station: str, para: str, positive_tests: list,
     return True, lr, confirming_stations
 
 
-# Make clean_observation_tests importable via bare import
-_FILTERS_DIR = str(Path(__file__).parent)
-if _FILTERS_DIR not in sys.path:
-    sys.path.insert(0, _FILTERS_DIR)
-
 
 def _load_qc_config() -> SimpleNamespace:
     """Load QC configuration from clean_observation_config.yaml."""
@@ -308,7 +302,7 @@ def _load_qc_config() -> SimpleNamespace:
 
 try:
     _qc_config = _load_qc_config()
-    from clean_observation_tests import (
+    from .clean_observation_tests import (
         DWH_flag as _DWH_flag,
         buddy_check as _buddy_check,
         first_guess_test as _first_guess_test,

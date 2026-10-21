@@ -1,11 +1,12 @@
-import yaml
-import numpy as np
-import pandas as pd
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+
+import numpy as np
+import pandas as pd
 import titanlib
+import yaml
 
 
 _PARQUET_TO_QC = {
@@ -18,9 +19,10 @@ _PARQUET_TO_QC = {
 }
 
 
-def _load_qc_config() -> SimpleNamespace:
+def _load_qc_config(config_file=None) -> SimpleNamespace:
     """Load QC configuration from clean_observation_config.yaml."""
-    cfg = yaml.safe_load(Path(__file__).with_name("clean_observation_config.yaml").read_text())
+    path = Path(config_file) if config_file else Path(__file__).with_name("clean_observation_config.yaml")
+    cfg = yaml.safe_load(path.read_text())
 
     def _identity(x):
         return x
@@ -30,7 +32,11 @@ def _load_qc_config() -> SimpleNamespace:
     return ns
 
 
-c = _load_qc_config()
+c = None
+try:
+    c = _load_qc_config()
+except FileNotFoundError:
+    pass
 
 LOG = logging.getLogger(__name__)
 
@@ -65,7 +71,7 @@ def isolation_check(stations, lats, lons, elevs, para, date, num_min=2, radius=5
 
 #----------------------------------
 # DWH quality flag test
-def DWH_flag(current_f, para, stationss, plausibility):
+def DWH_flag(current_f, para, stationss, plausibility, qc_config=None):
     """Plausibility test using pre-fetched DWH plausibility values.
 
     Args:
@@ -81,7 +87,7 @@ def DWH_flag(current_f, para, stationss, plausibility):
             freq is a value_counts Series of the plausibility distribution.
             blacklist_dict is an empty dict when no stations are flagged.
     """
-    threshold = float(c.DWH_flag[para]['dwh_plausibility_thr'])
+    threshold = float((qc_config or c).DWH_flag[para]['dwh_plausibility_thr'])
     LOG.info('DWH plausibility test for %s, threshold=%.2f', para, threshold)
 
     # Restrict to the stations passed to this test and drop missing values
@@ -521,7 +527,7 @@ def hard_test(obs_all, datamin, datamax, var, time, limits=None):
 
 #--------------------------------------------------------------
 def plateau_test(data, window, std_lim, var, time, obs_path_in=None, gran_minutes=60,
-                 historical_raw=None):
+                 historical_raw=None, qc_config=None):
     """
     Plateau test: detect frozen/stuck sensors by checking that observations vary
     over a past time window.
@@ -558,7 +564,7 @@ def plateau_test(data, window, std_lim, var, time, obs_path_in=None, gran_minute
         """
         norm = pd.DataFrame({'sta_name': hist_df.index.to_list()})
         # Map parquet column → QC column for this var
-        for pc, (qp, conv) in c.parquet_to_qc.items():
+        for pc, (qp, conv) in (qc_config or c).parquet_to_qc.items():
             if qp == var and pc in hist_df.columns:
                 norm[var] = conv(hist_df[pc].to_numpy())
                 return norm

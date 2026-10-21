@@ -18,10 +18,6 @@ import sys
 from pathlib import Path
 from types import ModuleType as _MT
 
-_FILTERS_DIR = str(Path(__file__).parent)
-if _FILTERS_DIR not in sys.path:
-    sys.path.insert(0, _FILTERS_DIR)
-
 
 def _stub(name: str) -> _MT:
     """Register a dummy module under *name* if absent; return it."""
@@ -53,8 +49,8 @@ except ImportError:
     sys.modules.setdefault("earthkit", _MT("earthkit"))
 
 
-from clean_observation import CleanObservation  # noqa: E402
-from clean_observation_tests_standalone import (  # noqa: E402
+from .clean_observation import CleanObservation  # noqa: E402
+from .clean_observation_tests_standalone import (  # noqa: E402
     buddy_check_py as _buddy_check,
     first_guess_test_py as _first_guess_test,
     isolation_check_py as _isolation_check,

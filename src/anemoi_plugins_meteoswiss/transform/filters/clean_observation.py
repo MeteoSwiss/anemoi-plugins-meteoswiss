@@ -3,7 +3,6 @@ import logging
 import math
 import re
 import time
-import yaml
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +10,7 @@ from types import SimpleNamespace
 import earthkit.data as ekd
 import numpy as np
 import pandas as pd
+import yaml
 from anemoi.transform.filter import Filter
 
 LOG = logging.getLogger(__name__)
@@ -147,7 +147,7 @@ def _load_inversion_stations(yaml_path: Path) -> dict:
 
 
 def _check_inversion_protection(station: str, para: str, positive_tests: list,
-                                df, month: int) -> tuple:
+                                df, month: int, qc_config: SimpleNamespace) -> tuple:
     """Return (protected, lapse_rate, confirming_stations) for this flag candidate.
 
     protected            – True if the flag should be suppressed due to inversion conditions.
@@ -165,7 +165,7 @@ def _check_inversion_protection(station: str, para: str, positive_tests: list,
       - at least min_confirming_stations other inversion stations within
         confirming_radius_km also show a lapse rate in [lapse_rate_min, lapse_rate_max]
     """
-    inv_cfg = getattr(_qc_config, "inversion_protection", {}) or {}
+    inv_cfg = getattr(qc_config, "inversion_protection", {}) or {}
     protected_paras = set(inv_cfg.get("parameters", ["T_2M", "TD_2M"]))
     if para not in protected_paras:
         return False, None, []
@@ -176,7 +176,7 @@ def _check_inversion_protection(station: str, para: str, positive_tests: list,
     if month not in active_months:
         return False, None, []
 
-    inv_stations = getattr(_qc_config, "inversion_stations", {})
+    inv_stations = getattr(qc_config, "inversion_stations", {})
     if not inv_stations:
         return False, None, []
     info = inv_stations.get(station)
@@ -271,10 +271,31 @@ def _check_inversion_protection(station: str, para: str, positive_tests: list,
 
 
 
-def _load_qc_config() -> SimpleNamespace:
-    """Load QC configuration from clean_observation_config.yaml."""
-    config_dir = Path(__file__).parent
-    cfg = yaml.safe_load((config_dir / "clean_observation_config.yaml").read_text())
+def _load_qc_config(
+    config_file=None,
+    hard_blacklist_file=None,
+    inversion_protection_file=None,
+) -> SimpleNamespace:
+    """Load QC configuration, with optional path overrides for per-run customisation.
+
+    Parameters
+    ----------
+    config_file : str or Path, optional
+        Path to the main QC config YAML. Defaults to ``clean_observation_config.yaml``
+        in the package directory.
+    hard_blacklist_file : str or Path, optional
+        Path to the hard-blacklist YAML. Overrides ``hard_blacklist_file`` in the
+        main config when provided.
+    inversion_protection_file : str or Path, optional
+        Path to the inversion-stations YAML. Overrides ``inversion_protection.file``
+        in the main config when provided.
+    """
+    default_dir = Path(__file__).parent
+    cfg_path = Path(config_file) if config_file is not None else default_dir / "clean_observation_config.yaml"
+    # Resolve sibling paths (blacklist, inversion stations) relative to the config file itself,
+    # so that an external config_file can carry its own relative references.
+    config_dir = cfg_path.parent
+    cfg = yaml.safe_load(cfg_path.read_text())
 
     def _identity(x):
         return x
@@ -286,22 +307,35 @@ def _load_qc_config() -> SimpleNamespace:
     ns.parquet_to_qc = {col: (qp, _identity) for col, qp in _PARQUET_TO_QC.items()}
     ns.qc_to_parquet = _QC_TO_PARQUET
 
-    blacklist_file = cfg.get("hard_blacklist_file")
-    if blacklist_file:
-        blacklist_path = config_dir / blacklist_file
+    if hard_blacklist_file is not None:
+        blacklist_path = Path(hard_blacklist_file)
+    else:
+        blacklist_file = cfg.get("hard_blacklist_file")
+        blacklist_path = (config_dir / blacklist_file) if blacklist_file else None
+    if blacklist_path is not None:
         blacklist_cfg = yaml.safe_load(blacklist_path.read_text())
         ns.hard_blacklist = blacklist_cfg["hard_blacklist"]
 
     inv_prot = cfg.get("inversion_protection", {})
     ns.inversion_protection = inv_prot
-    inv_file = inv_prot.get("file") if inv_prot else None
-    ns.inversion_stations = _load_inversion_stations(config_dir / inv_file) if inv_file else {}
+    if inversion_protection_file is not None:
+        inv_path = Path(inversion_protection_file)
+    else:
+        inv_file = inv_prot.get("file") if inv_prot else None
+        inv_path = (config_dir / inv_file) if inv_file else None
+    ns.inversion_stations = _load_inversion_stations(inv_path) if inv_path else {}
 
     return ns
 
 
+_qc_config = None
 try:
     _qc_config = _load_qc_config()
+except FileNotFoundError:
+    # Default config not present in package — config_file= must be passed explicitly.
+    pass
+
+try:
     from .clean_observation_tests import (
         DWH_flag as _DWH_flag,
         buddy_check as _buddy_check,
@@ -313,9 +347,8 @@ try:
         spacial_ct_resistant as _spacial_ct_resistant,
         tests_summary as _tests_summary,
     )
-
     _QC_AVAILABLE = True
-except (ImportError, FileNotFoundError) as _e:
+except ImportError as _e:
     LOG.warning("QC modules not available, cleaning will be a no-op: %s", _e)
     _QC_AVAILABLE = False
 
@@ -367,6 +400,15 @@ class CleanObservation(Filter):
         name as index and QC parameter names (``T_2M``, ``TD_2M``, ``SP_10M``,
         …) as columns.  The model background is recovered as ``obs − diff`` so
         that ``fgt`` can still run.
+    config_file : str, optional
+        Path to the main QC config YAML. Defaults to ``clean_observation_config.yaml``
+        shipped with the package.
+    hard_blacklist_file : str, optional
+        Path to the hard-blacklist YAML. Overrides the ``hard_blacklist_file``
+        entry in the main config when provided.
+    inversion_protection_file : str, optional
+        Path to the inversion-stations YAML. Overrides the
+        ``inversion_protection.file`` entry in the main config when provided.
     """
 
     def __init__(
@@ -376,6 +418,9 @@ class CleanObservation(Filter):
         model_grib_path: str = None,
         model_interp: str = "nearest",
         residuals_dir: str = None,
+        config_file: str = None,
+        hard_blacklist_file: str = None,
+        inversion_protection_file: str = None,
     ):
         if model_interp not in ("nearest", "min_elev_diff"):
             raise ValueError(
@@ -386,6 +431,19 @@ class CleanObservation(Filter):
         self.model_grib_path = model_grib_path
         self.model_interp = model_interp
         self.residuals_dir = Path(residuals_dir) if residuals_dir is not None else None
+        if config_file is not None or hard_blacklist_file is not None or inversion_protection_file is not None:
+            self._qc_config = _load_qc_config(
+                config_file=config_file,
+                hard_blacklist_file=hard_blacklist_file,
+                inversion_protection_file=inversion_protection_file,
+            )
+        elif _qc_config is not None:
+            self._qc_config = _qc_config
+        else:
+            raise RuntimeError(
+                "No QC config available: the default clean_observation_config.yaml is not "
+                "present in the package. Pass config_file= explicitly in the inference config."
+            )
         super().__init__()
 
     # ------------------------------------------------------------------
@@ -437,14 +495,14 @@ class CleanObservation(Filter):
             obs_timestamp,
         )
 
-        inv_prot_cfg = getattr(_qc_config, "inversion_protection", {}) or {}
+        inv_prot_cfg = getattr(self._qc_config, "inversion_protection", {}) or {}
         if inv_prot_cfg.get("report") and obs_timestamp:
             protected = getattr(self, "_inversion_protected", [])
             if protected:
                 inv_json_path = json_path.parent / f"inversion_protection_{obs_timestamp}.json"
                 self._write_inversion_protection_json(inv_json_path, protected, obs_timestamp)
 
-        if getattr(_qc_config, "plot_maps", False):
+        if getattr(self._qc_config, "plot_maps", False):
             try:
                 self._plot_station_maps(df)
             except Exception:
@@ -503,13 +561,13 @@ class CleanObservation(Filter):
             return df
 
         # --- Stage 1: hard blacklist — applied before QC so tests never see these values ----
-        for entry in _qc_config.hard_blacklist.values():
+        for entry in self._qc_config.hard_blacklist.values():
             station = entry["station"]
             if station not in df.index:
                 continue
             for para in entry["paras"]:
                 LOG.info("Hard blacklist (pre-QC): setting %s / %s to NaN", station, para)
-                for parquet_col in _qc_config.qc_to_parquet.get(para, []):
+                for parquet_col in self._qc_config.qc_to_parquet.get(para, []):
                     if parquet_col not in df.columns or station not in df.index:
                         continue
                     df.loc[station, parquet_col] = np.nan
@@ -523,7 +581,7 @@ class CleanObservation(Filter):
         # Index of hard-blacklisted (station, para) pairs — used below to suppress
         # duplicate logging when automated QC also flags them.
         _hard_blacklisted: dict[str, set] = {}
-        for _entry in _qc_config.hard_blacklist.values():
+        for _entry in self._qc_config.hard_blacklist.values():
             for _p in _entry["paras"]:
                 _hard_blacklisted.setdefault(_p, set()).add(_entry["station"])
 
@@ -535,12 +593,12 @@ class CleanObservation(Filter):
         _historical_raw = self._load_historical_parquets()
 
         # --- Stage 2: automated QC tests per parameter --------------------
-        for para in _qc_config.par2check:
+        for para in self._qc_config.par2check:
             if para not in df_qc.columns:
                 LOG.warning("Skipping %s: not available in parquet", para)
                 continue
 
-            tests_QC = _qc_config.titan_ntests_threshold[para]["tests_QC"]
+            tests_QC = self._qc_config.titan_ntests_threshold[para]["tests_QC"]
             all_tests = list(tests_QC.keys())
             all_weights = tests_QC  # {test: weight}
             tests_to_do = [t for t in all_tests if t in active_tests]
@@ -588,13 +646,13 @@ class CleanObservation(Filter):
             # Score = sum(weight_i for flagging tests) / n_score_tests.
             # A station is blacklisted when score > threshold_summary (default 0.2).
             qc_summary = _tests_summary(blacklist, weights, score_tests)
-            threshold = _qc_config.titan_ntests_threshold[para]["threshold_summary"]
+            threshold = self._qc_config.titan_ntests_threshold[para]["threshold_summary"]
 
             flagged_stations = []
 
             # inversion_protection: suppress buddy-only T_2M flags when the
             # measured lapse rate to the reference station confirms an inversion.
-            if _qc_config.inversion_stations:
+            if self._qc_config.inversion_stations:
                 for station in list(qc_summary.columns):
                     score = qc_summary[station].iloc[0]
                     if score <= threshold:
@@ -602,13 +660,13 @@ class CleanObservation(Filter):
                     pos = [t for t in executed_tests
                            if station in blacklist.get(t, {}).get("Station", [])]
                     _protected, _lr, _confirming = _check_inversion_protection(
-                        station, para, pos, df, _obs_month
+                        station, para, pos, df, _obs_month, self._qc_config
                     )
                     if _protected:
                         LOG.info("Inversion protection: suppressing %s buddy flag for %s (lr=%.4f K/m)",
                                  para, station, _lr)
                         qc_summary = qc_summary.drop(columns=[station])
-                        _obs_cols = [c for c in _qc_config.qc_to_parquet.get(para, []) if c in df.columns]
+                        _obs_cols = [c for c in self._qc_config.qc_to_parquet.get(para, []) if c in df.columns]
                         _obs_val = (
                             round(float(df.at[station, _obs_cols[0]]), 4)
                             if _obs_cols and not pd.isna(df.at[station, _obs_cols[0]])
@@ -625,7 +683,7 @@ class CleanObservation(Filter):
 
             # stations_excluded: trusted stations (e.g. reference stations) that are
             # never blacklisted by automated QC, regardless of their score.
-            excluded = _qc_config.stations_excluded.get(para, {}).get("stations", [])
+            excluded = self._qc_config.stations_excluded.get(para, {}).get("stations", [])
             for station in qc_summary.columns:
                 score = qc_summary[station].iloc[0]
                 if score <= threshold:
@@ -676,8 +734,8 @@ class CleanObservation(Filter):
         the entries matching its own gran_minutes without any further I/O.
         """
         needed: set = set()
-        for para in _qc_config.par2check:
-            pt_cfg = (getattr(_qc_config, "plateau_test", None) or {}).get(para)
+        for para in self._qc_config.par2check:
+            pt_cfg = (getattr(self._qc_config, "plateau_test", None) or {}).get(para)
             if pt_cfg is None:
                 continue
             gran   = int(pt_cfg.get("gran",   60))
@@ -820,7 +878,7 @@ class CleanObservation(Filter):
         df_qc["sta_name"] = df.index.to_list()
 
         # Direct column mappings (T_2M, TD_2M, VMAX10M)
-        for parquet_col, (qc_para, converter) in _qc_config.parquet_to_qc.items():
+        for parquet_col, (qc_para, converter) in self._qc_config.parquet_to_qc.items():
             if parquet_col in df.columns:
                 df_qc[qc_para] = converter(df[parquet_col].to_numpy())
 
@@ -868,7 +926,7 @@ class CleanObservation(Filter):
                 df_mod, df_diff = self._load_residuals_at_stations(df_qc)
                 LOG.info("Pre-computed residuals loaded from %s; extended test set active",
                          self.residuals_dir)
-                return df_mod, df_diff, _qc_config.obs_only_tests | {"buddy_diff", "fgt"}
+                return df_mod, df_diff, self._qc_config.obs_only_tests | {"buddy_diff", "fgt"}
             except Exception as exc:
                 LOG.warning(
                     "Failed to load pre-computed residuals (%s); falling back to obs-only tests", exc
@@ -877,13 +935,13 @@ class CleanObservation(Filter):
             try:
                 df_mod, df_diff = self._load_model_at_stations(df_qc, lats, lons, elevs)
                 LOG.info("Model background loaded from GRIB; extended test set active")
-                return df_mod, df_diff, _qc_config.obs_only_tests | {"buddy_diff", "fgt"}
+                return df_mod, df_diff, self._qc_config.obs_only_tests | {"buddy_diff", "fgt"}
             except Exception as exc:
                 LOG.warning(
                     "Failed to load model GRIB (%s); falling back to obs-only tests", exc
                 )
         df_mod, df_diff = self._nan_frames(df_qc)
-        return df_mod, df_diff, _qc_config.obs_only_tests
+        return df_mod, df_diff, self._qc_config.obs_only_tests
 
     def _flag_station_columns(self, df, df_qc, station, para, **extra):
         """Set all parquet columns for *(station, para)* to NaN and record each flag.
@@ -905,7 +963,7 @@ class CleanObservation(Filter):
         # Record the QC-space value (e.g. wind speed scalar, not u/v)
         # that triggered the flag, for traceability in the JSON output.
         cols = [
-            c for c in _qc_config.qc_to_parquet.get(para, [])
+            c for c in self._qc_config.qc_to_parquet.get(para, [])
             if c in df.columns and station in df.index
         ]
         if cols:
@@ -951,9 +1009,8 @@ class CleanObservation(Filter):
             "spacial_ct_resistant": _spacial_ct_resistant,
         }
 
-    @classmethod
     def _build_test_runners(
-        cls, tests_to_do, df_obs, values, diffs, mods,
+        self, tests_to_do, df_obs, values, diffs, mods,
         stations, lats, lons, elevs,
         para, current_f, df_pi, obs_path_in,
         historical_raw=None,
@@ -965,8 +1022,8 @@ class CleanObservation(Filter):
         Spatial functions are resolved via ``_spatial_fns`` so subclasses can
         swap implementations without overriding this method.
         """
-        cfg = _qc_config
-        fns = cls._spatial_fns()
+        cfg = self._qc_config
+        fns = self._spatial_fns()
         runners = {}
 
         if "hard" in tests_to_do:
@@ -1015,7 +1072,6 @@ class CleanObservation(Filter):
             ):
                 if _excl:
                     mask = [s not in _excl for s in _stations]
-                    import numpy as np
                     idx  = [i for i, m in enumerate(mask) if m]
                     _s   = [_stations[i] for i in idx]
                     _la  = _lats[idx] if hasattr(_lats, '__getitem__') else [_lats[i] for i in idx]
@@ -1066,14 +1122,14 @@ class CleanObservation(Filter):
             else:
                 LOG.warning('DWH_flag: no pi column for %s, skipping', para)
                 pla_series = pd.Series(dtype=float)
-            runners["DWH_flag"] = lambda: _DWH_flag(current_f, para, stations, pla_series)
+            runners["DWH_flag"] = lambda: _DWH_flag(current_f, para, stations, pla_series, qc_config=cfg)
 
         if "plateau_test" in tests_to_do:
             pt = cfg.plateau_test[para]
             runners["plateau_test"] = lambda: _plateau_test(
                 df_obs, pt['window'], pt['sd'], para, current_f,
                 obs_path_in=obs_path_in, gran_minutes=pt['gran'],
-                historical_raw=historical_raw,
+                historical_raw=historical_raw, qc_config=cfg,
             )
 
         if "isolation_check" in tests_to_do:
@@ -1185,7 +1241,7 @@ class CleanObservation(Filter):
         df_res = pd.read_parquet(residuals_path)
 
         # Rename parquet column names (2t, 2d, skt, …) to QC parameter names (T_2M, TD_2M, T_G, …)
-        col_to_qc = {col: para for col, (para, _) in _qc_config.parquet_to_qc.items()}
+        col_to_qc = {col: para for col, (para, _) in self._qc_config.parquet_to_qc.items()}
         df_res = df_res.rename(columns=col_to_qc)
         LOG.debug("Residuals columns after rename: %s", list(df_res.columns))
 
@@ -1349,7 +1405,7 @@ class CleanObservation(Filter):
             getattr(self, "_qc_diagnostics", {}),
             df,
             self.obs_path_out,
-            _qc_config.par2check,
-            _qc_config.qc_to_parquet,
-            _qc_config.parquet_to_qc,
+            self._qc_config.par2check,
+            self._qc_config.qc_to_parquet,
+            self._qc_config.parquet_to_qc,
         )

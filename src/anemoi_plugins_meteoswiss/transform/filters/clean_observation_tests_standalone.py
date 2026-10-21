@@ -38,6 +38,7 @@ Flag values returned by fgt_raw / sct_resistant_raw (mirrors titanlib):
 from __future__ import annotations
 
 import warnings
+
 import numpy as np
 from scipy.optimize import minimize
 from scipy.spatial import KDTree  # haversine queries via ECEF unit-sphere projection

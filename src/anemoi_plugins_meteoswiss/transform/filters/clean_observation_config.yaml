@@ -134,7 +134,7 @@ buddy:
   TD_2M:
     radius: 100000
     num_min: 2
-    threshold: [6.0, 4.5]
+    threshold: [6.0, 4.0]
     max_elev_diff: 700
     elev_gradient: -0.0065
     min_std: 2
@@ -150,7 +150,7 @@ buddy:
   SP_10M:
     radius: 100000
     num_min: 2
-    threshold: [9.5, 9.0]
+    threshold: [9.5, 8.5]
     max_elev_diff: 500
     elev_gradient: 0.0015
     min_std: 2
@@ -158,7 +158,7 @@ buddy:
   VMAX10M:
     radius: 100000
     num_min: 2
-    threshold: [9.5, 9.0]
+    threshold: [9.5, 8.5]
     max_elev_diff: 500
     elev_gradient: 0.0015
     min_std: 2
@@ -193,7 +193,7 @@ buddy_diff:
   TD_2M:
     radius: 100000
     num_min: 2
-    threshold: [6.0, 4.5]
+    threshold: [6.0, 4.0]
     max_elev_diff: 700
     elev_gradient: 0
     min_std: 2
@@ -209,7 +209,7 @@ buddy_diff:
   SP_10M:
     radius: 100000
     num_min: 2
-    threshold: [9.5, 9.0]
+    threshold: [9.5, 8.5]
     max_elev_diff: 500
     elev_gradient: 0
     min_std: 2
@@ -217,7 +217,7 @@ buddy_diff:
   VMAX10M:
     radius: 100000
     num_min: 2
-    threshold: [9.5, 9.0]
+    threshold: [9.5, 8.5]
     max_elev_diff: 500
     elev_gradient: 0
     min_std: 2

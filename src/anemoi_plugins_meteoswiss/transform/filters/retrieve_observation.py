@@ -8,8 +8,9 @@ from anemoi.transform.filter import Filter
 
 LOG = logging.getLogger(__name__)
 
-# GRIB shortName -> station DataFrame column
-_PARAM_TO_COL = {
+# ICON GRIB shortName -> ECMWF shortName, used as the station column name
+# ("vmax" has no ECMWF equivalent)
+_ICON_TO_ECMWF_NAME = {
     "T_2M": "2t",
     "TD_2M": "2d",
     "U_10M": "10u",
@@ -41,8 +42,6 @@ class RetrieveObservation(Filter):
     Retrieves the DWH parameters required for the requested variables,
     applies unit conversions to SI (°C→K, hPa→Pa, speed+direction→U/V),
     and saves the result as a Parquet file for use by the nudging filter.
-    The data is passed through unchanged; this filter is used for its
-    side effect of writing the observations file before nudging runs.
 
     Parameters
     ----------
@@ -71,33 +70,41 @@ class RetrieveObservation(Filter):
         obs_path: str,
         jretrieve_src_path: str,
         bbox: list = None,
+        station_group: str = None,
+        retrieval_bbox: list = None,
         variables: list = None,
         use_limitation: int = None,
         run_mode: str = "depl",
     ):
         if run_mode not in ("devt", "depl"):
             raise ValueError(f"run_mode must be 'devt' or 'depl', got {run_mode!r}")
+        if station_group is not None and retrieval_bbox is not None:
+            raise ValueError("Specify at most one of 'station_group' or 'retrieval_bbox', not both.")
 
         self.obs_path = obs_path
         self.jretrieve_src_path = str(jretrieve_src_path)
-        self.bbox = bbox if bbox is not None else [40.5, 53.0, 0.0, 17.5]
+        self.station_group = station_group
+        self.retrieval_bbox = (
+            retrieval_bbox if (retrieval_bbox is not None or station_group is not None) else [40.5, 53.0, 0.0, 17.5]
+        )
         self.use_limitation = use_limitation
         self.run_mode = run_mode
+        self._retrieved_ref_time = None
 
         if variables is not None:
-            unknown = set(variables) - _PARAM_TO_COL.keys()
+            unknown = set(variables) - _ICON_TO_ECMWF_NAME.keys()
             if unknown:
-                raise ValueError(
-                    f"Unknown variables: {unknown}. Valid: {list(_PARAM_TO_COL)}"
-                )
-            self.cols = {_PARAM_TO_COL[v] for v in variables}
+                raise ValueError(f"Unknown variables: {unknown}. Valid: {list(_ICON_TO_ECMWF_NAME)}")
+            self.ecmwf_names = {_ICON_TO_ECMWF_NAME[v] for v in variables}
         else:
-            self.cols = set(_PARAM_TO_COL.values())
+            self.ecmwf_names = set(_ICON_TO_ECMWF_NAME.values())
 
         super().__init__()
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
         """Retrieve observations and write Parquet, then return *data* unchanged.
+        Used to trigger the retrieval with the correct time stamp (ref_time).
+        Observations are retrieved only once per ref_time.
 
         Parameters
         ----------
@@ -121,19 +128,17 @@ class RetrieveObservation(Filter):
     def _retrieve(self, ref_time) -> None:
         if self.jretrieve_src_path not in sys.path:
             sys.path.insert(0, self.jretrieve_src_path)
-        import jretrieve as jr
+        from data_input import jretrieve as jr
 
-        jr_params = list(
-            dict.fromkeys(
-                p for col in self.cols for p in _COL_TO_JR_PARAMS.get(col, [])
-            )
-        )
+        jr_params = list(dict.fromkeys(p for name in self.ecmwf_names for p in _ECMWF_NAME_TO_DWH_PARAMS.get(name, [])))
         if not jr_params:
-            raise ValueError(f"No jretrieve parameters found for columns: {self.cols}")
+            raise ValueError(f"No jretrieve parameters found for variables: {self.ecmwf_names}")
 
         jr.check_prerequisites()
 
-        stations_sel = {"bbox": self.bbox}
+        stations_sel = (
+            {"group": self.station_group} if self.station_group is not None else {"bbox": self.retrieval_bbox}
+        )
         meta = jr.fetch_meta(stations=stations_sel, params=jr_params)
         catalog = jr.StationCatalog.from_meta(meta)
         LOG.info("Station catalog: %d stations", catalog.n)
@@ -160,6 +165,9 @@ class RetrieveObservation(Filter):
         df["altitude"] = df["station"].map(
             dict(zip(catalog.station_id, catalog.elevation))
         )
+            stage="prod",
+        )
+        
         df = df.dropna(subset=["nat_abbr"]).set_index("nat_abbr")
         df.index.name = "station"
 

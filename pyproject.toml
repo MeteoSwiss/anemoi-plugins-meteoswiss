@@ -7,6 +7,7 @@ authors = [{ name = "MeteoSwiss" }]
 requires-python = ">=3.11"
 dependencies = [
     "anemoi-datasets",
+    "anemoi-inference",
     "anemoi-plugins==0.2.0",
     "anemoi-transform",
     "earthkit-meteo==1.0.0",
@@ -14,6 +15,18 @@ dependencies = [
     "earthkit-data==0.19.2",
     "earthkit-utils ==1.0.2",
     "pyyaml",
+    "eccodes>=2.44,<2.48",
+    "eccodes-cosmo-resources-python>=2.44,<2.48",
+    "eccodeslib>=2.44,<2.48",
+]
+
+[project.optional-dependencies]
+oper-inference = [
+    "anemoi-inference>=0.11",
+    "anemoi-plugins-ecmwf-inference[opendata]>=0.7.0",
+    "ecmwf-opendata>=0.3.30",
+    "filelock",
+    "requests",
 ]
 
 [project.scripts]
@@ -28,6 +41,7 @@ clean-observation = "anemoi_plugins_meteoswiss.transform.filters:CleanObservatio
 copy-prognostic-from-forecaster = "anemoi_plugins_meteoswiss.transform.filters:CopyPrognosticFromForecaster"
 nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
 retrieve-observation = "anemoi_plugins_meteoswiss.transform.filters:RetrieveObservation"
+keep = "anemoi_plugins_meteoswiss.transform.filters:Keep"
 
 [project.entry-points."anemoi.transform.filters.fields"]
 nudge-toward-observation = "anemoi_plugins_meteoswiss.transform.filters:NudgeTowardObservation"
@@ -35,10 +49,18 @@ gaussian-smoother = "anemoi_plugins_meteoswiss.transform.filters:GaussianSmoothe
 icon-remap-to-reg-lat-lon = "anemoi_plugins_meteoswiss.transform.filters:IconRemapToRegLatLon"
 retrieve-observation = "anemoi_plugins_meteoswiss.transform.filters:RetrieveObservation"
 clean-observation = "anemoi_plugins_meteoswiss.transform.filters:CleanObservation"
+surface-diagnostics = "anemoi_plugins_meteoswiss.transform.filters:SurfaceDiagnostics"
+
+[project.entry-points."anemoi.inference.outputs"]
+grib-with-step-zero = "anemoi_plugins_meteoswiss.outputs:GribWithStepZero"
 
 [project.entry-points."anemoi.datasets.create.sources"]
 rea-l-ch1-precip = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1Precip"
 rea-l-ch1-wind-gust = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1WindGust"
+
+[project.entry-points."anemoi.inference.inputs"]
+oper-ecmwf-opendata = "anemoi_plugins_meteoswiss.inference.inputs:OperEcmwfOpenDataInput"
+oper-kenda-opendata = "anemoi_plugins_meteoswiss.inference.inputs:OperKendaOpenDataInput"
 
 [build-system]
 requires = ["hatchling"]
@@ -46,6 +68,14 @@ build-backend = "hatchling.build"
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+[tool.ruff]
+line-length = 120
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: hits real external services (ECMWF Open Data, MeteoSwiss STAC); opt in with RUN_INTEGRATION_TESTS=1",
+]
 
 [dependency-groups]
 dev = [

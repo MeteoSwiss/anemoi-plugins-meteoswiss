@@ -61,13 +61,13 @@ stages:
   script:
     - |
       banner "uv sync"
-      uv sync --dev
+      uv sync --all-extras --dev
 
 .pytest:
   script:
     - |
       banner "pytest"
-      uv run pytest
+      uv run --no-sync pytest
 
 # ── pipeline ─────────────────────────────────────────────────────────────────
 

@@ -37,10 +37,7 @@ class GaussianSmoother(Filter):
 
     def forward(self, data: ekd.FieldList) -> ekd.FieldList:
         return new_fieldlist_from_list(
-            [
-                smooth(x, self.sigma) if self.matches(x.metadata("param")) else x
-                for x in data
-            ]
+            [smooth(x, self.sigma) if self.matches(x.metadata("param")) else x for x in data]
         )
 
 

@@ -8,7 +8,7 @@
 # https://github.com/MeteoSwiss/varda-cscs-ci-workflows; which cluster the job lands
 # on is decided there (cluster.yml), not here.
 include:
-  - remote: 'https://raw.githubusercontent.com/MeteoSwiss/varda-cscs-ci-workflows/init/v1/.ci-ext-mch.yml'
+  - remote: 'https://raw.githubusercontent.com/MeteoSwiss/varda-cscs-ci-workflows/main/v1/.ci-ext-mch.yml'
 
 stages:
   - test

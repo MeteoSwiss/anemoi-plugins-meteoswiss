@@ -22,8 +22,8 @@ _ICON_TO_ECMWF_NAME = {
     "T_G": "skt",
 }
 
-# Station column -> DWH (jretrieve) parameter names
-_COL_TO_JR_PARAMS = {
+# ECMWF shortName -> DWH (jretrieve) parameter names
+_ECMWF_NAME_TO_DWH_PARAMS = {
     "2t": ["tre200s0"],
     "2d": ["tde200s0"],
     "10u": ["fkl010z0", "dkl010z0"],
@@ -165,9 +165,7 @@ class RetrieveObservation(Filter):
         df["altitude"] = df["station"].map(
             dict(zip(catalog.station_id, catalog.elevation))
         )
-            stage="prod",
-        )
-        
+
         df = df.dropna(subset=["nat_abbr"]).set_index("nat_abbr")
         df.index.name = "station"
 
@@ -204,7 +202,7 @@ class RetrieveObservation(Filter):
         df = df.rename(columns={k: v for k, v in _PI_RENAME.items() if k in df.columns})
         pi_cols = [c for c in df.columns if c.endswith("_pi")]
 
-        result_cols = [c for c in self.cols if c in df.columns] + [
+        result_cols = [c for c in self.ecmwf_names if c in df.columns] + [
             "latitude",
             "longitude",
             "altitude",

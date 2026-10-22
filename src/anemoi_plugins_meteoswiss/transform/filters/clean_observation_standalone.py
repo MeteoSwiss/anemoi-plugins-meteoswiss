@@ -54,10 +54,10 @@ except ImportError:
 
 from .clean_observation import CleanObservation  # noqa: E402
 from .clean_observation_tests_standalone import buddy_check_py as _buddy_check  # noqa: E402
-from .clean_observation_tests_standalone import first_guess_test_py as _first_guess_test
-from .clean_observation_tests_standalone import isolation_check_py as _isolation_check
-from .clean_observation_tests_standalone import sct_dual_py as _spacial_ct_dual
-from .clean_observation_tests_standalone import sct_resistant_py as _spacial_ct_resistant
+from .clean_observation_tests_standalone import first_guess_test_py as _first_guess_test  # noqa: E402
+from .clean_observation_tests_standalone import isolation_check_py as _isolation_check  # noqa: E402
+from .clean_observation_tests_standalone import sct_dual_py as _spacial_ct_dual  # noqa: E402
+from .clean_observation_tests_standalone import sct_resistant_py as _spacial_ct_resistant  # noqa: E402
 
 
 class CleanObservationStandalone(CleanObservation):

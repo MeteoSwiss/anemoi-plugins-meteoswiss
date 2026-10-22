@@ -184,6 +184,11 @@ class RetrieveObservation(Filter):
         if "tre005s0" in df.columns:
             df["skt"] = df["tre005s0"] + 273.15
 
+        # jretrieve returns one `pi` column per param (pandas auto-renames duplicates
+        # to pi.1, pi.2, …). Map them back to {param}_pi before the output rename.
+        raw_pi_cols = ["pi"] + [f"pi.{i}" for i in range(1, len(jr_params))]
+        df = df.rename(columns={raw: f"{param}_pi" for raw, param in zip(raw_pi_cols, jr_params) if raw in df.columns})
+
         # Rename DWH plausibility columns ({param}_pi, range 0–1) to output names
         _PI_RENAME = {
             "tre200s0_pi": "2t_pi",

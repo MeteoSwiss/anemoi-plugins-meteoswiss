@@ -155,7 +155,11 @@ def test_write_initial_state_raises_on_grid_shape_mismatch(data_dir, tmp_path):
         path=str(tmp_path / "out.grib"),
         step_zero_template=str(data_dir / "iaf2025010100"),
     )
-    state = initial_state(n_points=1)
+    output.typed_variables = {"FIS": VAR_FIS}
+    state = initial_state(
+        fields={"FIS": np.zeros(1)},
+        _grib_templates_for_output={"FIS": output.step_zero_template_index["T"]},
+    )
     with pytest.raises(ValueError, match="different domain or resolution"):
         output.write_initial_state(state)
 
@@ -187,14 +191,22 @@ def test_write_initial_state_checks_shape_after_post_processing(output):
 
     def drop_global_points(state):
         state = state.copy()
+        state["fields"] = {name: values[:N_POINTS] for name, values in state["fields"].items()}
         state["latitudes"] = state["latitudes"][:N_POINTS]
         state["longitudes"] = state["longitudes"][:N_POINTS]
         return state
 
     output.post_process = drop_global_points
-    output.write_initial_state(initial_state(n_points=N_POINTS + n_global))
+    output.typed_variables = {"FIS": VAR_FIS}
+    output.write_initial_state(
+        initial_state(
+            n_points=N_POINTS + n_global,
+            fields={"FIS": np.zeros(N_POINTS + n_global)},
+            _grib_templates_for_output={"FIS": output.step_zero_template_index["T"]},
+        )
+    )
     output.close()
 
     written = list(ekd.from_source("file", output.out))
-    assert [f.metadata("shortName") for f in written] == ["T_2M"]
-    assert written[0].to_numpy(flatten=True).shape == (N_POINTS,)
+    assert [f.metadata("shortName") for f in written] == ["FIS", "T_2M"]
+    assert written[1].to_numpy(flatten=True).shape == (N_POINTS,)

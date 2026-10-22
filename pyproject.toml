@@ -23,7 +23,7 @@ dependencies = [
 oper-inference = [
     "anemoi-inference>=0.11",
     "anemoi-plugins-ecmwf-inference[opendata]>=0.7.0",
-    "ecmwf-opendata",
+    "ecmwf-opendata>=0.3.30",
     "filelock",
     "requests",
 ]

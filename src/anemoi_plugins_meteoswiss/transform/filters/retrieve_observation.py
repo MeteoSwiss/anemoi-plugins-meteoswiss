@@ -121,8 +121,12 @@ class RetrieveObservation(Filter):
             if self.run_mode == "devt"
             else min(f.datetime()["valid_time"] for f in data)
         )
+        if ref_time == self._retrieved_ref_time:
+            LOG.debug("Observations already retrieved for %s, skipping", ref_time)
+            return data
         LOG.info("Retrieving observations for %s", ref_time)
         self._retrieve(ref_time)
+        self._retrieved_ref_time = ref_time
         return data
 
     def _retrieve(self, ref_time) -> None:

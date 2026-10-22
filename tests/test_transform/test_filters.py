@@ -13,11 +13,11 @@ from earthkit.meteo.thermo import wet_bulb_temperature_from_dewpoint
 from earthkit.meteo.thermo import wet_bulb_temperature_from_specific_humidity
 
 from anemoi_plugins_meteoswiss.transform import filters
+from anemoi_plugins_meteoswiss.transform.filters import DeriveDiagnostic
 from anemoi_plugins_meteoswiss.transform.filters import GaussianSmoother
 from anemoi_plugins_meteoswiss.transform.filters import IconRemapToRegLatLon
 from anemoi_plugins_meteoswiss.transform.filters import Keep
 from anemoi_plugins_meteoswiss.transform.filters import ModelToPressureLevel
-from anemoi_plugins_meteoswiss.transform.filters import SurfaceDiagnostics
 
 ICONREMAP_WEIGHTS = "/store_new/mch/msopr/icon_workflow_2/iconremap-weights/icon-ch1-eps-rotlatlon.nc"
 
@@ -118,14 +118,14 @@ def _synthetic_components(data_dir):
     return fieldlist, u_values, v_values, t_values, td_values
 
 
-def test_surface_diagnostics_all_variables(data_dir):
+def test_derive_diagnostic_all_variables(data_dir):
     fieldlist, u_values, v_values, t_values, td_values = _synthetic_components(data_dir)
 
-    diagnostics = SurfaceDiagnostics(
-        u_component="10u",
-        v_component="10v",
-        temperature="2t",
-        dewpoint="2d",
+    diagnostics = DeriveDiagnostic(
+        u_10m="10u",
+        v_10m="10v",
+        temperature_2m="2t",
+        dewpoint_2m="2d",
         variables=["SP_10M", "DD_10M", "RELHUM_2M"],
     )
     result = diagnostics.forward(fieldlist)
@@ -150,16 +150,53 @@ def test_surface_diagnostics_all_variables(data_dir):
     np.testing.assert_allclose(by_param["RELHUM_2M"].to_numpy(flatten=True), expected_rh)
 
 
-def test_surface_diagnostics_subset_of_variables(data_dir):
+def test_derive_diagnostic_supersaturation_capped(data_dir):
+    template = ekd.from_source("file", str(data_dir / "iaf2025010100")).sel(shortName="T_2M")[0]
+    n = template.to_numpy(flatten=True).size
+    rng = np.random.default_rng(1)
+    t_values = rng.uniform(250.0, 300.0, n)
+    # Dewpoint up to 2 K above the temperature, as the model sometimes predicts.
+    td_values = t_values + rng.uniform(-5.0, 2.0, n)
+    sp_values = rng.uniform(70_000.0, 102_000.0, n)
+    fieldlist = new_fieldlist_from_list(
+        [
+            new_field_from_numpy(t_values, template=template, param="2t", shortName="2t"),
+            new_field_from_numpy(td_values, template=template, param="2d", shortName="2d"),
+            new_field_from_numpy(sp_values, template=template, param="sp", shortName="sp"),
+        ]
+    )
+
+    result = DeriveDiagnostic(
+        temperature_2m="2t", dewpoint_2m="2d", surface_pressure="sp", variables=["RELHUM_2M", "TW_2M"]
+    ).forward(fieldlist)
+    by_param = {f.metadata("param"): f for f in result}
+
+    rh = by_param["RELHUM_2M"].to_numpy(flatten=True)
+    tw = by_param["TW_2M"].to_numpy(flatten=True)
+    supersaturated = td_values > t_values
+    assert supersaturated.any() and (~supersaturated).any()
+    assert np.all(rh <= 100.0)
+    np.testing.assert_allclose(rh[supersaturated], 100.0)
+    np.testing.assert_allclose(
+        rh[~supersaturated], relative_humidity_from_dewpoint(t_values, td_values)[~supersaturated]
+    )
+    # TD_2M <= TW_2M <= T_2M, up to the GRIB packing precision of the template.
+    assert np.all(tw <= t_values + 1e-3) and np.all(tw >= np.minimum(td_values, t_values) - 1e-3)
+    np.testing.assert_allclose(tw[supersaturated], t_values[supersaturated], atol=1e-3)
+    # The dewpoint itself is passed through unchanged.
+    np.testing.assert_array_equal(by_param["2d"].to_numpy(flatten=True), td_values)
+
+
+def test_derive_diagnostic_subset_of_variables(data_dir):
     fieldlist, u_values, v_values, t_values, td_values = _synthetic_components(data_dir)
 
     # Only SP_10M requested: DD_10M and RELHUM_2M are skipped, and
     # temperature/dewpoint are not matched but passed through.
-    diagnostics = SurfaceDiagnostics(
-        u_component="10u",
-        v_component="10v",
-        temperature="2t",
-        dewpoint="2d",
+    diagnostics = DeriveDiagnostic(
+        u_10m="10u",
+        v_10m="10v",
+        temperature_2m="2t",
+        dewpoint_2m="2d",
         variables="SP_10M",
     )
     result = diagnostics.forward(fieldlist)
@@ -171,37 +208,37 @@ def test_surface_diagnostics_subset_of_variables(data_dir):
     np.testing.assert_allclose(by_param["SP_10M"].to_numpy(flatten=True), expected_speed)
 
 
-def test_surface_diagnostics_requires_at_least_one_variable():
+def test_derive_diagnostic_requires_at_least_one_variable():
     with pytest.raises(ValueError, match="at least one"):
-        SurfaceDiagnostics(
-            u_component="10u",
-            v_component="10v",
-            temperature="2t",
-            dewpoint="2d",
+        DeriveDiagnostic(
+            u_10m="10u",
+            v_10m="10v",
+            temperature_2m="2t",
+            dewpoint_2m="2d",
             variables=[],
         )
 
 
-def test_surface_diagnostics_rejects_unknown_variable():
+def test_derive_diagnostic_rejects_unknown_variable():
     with pytest.raises(ValueError, match="Unsupported variable"):
-        SurfaceDiagnostics(
-            u_component="10u",
-            v_component="10v",
-            temperature="2t",
-            dewpoint="2d",
+        DeriveDiagnostic(
+            u_10m="10u",
+            v_10m="10v",
+            temperature_2m="2t",
+            dewpoint_2m="2d",
             variables=["TOT_PREC"],
         )
 
 
-def test_surface_diagnostics_requires_inputs_of_requested_variables():
+def test_derive_diagnostic_requires_inputs_of_requested_variables():
     with pytest.raises(ValueError, match="surface_pressure"):
-        SurfaceDiagnostics(temperature="2t", dewpoint="2d", variables=["TW_2M"])
+        DeriveDiagnostic(temperature_2m="2t", dewpoint_2m="2d", variables=["TW_2M"])
 
 
-def test_surface_diagnostics_vertical_requires_orography():
+def test_derive_diagnostic_vertical_requires_orography():
     with pytest.raises(ValueError, match="orography_file"):
-        SurfaceDiagnostics(
-            temperature="2t",
+        DeriveDiagnostic(
+            temperature_2m="2t",
             surface_pressure="sp",
             temperature_levels="t",
             geopotential_levels="z",
@@ -303,18 +340,15 @@ def _reference_uppermost_crossing(surface_values, level_values, threshold):
 def _melting_layer():
     """SNOWLMT and the internal MELTLAYER_TOP of the test columns, from the
     filter's own height-level helper (MELTLAYER_TOP is not an output)."""
-    from anemoi_plugins_meteoswiss.transform.filters.surface_diagnostics import _height_levels
+    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _snow_and_melting_levels
 
     pressure = np.array(_LEVELS, dtype=float) * 100.0
     tw_levels = wet_bulb_temperature_from_specific_humidity(
         _T_LEVELS.ravel(), _Q_LEVELS.ravel(), np.repeat(pressure, 4)
     ).reshape(_T_LEVELS.shape)
-    return _height_levels(
-        ["SNOWLMT", "MELTLAYER_TOP"],
-        t_2m=_T_2M,
+    return _snow_and_melting_levels(
         tw_2m=wet_bulb_temperature_from_dewpoint(_T_2M, _TD_2M, _SP),
         orography=_OROGRAPHY,
-        t_levels=_T_LEVELS,
         tw_levels=tw_levels,
         level_heights=np.repeat(np.array(_LEVEL_HEIGHTS)[:, None], 4, axis=1),
         above_ground=pressure[:, None] < _SP[None, :],
@@ -322,9 +356,9 @@ def _melting_layer():
 
 
 def _vertical_diagnostics(orography_file, variables, **kwargs):
-    return SurfaceDiagnostics(
-        temperature="2t",
-        dewpoint="2d",
+    return DeriveDiagnostic(
+        temperature_2m="2t",
+        dewpoint_2m="2d",
         surface_pressure="sp",
         temperature_levels="t",
         specific_humidity_levels="q",
@@ -335,9 +369,9 @@ def _vertical_diagnostics(orography_file, variables, **kwargs):
     )
 
 
-def test_surface_diagnostics_tw_2m():
+def test_derive_diagnostic_tw_2m():
     fieldlist = _vertical_fieldlist()
-    result = SurfaceDiagnostics(temperature="2t", dewpoint="2d", surface_pressure="sp", variables="TW_2M").forward(
+    result = DeriveDiagnostic(temperature_2m="2t", dewpoint_2m="2d", surface_pressure="sp", variables="TW_2M").forward(
         fieldlist
     )
 
@@ -349,7 +383,7 @@ def test_surface_diagnostics_tw_2m():
     assert len(result) == len(fieldlist) + 1
 
 
-def test_surface_diagnostics_vertical_keeps_pressure_levels(orography_file):
+def test_derive_diagnostic_vertical_keeps_pressure_levels(orography_file):
     fieldlist = _vertical_fieldlist()
     result = _vertical_diagnostics(orography_file, ["TW_2M", "HZEROCL", "SNOWLMT"]).forward(fieldlist)
 
@@ -364,7 +398,7 @@ def test_surface_diagnostics_vertical_keeps_pressure_levels(orography_file):
     np.testing.assert_array_equal(t_850.to_numpy(flatten=True), _tiled(_T_LEVELS[1]))
 
 
-def test_surface_diagnostics_rejects_orography_size_mismatch(tmp_path):
+def test_derive_diagnostic_rejects_orography_size_mismatch(tmp_path):
     import xarray as xr
 
     path = tmp_path / "extpar.nc"
@@ -373,7 +407,7 @@ def test_surface_diagnostics_rejects_orography_size_mismatch(tmp_path):
         _vertical_diagnostics(path, ["HZEROCL"]).forward(_vertical_fieldlist())
 
 
-def test_surface_diagnostics_height_levels(orography_file):
+def test_derive_diagnostic_height_levels(orography_file):
     result = _vertical_diagnostics(orography_file, ["HZEROCL", "SNOWLMT"]).forward(_vertical_fieldlist())
 
     by_name = {f.metadata("param"): f.to_numpy(flatten=True)[:4] for f in result}
@@ -407,7 +441,7 @@ def test_surface_diagnostics_height_levels(orography_file):
 
 
 def test_cape_cin_integration():
-    from anemoi_plugins_meteoswiss.transform.filters.surface_diagnostics import _cape_cin
+    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _integrate_cape_cin
 
     # Four columns, bottom-up, 1000 m apart; buoyancy is linear between points.
     height = np.repeat(np.arange(0.0, 5000.0, 1000.0)[:, None], 4, axis=1)
@@ -422,27 +456,27 @@ def test_cape_cin_integration():
             [-0.01, 0.01, 0.01, -0.03],
         ]
     )
-    cape, cin = _cape_cin(buoyancy, height, pressure, p_lcl, pressure[0])
+    cape, cin = _integrate_cape_cin(buoyancy, height, pressure, p_lcl, pressure[0])
 
-    # 0: LFC and EL mid-segment: CAPE = 2.5 + 10 + 2.5, CIN = -5 - 2.5.
+    # 0: LFC and EL mid-segment: CAPE = 2.5 + 10 + 2.5, CIN = 5 + 2.5.
     # 1: positive buoyancy below the LCL (superadiabatic) is ignored; LFC above
-    #    the LCL, no EL: CAPE = 2.5 + 10, CIN = -2.5 - 2.5.
-    # 2: buoyant at the LCL itself: LFC at the LCL, CAPE = 10 + 10, CIN = -5 - 2.5.
+    #    the LCL, no EL: CAPE = 2.5 + 10, CIN = 2.5 + 2.5.
+    # 2: buoyant at the LCL itself: LFC at the LCL, CAPE = 10 + 10, CIN = 5 + 2.5.
     # 3: never buoyant: no LFC, CAPE 0 and CIN missing.
     np.testing.assert_allclose(cape, [15.0, 12.5, 20.0, 0.0])
-    np.testing.assert_allclose(cin, [-7.5, -5.0, -7.5, np.nan])
+    np.testing.assert_allclose(cin, [7.5, 5.0, 7.5, np.nan])
 
 
 def test_cape_cin_ignores_layers_below_parcel_start():
-    from anemoi_plugins_meteoswiss.transform.filters.surface_diagnostics import _cape_cin
+    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _integrate_cape_cin
 
     height = np.arange(0.0, 5000.0, 1000.0)[:, None]
     pressure = np.array([100000.0, 90000.0, 80000.0, 70000.0, 60000.0])[:, None]
     buoyancy = np.array([[0.0], [-0.02], [0.0], [0.01], [0.01]])
     # Parcel starting at 900 hPa with its LCL there: the negative layer below
     # 900 hPa doesn't count as CIN.
-    cape, cin = _cape_cin(buoyancy, height, pressure, np.array([90000.0]), np.array([90000.0]))
-    np.testing.assert_allclose(cin, [-10.0])
+    cape, cin = _integrate_cape_cin(buoyancy, height, pressure, np.array([90000.0]), np.array([90000.0]))
+    np.testing.assert_allclose(cin, [10.0])
     np.testing.assert_allclose(cape, [15.0])
 
 
@@ -450,7 +484,7 @@ def test_mixed_layer_parcel():
     from earthkit.meteo.thermo import potential_temperature
     from earthkit.meteo.thermo import temperature_from_potential_temperature
 
-    from anemoi_plugins_meteoswiss.transform.filters.surface_diagnostics import _mixed_layer_parcel
+    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _mixed_layer_parcel
 
     # Surface at 1000 hPa, levels at 975 and 900 hPa: the 50 hPa layer spans
     # the surface, 975 hPa and the 950 hPa point interpolated in log p.
@@ -470,7 +504,7 @@ def test_mixed_layer_parcel():
 
 
 def test_most_unstable_parcel():
-    from anemoi_plugins_meteoswiss.transform.filters.surface_diagnostics import _most_unstable_parcel
+    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _most_unstable_parcel
 
     # Column 0: moist surface. Column 1: cold, dry surface under warm, moist
     # air at 850 hPa. Column 2: the most energetic air (500 hPa) is above
@@ -485,7 +519,7 @@ def test_most_unstable_parcel():
 
 
 @pytest.mark.parametrize("kind", ["ML", "MU"])
-def test_surface_diagnostics_cape_cin(orography_file, kind):
+def test_derive_diagnostic_cape_cin(orography_file, kind):
     fieldlist = _vertical_fieldlist()
     result = _vertical_diagnostics(orography_file, [f"CAPE_{kind}", f"CIN_{kind}"]).forward(fieldlist)
 
@@ -494,13 +528,13 @@ def test_surface_diagnostics_cape_cin(orography_file, kind):
     cape = next(f for f in result if f.metadata("param") == f"CAPE_{kind}").to_numpy(flatten=True)[:4]
     cin = next(f for f in result if f.metadata("param") == f"CIN_{kind}").to_numpy(flatten=True)[:4]
     assert np.all(cape >= 0.0)
-    assert np.all(np.isnan(cin) | (cin <= 0.0))
+    assert np.all(np.isnan(cin) | (cin >= 0.0))
     # Without an LFC there is no CAPE and CIN is missing; e.g. the column below 0 degC.
     assert cape[2] == 0.0 and np.isnan(cin[2])
     np.testing.assert_array_equal(np.isnan(cin), cape == 0.0)
 
 
-def test_surface_diagnostics_cape_cin_ml_and_mu(orography_file):
+def test_derive_diagnostic_cape_cin_ml_and_mu(orography_file):
     result = _vertical_diagnostics(orography_file, ["CAPE_ML", "CIN_ML", "CAPE_MU", "CIN_MU"]).forward(
         _vertical_fieldlist()
     )
@@ -516,7 +550,7 @@ def test_surface_diagnostics_cape_cin_ml_and_mu(orography_file):
 
 
 def test_precipitation_type():
-    from anemoi_plugins_meteoswiss.transform.filters.surface_diagnostics import _precipitation_type
+    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _precipitation_type
 
     # SNOWLMT 1000 m, MELTLAYER_TOP 1100 m: melting-layer depth clamped to 150 m.
     n = 8
@@ -527,13 +561,13 @@ def test_precipitation_type():
     ground = np.array([270.0, 270.0, 272.0, 274.0, 280.0, 272.15, 272.15, 280.0])
     prec_type = _precipitation_type(rate, snowlmt, meltlayer_top, t_2m, ground_temperature=ground, orography=orography)
     # none (< 0.1 mm/h), snow, mixed above / below SNOWLMT, rain, freezing rain,
-    # rain on frozen ground under air above 0.5 degC, missing rate.
-    np.testing.assert_array_equal(prec_type, [0, 3, 2, 2, 1, 4, 1, np.nan])
+    # rain on frozen ground under air above 0.5 degC, missing rate (WMO code table 4.201).
+    np.testing.assert_array_equal(prec_type, [0, 5, 7, 7, 1, 3, 1, np.nan])
 
 
 @pytest.mark.parametrize(("method", "expected"), [("linear", [0.0, 0.5, 1.0]), ("logistic", [0.0, 0.5, 1.0])])
 def test_snow_fraction(method, expected):
-    from anemoi_plugins_meteoswiss.transform.filters.surface_diagnostics import _snow_fraction
+    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _snow_fraction
 
     # Melting layer 300 m deep above SNOWLMT at 1000 m.
     fraction = _snow_fraction(np.full(3, 1000.0), np.full(3, 1300.0), np.array([900.0, 1150.0, 1400.0]), method)
@@ -551,11 +585,13 @@ def _with_precipitation(total, hours):
     return new_fieldlist_from_list(fields)
 
 
-def test_surface_diagnostics_precipitation_type_and_snow(orography_file):
-    from anemoi_plugins_meteoswiss.transform.filters.surface_diagnostics import _precipitation_type
-    from anemoi_plugins_meteoswiss.transform.filters.surface_diagnostics import _snow_fraction
+def test_derive_diagnostic_precipitation_type_and_snow(orography_file):
+    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _precipitation_type
+    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _snow_fraction
 
-    diagnostics = _vertical_diagnostics(orography_file, ["SNOWLMT", "PREC_TYPE", "TOT_SNOW"], precipitation="tp")
+    diagnostics = _vertical_diagnostics(
+        orography_file, ["SNOWLMT", "PTYPE", "TOT_SNOW"], accumulated_precipitation="tp"
+    )
 
     def step(total, hours):
         result = diagnostics.forward(_with_precipitation(total, hours))
@@ -563,40 +599,73 @@ def test_surface_diagnostics_precipitation_type_and_snow(orography_file):
 
     # First step: no previous precipitation.
     first = step(0.0, 0)
-    assert np.all(np.isnan(first["PREC_TYPE"]))
+    assert np.all(np.isnan(first["PTYPE"]))
     np.testing.assert_array_equal(first["TOT_SNOW"], 0.0)
 
     # 3 mm in 1 h everywhere.
     second = step(3.0, 1)
     zs, zm = second["SNOWLMT"], _melting_layer()["MELTLAYER_TOP"]
     np.testing.assert_array_equal(
-        second["PREC_TYPE"],
+        second["PTYPE"],
         _precipitation_type(np.full(4, 3.0), zs, zm, _T_2M, ground_temperature=_T_2M, orography=_OROGRAPHY),
     )
     snow = 3.0 * _snow_fraction(zs, zm, _OROGRAPHY, "linear")
     np.testing.assert_allclose(second["TOT_SNOW"], snow)
     # The cold column snows; the lowland column rains.
-    assert second["PREC_TYPE"][2] == 3 and second["PREC_TYPE"][0] == 1
+    assert second["PTYPE"][2] == 5 and second["PTYPE"][0] == 1
 
     # No precipitation in the next hour: type 0, snow unchanged.
     third = step(3.0, 2)
-    np.testing.assert_array_equal(third["PREC_TYPE"], 0)
+    np.testing.assert_array_equal(third["PTYPE"], 0)
     np.testing.assert_allclose(third["TOT_SNOW"], snow)
 
     # A new forecast (lead time back to 0) starts over.
     restart = step(0.0, 0)
-    assert np.all(np.isnan(restart["PREC_TYPE"]))
+    assert np.all(np.isnan(restart["PTYPE"]))
     np.testing.assert_array_equal(restart["TOT_SNOW"], 0.0)
 
 
-def test_surface_diagnostics_rejects_meltlayer_top(orography_file):
+def test_derive_diagnostic_initial_state_without_precipitation(orography_file):
+    """The initial state has no precipitation yet: it is taken as 0 there."""
+    from datetime import timedelta
+
+    diagnostics = _vertical_diagnostics(
+        orography_file, ["SNOWLMT", "PTYPE", "TOT_SNOW"], accumulated_precipitation="tp"
+    )
+
+    initial = {
+        f.metadata("param"): f.to_numpy(flatten=True)[:4]
+        for f in diagnostics.forward(_vertical_fieldlist(step=timedelta(0)))
+    }
+    assert "tp" not in initial
+    assert np.all(np.isnan(initial["PTYPE"]))
+    np.testing.assert_array_equal(initial["TOT_SNOW"], 0.0)
+
+    # The next step accumulates from the initial state.
+    first = {
+        f.metadata("param"): f.to_numpy(flatten=True)[:4] for f in diagnostics.forward(_with_precipitation(3.0, 1))
+    }
+    assert not np.isnan(first["PTYPE"]).any()
+    assert first["PTYPE"][2] == 5 and first["PTYPE"][0] == 1
+
+
+def test_derive_diagnostic_missing_precipitation_after_initial_state_raises(orography_file):
+    from datetime import timedelta
+
+    diagnostics = _vertical_diagnostics(orography_file, ["PTYPE"], accumulated_precipitation="tp")
+
+    with pytest.raises(ValueError, match="precipitation 'tp' missing"):
+        diagnostics.forward(_vertical_fieldlist(step=timedelta(hours=1)))
+
+
+def test_derive_diagnostic_rejects_meltlayer_top(orography_file):
     with pytest.raises(ValueError, match="Unsupported"):
         _vertical_diagnostics(orography_file, ["MELTLAYER_TOP"])
 
 
-def test_surface_diagnostics_precipitation_type_requires_precipitation(orography_file):
+def test_derive_diagnostic_precipitation_type_requires_precipitation(orography_file):
     with pytest.raises(ValueError, match="precipitation"):
-        _vertical_diagnostics(orography_file, ["PREC_TYPE"])
+        _vertical_diagnostics(orography_file, ["PTYPE"])
 
 
 def test_keep(caplog):

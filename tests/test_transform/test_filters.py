@@ -1069,6 +1069,33 @@ def test_derive_diagnostic_precipitation_type_requires_precipitation(orography_f
         _vertical_diagnostics(orography_file, ["PTYPE"])
 
 
+def test_derive_diagnostic_threads_match_single_thread(orography_file):
+    """Splitting the points over threads gives exactly the single-thread result."""
+    variables = ["TW_2M", "HZEROCL", "SNOWLMT", "CAPE_ML", "CIN_ML", "CAPE_MU", "CIN_MU", "PTYPE", "TOT_SNOW"]
+
+    def run(n_threads):
+        diagnostics = _vertical_diagnostics(
+            orography_file, variables, accumulated_precipitation="tp", n_threads=n_threads
+        )
+        return [
+            {
+                f.metadata("param"): f.to_numpy(flatten=True)
+                for f in diagnostics.forward(_with_precipitation(total, hours))
+            }
+            for total, hours in ((1.0, 1), (3.0, 2))
+        ]
+
+    for single, threaded in zip(run(1), run(3)):
+        for name in variables:
+            np.testing.assert_array_equal(threaded[name], single[name])
+
+
+@pytest.mark.parametrize("n_threads", [0, -1, 1.5])
+def test_derive_diagnostic_rejects_invalid_n_threads(orography_file, n_threads):
+    with pytest.raises(ValueError, match="n_threads"):
+        _vertical_diagnostics(orography_file, ["HZEROCL"], n_threads=n_threads)
+
+
 def test_keep(caplog):
     fieldlist = new_fieldlist_from_list([ArrayField(np.zeros(4), RawMetadata({"param": p})) for p in ["t", "q", "z"]])
 

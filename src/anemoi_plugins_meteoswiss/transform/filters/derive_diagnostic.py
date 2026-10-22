@@ -50,16 +50,23 @@ Notes
   filter keeps state between steps and needs them in order.
 - With pressure levels near the ground only, the height levels are
   interpolated over coarse layers and CAPE/CIN are rough estimates.
+- ``n_threads`` (default: all CPUs available to the process, e.g. the Slurm
+  allocation) splits the grid points of the expensive diagnostics (TW_2M,
+  wet-bulb profile, CAPE/CIN) into chunks computed in parallel threads.
 """
 
 import logging
+import os
 import time
+from collections.abc import Callable
 from collections.abc import Generator
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 from typing import Literal
 
 import earthkit.data as ekd
@@ -215,13 +222,16 @@ class DeriveDiagnostic(MatchingFieldsFilter):
         orography_variable: str = "topography_c",
         accumulated_precipitation: str | None = None,
         snow_fraction_profile: Literal["linear", "logistic"] = "linear",
+        n_threads: int | None = None,
     ) -> None:
         """``variables`` selects the diagnostics to derive, any of ``_SUPPORTED_VARIABLES``.
         ``orography_file`` (NetCDF, variable ``orography_variable`` in m) is
         required for the outputs computed from the pressure levels.
         ``accumulated_precipitation`` is accumulated from the start of the
         forecast (kg m-2). ``snow_fraction_profile`` is the snow fraction
-        across the melting layer used for ``TOT_SNOW``.
+        across the melting layer used for ``TOT_SNOW``. ``n_threads`` is the
+        number of threads the grid points are split over (default: all CPUs
+        available to the process; 1 computes them all in the calling thread).
         """
         if isinstance(variables, str):
             variables = [variables]
@@ -233,6 +243,10 @@ class DeriveDiagnostic(MatchingFieldsFilter):
             raise ValueError(f"Unsupported variable(s) {sorted(unknown)}; supported: {sorted(_SUPPORTED_VARIABLES)}.")
         if snow_fraction_profile not in ("linear", "logistic"):
             raise ValueError(f"`snow_fraction_profile` must be 'linear' or 'logistic', got {snow_fraction_profile!r}.")
+        if n_threads is None:
+            n_threads = _available_cpus()
+        if not isinstance(n_threads, int) or n_threads < 1:
+            raise ValueError(f"`n_threads` must be a positive integer, got {n_threads!r}.")
 
         self.u_10m = u_10m
         self.v_10m = v_10m
@@ -244,6 +258,7 @@ class DeriveDiagnostic(MatchingFieldsFilter):
         self.geopotential_levels = geopotential_levels
         self.accumulated_precipitation = accumulated_precipitation
         self.snow_fraction_profile = snow_fraction_profile
+        self.n_threads = n_threads
         self.variables = variables
 
         requested = set(variables)
@@ -280,9 +295,10 @@ class DeriveDiagnostic(MatchingFieldsFilter):
         )
 
         LOG.info(
-            "derive-diagnostic: will add %s to the output, computed from %s",
+            "derive-diagnostic: will add %s to the output, computed from %s with %d thread(s)",
             self.variables,
             {name: getattr(self, name) for name in self.MATCHING.forward},
+            self.n_threads,
         )
         super().__init__()
 
@@ -368,7 +384,9 @@ class DeriveDiagnostic(MatchingFieldsFilter):
 
         if self._needs_tw_2m:
             with _timer(timings, "TW_2M"):
-                tw_2m = wet_bulb_temperature_from_dewpoint(t_2m, td_2m, sp)
+                tw_2m = _map_over_points(
+                    wet_bulb_temperature_from_dewpoint, self.n_threads, per_point={"t": t_2m, "td": td_2m, "p": sp}
+                )
                 # Normand's rule can overshoot T_2M by a few tenths of a K near saturation
                 diagnostics["TW_2M"] = np.clip(tw_2m, td_2m, t_2m)
 
@@ -455,7 +473,12 @@ class DeriveDiagnostic(MatchingFieldsFilter):
                 diagnostics.update(
                     _snow_and_melting_levels(
                         tw_2m=tw_2m,
-                        tw_levels=_wet_bulb_levels(profiles, pressure),
+                        tw_levels=_map_over_points(
+                            _wet_bulb_levels,
+                            self.n_threads,
+                            per_point={"t": profiles["t"], "q": profiles["q"], "above_ground": above_ground},
+                            shared={"pressure": pressure},
+                        ),
                         orography=orography,
                         level_heights=level_heights,
                         above_ground=above_ground,
@@ -475,7 +498,7 @@ class DeriveDiagnostic(MatchingFieldsFilter):
 
         if self._parcels:
             with _timer(timings, "CAPE/CIN column"):
-                column = _environment_column(
+                p, height, t, q = _environment_column(
                     t_2m=t_2m,
                     td_2m=td_2m,
                     sp=sp,
@@ -488,8 +511,12 @@ class DeriveDiagnostic(MatchingFieldsFilter):
                 )
             for kind in self._parcels:
                 with _timer(timings, f"CAPE_{kind}/CIN_{kind}"):
-                    start = _mixed_layer_parcel(*column) if kind == "ML" else _most_unstable_parcel(*column)
-                    diagnostics[f"CAPE_{kind}"], diagnostics[f"CIN_{kind}"] = _cape_cin_of_parcel(*column, *start)
+                    diagnostics[f"CAPE_{kind}"], diagnostics[f"CIN_{kind}"] = _map_over_points(
+                        _cape_cin,
+                        self.n_threads,
+                        per_point={"p": p, "height": height, "t": t, "q": q},
+                        shared={"kind": kind},
+                    )
 
         return diagnostics
 
@@ -568,6 +595,48 @@ def _log_timings(timings: dict[str, float], field: ekd.Field | None) -> None:
         sum(timings.values()),
         ", ".join(f"{label} {seconds:.2f}s" for label, seconds in timings.items()),
     )
+
+
+def _available_cpus() -> int:
+    """CPUs this process may run on (e.g. the Slurm allocation), not all of the node's."""
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:  # not available on macOS
+        return os.cpu_count() or 1
+
+
+def _map_over_points(
+    func: Callable[..., Any],
+    n_threads: int,
+    *,
+    per_point: dict[str, np.ndarray],
+    shared: dict[str, Any] | None = None,
+) -> Any:
+    """``func(**per_point, **shared)``, with the points (last axis of the
+    ``per_point`` arrays) split into ``n_threads`` chunks computed in parallel.
+
+    ``func`` must compute each point independently of the others and return
+    an array, or a tuple of arrays, with the points on the last axis; the
+    chunks are concatenated back in order. numpy releases the GIL in its array
+    operations, so the threads run concurrently. With ``n_threads=1``,
+    ``func`` runs once on all points in the calling thread.
+    """
+    shared = shared or {}
+    n_points = next(iter(per_point.values())).shape[-1]
+    n_chunks = min(n_threads, n_points)
+    if n_chunks <= 1:
+        return func(**per_point, **shared)
+    bounds = np.linspace(0, n_points, n_chunks + 1).astype(int)
+
+    def run_chunk(i: int) -> Any:
+        points = slice(bounds[i], bounds[i + 1])
+        return func(**{name: x[..., points] for name, x in per_point.items()}, **shared)
+
+    with ThreadPoolExecutor(n_chunks) as executor:
+        chunks = list(executor.map(run_chunk, range(n_chunks)))
+    if isinstance(chunks[0], tuple):
+        return tuple(np.concatenate(parts, axis=-1) for parts in zip(*chunks))
+    return np.concatenate(chunks, axis=-1)
 
 
 def _load_orography(path: Path, variable: str) -> np.ndarray:
@@ -662,14 +731,21 @@ def _extrapolated_height(orography: np.ndarray, threshold_minus_ground: np.ndarr
     return orography - threshold_minus_ground / lapse_rate
 
 
-def _wet_bulb_levels(profiles: dict[str, np.ndarray], pressure: np.ndarray) -> np.ndarray:
-    """Wet-bulb temperature (K) on every pressure level, shape (levels, points)."""
-    return np.stack(
-        [
-            wet_bulb_temperature_from_specific_humidity(t, q, np.full_like(t, p))
-            for t, q, p in zip(profiles["t"], profiles["q"], pressure)
-        ]
-    )
+def _wet_bulb_levels(t: np.ndarray, q: np.ndarray, above_ground: np.ndarray, pressure: np.ndarray) -> np.ndarray:
+    """Wet-bulb temperature (K) on the pressure levels, shape (levels, points).
+
+    Computed above ground only; below ground it is NaN, as the surface point
+    replaces those levels in the profile (``_profile_with_surface_point``).
+    """
+    tw = np.full_like(t, np.nan)
+    for level, p in enumerate(pressure):
+        points = above_ground[level]
+        if points.any():
+            t_level = t[level, points]
+            tw[level, points] = wet_bulb_temperature_from_specific_humidity(
+                t_level, q[level, points], np.full_like(t_level, p)
+            )
+    return tw
 
 
 def _freezing_level(
@@ -788,6 +864,15 @@ def _most_unstable_parcel(
     ept = np.where(p >= p[0] - MU_DEPTH, ept_from_specific_humidity(t, q, p, method=EPT_METHOD), -np.inf)
     index = np.argmax(ept, axis=0)
     return tuple(_values_at_level(x, index) for x in (p, t, q))
+
+
+def _cape_cin(
+    p: np.ndarray, height: np.ndarray, t: np.ndarray, q: np.ndarray, *, kind: Literal["ML", "MU"]
+) -> tuple[np.ndarray, np.ndarray]:
+    """CAPE and CIN (J/kg) of the mixed-layer (``ML``) or most-unstable
+    (``MU``) parcel of the environment column."""
+    start = _mixed_layer_parcel(p, height, t, q) if kind == "ML" else _most_unstable_parcel(p, height, t, q)
+    return _cape_cin_of_parcel(p, height, t, q, *start)
 
 
 def _cape_cin_of_parcel(

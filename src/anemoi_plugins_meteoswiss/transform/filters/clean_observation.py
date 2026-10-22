@@ -522,12 +522,6 @@ class CleanObservation(Filter):
                 inv_json_path = json_path.parent / f"inversion_protection_{obs_timestamp}.json"
                 self._write_inversion_protection_json(inv_json_path, protected, obs_timestamp)
 
-        if getattr(self._qc_config, "plot_maps", False):
-            try:
-                self._plot_station_maps(df)
-            except Exception:
-                LOG.exception("QC station map generation failed")
-
         return data
 
     def _clean(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -1501,21 +1495,3 @@ class CleanObservation(Filter):
 
         return df_mod, df_diff
 
-    def _plot_station_maps(self, df: pd.DataFrame) -> None:
-        """Save per-parameter QC PNG maps to the same directory as the output parquet.
-
-        Delegates to ``prepare_and_plot_station_maps`` in ``clean_observation_plot``.
-        Produces two PNG files per parameter (full domain and Switzerland zoom).
-        """
-        LOG.info("Generating QC station maps in %s", self.obs_path_out.parent)
-        from clean_observation_plot import prepare_and_plot_station_maps
-
-        prepare_and_plot_station_maps(
-            getattr(self, "_flagged", []),
-            getattr(self, "_qc_diagnostics", {}),
-            df,
-            self.obs_path_out,
-            self._qc_config.par2check,
-            self._qc_config.qc_to_parquet,
-            self._qc_config.parquet_to_qc,
-        )

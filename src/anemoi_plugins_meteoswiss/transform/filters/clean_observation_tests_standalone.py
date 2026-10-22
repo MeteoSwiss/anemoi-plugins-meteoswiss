@@ -58,10 +58,10 @@ MEDIAN_OUTER_CIRCLE = 3
 EXTERNAL = 4
 
 # ConditionType enum values (for sct_dual)
-CONDITION_EQ  = 0
-CONDITION_GT  = 1
+CONDITION_EQ = 0
+CONDITION_GT = 1
 CONDITION_GEQ = 2
-CONDITION_LT  = 3
+CONDITION_LT = 3
 CONDITION_LEQ = 4
 
 # ---------------------------------------------------------------------------
@@ -73,6 +73,7 @@ CONDITION_LEQ = 4
 #   d_arc = 2 * R * arcsin(d_3d / 2)
 # For a query radius r (metres): search with d_3d_max = 2 * sin(r / (2*R)).
 # ---------------------------------------------------------------------------
+
 
 def _latlon_to_xyz(lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
     lat_r = np.deg2rad(lats)
@@ -107,17 +108,19 @@ def _query_radius(
     arc_m = (2.0 * EARTH_RADIUS_M * np.arcsin(chord / 2.0)).tolist()
     # Sort by distance
     order = np.argsort(arc_m)
-    idx  = [raw_idx[k] for k in order]
-    dist = [arc_m[k]   for k in order]
+    idx = [raw_idx[k] for k in order]
+    dist = [arc_m[k] for k in order]
     if not include_self:
         pairs = [(i, d) for i, d in zip(idx, dist) if d > 1.0]
-        idx  = [p[0] for p in pairs]
+        idx = [p[0] for p in pairs]
         dist = [p[1] for p in pairs]
     return idx, dist
+
 
 # ---------------------------------------------------------------------------
 # isolation_check
 # ---------------------------------------------------------------------------
+
 
 def isolation_check_raw(
     lats: np.ndarray,
@@ -153,10 +156,7 @@ def isolation_check_raw(
         idx, _ = _query_radius(tree, lats[i], lons[i], radius, include_self=False)
 
         if use_vert:
-            count = sum(
-                1 for j in idx
-                if np.isfinite(elevs[j]) and abs(elevs[j] - elevs[i]) <= vertical_radius
-            )
+            count = sum(1 for j in idx if np.isfinite(elevs[j]) and abs(elevs[j] - elevs[i]) <= vertical_radius)
         else:
             count = len(idx)
 
@@ -192,9 +192,11 @@ def isolation_check_py(
         my_dict["Parameter"].append(para)
     return my_dict if my_dict["Station"] else {}
 
+
 # ---------------------------------------------------------------------------
 # buddy_check
 # ---------------------------------------------------------------------------
+
 
 def buddy_check_raw(
     lats: np.ndarray,
@@ -253,9 +255,7 @@ def buddy_check_raw(
             if not (check_all or _obs_to_check[i] == 1):
                 continue
 
-            idx, _ = _query_radius(
-                tree, lats[i], lons[i], radius_arr[i], include_self=False
-            )
+            idx, _ = _query_radius(tree, lats[i], lons[i], radius_arr[i], include_self=False)
 
             buddies: list[float] = []
             for j in idx:
@@ -328,8 +328,17 @@ def buddy_check_py(
 
     for thr, mask in [(thr_short, short_mask), (thr_long, ~short_mask)]:
         f = buddy_check_raw(
-            lats, lons, elevs, values, radius_arr, num_min_arr, thr,
-            max_elev_diff, elev_gradient, min_std, num_iterations,
+            lats,
+            lons,
+            elevs,
+            values,
+            radius_arr,
+            num_min_arr,
+            thr,
+            max_elev_diff,
+            elev_gradient,
+            min_std,
+            num_iterations,
         )
         for idx in np.nonzero(f)[0]:
             if mask[idx]:
@@ -343,6 +352,7 @@ def buddy_check_py(
             my_dict["Parameter"].append(para)
     return my_dict if my_dict["Station"] else {}
 
+
 # ---------------------------------------------------------------------------
 # Background computation
 # ---------------------------------------------------------------------------
@@ -352,9 +362,7 @@ def _basic_vp(elevs: np.ndarray, t0: float, gamma: float) -> np.ndarray:
     return t0 + gamma * elevs
 
 
-def _full_vp(
-    elevs: np.ndarray, t0: float, gamma: float, a: float, h0: float, h1i: float
-) -> np.ndarray:
+def _full_vp(elevs: np.ndarray, t0: float, gamma: float, a: float, h0: float, h1i: float) -> np.ndarray:
     h1 = h0 + abs(h1i)
     e = np.asarray(elevs, dtype=float)
     out = np.empty_like(e)
@@ -363,10 +371,7 @@ def _full_vp(
     mi = ~lo & ~hi
     out[lo] = t0 + gamma * e[lo] - a
     out[hi] = t0 + gamma * e[hi]
-    out[mi] = (
-        t0 + gamma * e[mi]
-        - (a / 2) * (1 + np.cos(np.pi * (e[mi] - h0) / (h1 - h0)))
-    )
+    out[mi] = t0 + gamma * e[mi] - (a / 2) * (1 + np.cos(np.pi * (e[mi] - h0) / (h1 - h0)))
     return out
 
 
@@ -401,20 +406,28 @@ def _compute_vp(
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         if use_basic:
+
             def obj2(p):
                 pred = _basic_vp(elevs, p[0], p[1])
                 return float(np.log(max(np.sqrt(np.mean((pred - values) ** 2)), 1e-6)))
-            res = minimize(obj2, [mean_v, gamma0], method="Nelder-Mead",
-                           options={"xatol": 1e-2, "fatol": 1e-2, "maxiter": 1000})
+
+            res = minimize(
+                obj2, [mean_v, gamma0], method="Nelder-Mead", options={"xatol": 1e-2, "fatol": 1e-2, "maxiter": 1000}
+            )
             return _basic_vp(oelevs, res.x[0], res.x[1])
         else:
             p10, p90 = np.percentile(elevs, [10, 90])
+
             def obj5(p):
                 pred = _full_vp(elevs, p[0], p[1], p[2], p[3], p[4])
                 return float(np.log(max(np.sqrt(np.mean((pred - values) ** 2)), 1e-6)))
-            res = minimize(obj5, [mean_v, gamma0, 5.0, p10, p90 - p10],
-                           method="Nelder-Mead",
-                           options={"xatol": 1e-2, "fatol": 1e-2, "maxiter": 2000})
+
+            res = minimize(
+                obj5,
+                [mean_v, gamma0, 5.0, p10, p90 - p10],
+                method="Nelder-Mead",
+                options={"xatol": 1e-2, "fatol": 1e-2, "maxiter": 2000},
+            )
             return _full_vp(oelevs, *res.x)
 
 
@@ -492,9 +505,11 @@ def _compute_background(
         bg = np.where(bg > value_maxp, value_maxp, bg)
     return bg
 
+
 # ---------------------------------------------------------------------------
 # Index management (mirrors titanlib::set_indices from sct.cpp)
 # ---------------------------------------------------------------------------
+
 
 def _set_indices(
     indices_global_outer_guess: list[int],
@@ -544,10 +559,7 @@ def _set_indices(
             indices_outer_inner.append(i)
 
     # Position maps for fast lookup
-    inner_pos: dict[int, int] = {
-        indices_global_outer[i]: li
-        for li, i in enumerate(indices_outer_inner)
-    }
+    inner_pos: dict[int, int] = {indices_global_outer[i]: li for li, i in enumerate(indices_outer_inner)}
 
     # Test set
     indices_outer_test: list[int] = []
@@ -577,9 +589,11 @@ def _set_indices(
         indices_inner_test,
     )
 
+
 # ---------------------------------------------------------------------------
 # FGT core (mirrors titanlib::fgt_core)
 # ---------------------------------------------------------------------------
+
 
 def _fgt_core(
     yo: np.ndarray,
@@ -625,9 +639,7 @@ def _fgt_core(
         # sigma_b == 0 with obs != bg → inf, matching C++ behaviour (always flags).
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
-            raw = abs(yo[i] - yb[i]) / sigma_b[i] if sigma_b[i] != 0.0 else (
-                0.0 if yo[i] == yb[i] else float("inf")
-            )
+            raw = abs(yo[i] - yb[i]) / sigma_b[i] if sigma_b[i] != 0.0 else (0.0 if yo[i] == yb[i] else float("inf"))
         chi_inner[li] = raw
         chi_inner_alt[li] = float(maxv[i] - minv[i])
         if mina[i] <= yb[i] <= maxa[i]:
@@ -680,9 +692,11 @@ def _fgt_core(
 
     return 0
 
+
 # ---------------------------------------------------------------------------
 # FGT main (mirrors titanlib::fgt)
 # ---------------------------------------------------------------------------
+
 
 def fgt_raw(
     lats,
@@ -757,9 +771,7 @@ def fgt_raw(
         # Centroid for tree query: when re-checking a bad obs, curr_arg is its
         # global index; use it as the spatial centroid.
         centre = curr_arg if curr_arg >= 0 else _curr
-        idx_guess, dists_guess = _query_radius(
-            tree, lats[centre], lons[centre], outer_radius
-        )
+        idx_guess, dists_guess = _query_radius(tree, lats[centre], lons[centre], outer_radius)
 
         # Cap to num_max_outer nearest neighbours
         if len(idx_guess) > num_max_outer:
@@ -797,16 +809,20 @@ def fgt_raw(
         maxv_o = values_maxv[g_o]
 
         bval_o = _compute_background(
-            elev_o, val_o, background_elab_type, background_values, ig_outer,
-            num_min_prof, min_elev_diff, value_minp, value_maxp,
+            elev_o,
+            val_o,
+            background_elab_type,
+            background_values,
+            ig_outer,
+            num_min_prof,
+            min_elev_diff,
+            value_minp,
+            value_maxp,
         )
 
         # Small-innovation shortcut: background within valid range for all test obs
         if curr_arg < 0:
-            small_innov = all(
-                minv_o[io_test[m]] <= bval_o[io_test[m]] <= maxv_o[io_test[m]]
-                for m in range(p_test)
-            )
+            small_innov = all(minv_o[io_test[m]] <= bval_o[io_test[m]] <= maxv_o[io_test[m]] for m in range(p_test))
         else:
             j = io_test[0]
             small_innov = minv_o[j] <= bval_o[j] <= maxv_o[j]
@@ -817,10 +833,25 @@ def fgt_raw(
             return 0
 
         return _fgt_core(
-            val_o, bval_o, sig_o, value_minp, value_maxp,
-            mina_o, maxa_o, minv_o, maxv_o, tpos_o, tneg_o,
-            ig_test, io_inner, io_test, ii_test,
-            basic, _set_flag0, scores, flags,
+            val_o,
+            bval_o,
+            sig_o,
+            value_minp,
+            value_maxp,
+            mina_o,
+            maxa_o,
+            minv_o,
+            maxv_o,
+            tpos_o,
+            tneg_o,
+            ig_test,
+            io_inner,
+            io_test,
+            ii_test,
+            basic,
+            _set_flag0,
+            scores,
+            flags,
         )
 
     # ------------------------------------------------------------------
@@ -879,6 +910,7 @@ def fgt_raw(
 # first_guess_test_py  (same interface as clean_observation_tests.first_guess_test)
 # ---------------------------------------------------------------------------
 
+
 def first_guess_test_py(
     stations,
     lats,
@@ -896,7 +928,7 @@ def first_guess_test_py(
     num_iterations: int = 10,
     num_min_prof: int = 1,
     min_elev_diff: float = 250,
-    min_horizontal_scale: float = 250,     # unused – kept for API parity
+    min_horizontal_scale: float = 250,  # unused – kept for API parity
     max_horizontal_scale: float = 100_000,  # unused – kept for API parity
     kth_closest_obs_horizontal_scale: int = 2,  # unused – kept for API parity
     bdebug: bool = False,
@@ -933,11 +965,29 @@ def first_guess_test_py(
         tv = np.full(N, thr)
         try:
             flg, scr = fgt_raw(
-                lats, lons, elevs, values, obs_to_check, background_values, bg_unc,
-                background_elab_type, num_min_outer, num_max_outer,
-                inner_radius, outer_radius, num_iterations, num_min_prof,
-                min_elev_diff, values_mina, values_maxa, values_minv, values_maxv,
-                tv, tv, debug=bdebug, basic=bbasic,
+                lats,
+                lons,
+                elevs,
+                values,
+                obs_to_check,
+                background_values,
+                bg_unc,
+                background_elab_type,
+                num_min_outer,
+                num_max_outer,
+                inner_radius,
+                outer_radius,
+                num_iterations,
+                num_min_prof,
+                min_elev_diff,
+                values_mina,
+                values_maxa,
+                values_minv,
+                values_maxv,
+                tv,
+                tv,
+                debug=bdebug,
+                basic=bbasic,
             )
         except Exception:
             flg, scr = [], []
@@ -956,13 +1006,13 @@ def first_guess_test_py(
             my_dict["Parameter"].append(para)
     return my_dict if my_dict["Station"] else {}
 
+
 # ---------------------------------------------------------------------------
 # SCT helpers (shared by sct_resistant and sct_dual)
 # ---------------------------------------------------------------------------
 
-def _compute_pairwise_distances(
-    lats_b: np.ndarray, lons_b: np.ndarray, elevs_b: np.ndarray
-):
+
+def _compute_pairwise_distances(lats_b: np.ndarray, lons_b: np.ndarray, elevs_b: np.ndarray):
     """Return (disth, distz): N×N great-circle and elevation difference matrices."""
     xyz = _latlon_to_xyz(lats_b, lons_b)  # (N, 3)
     chord = np.sqrt(np.maximum(0.0, np.sum((xyz[:, None] - xyz[None, :]) ** 2, axis=2)))
@@ -979,9 +1029,7 @@ def _build_sct_cov_matrix(
     eps2_b: np.ndarray,
 ) -> np.ndarray:
     """Gaussian covariance matrix S with eps2 added to the diagonal."""
-    S = np.exp(
-        -0.5 * (disth / Dh_mean) ** 2 - 0.5 * (distz / vertical_scale) ** 2
-    )
+    S = np.exp(-0.5 * (disth / Dh_mean) ** 2 - 0.5 * (distz / vertical_scale) ** 2)
     np.fill_diagonal(S, S.diagonal() + eps2_b)
     return S
 
@@ -1011,9 +1059,7 @@ def _adaptive_dh_mean(
     return float(np.clip(Dh_mean, min_scale, max_scale))
 
 
-def _apply_condition(
-    values: np.ndarray, thresholds: np.ndarray, condition: int
-) -> np.ndarray:
+def _apply_condition(values: np.ndarray, thresholds: np.ndarray, condition: int) -> np.ndarray:
     """Convert continuous values to binary {0, 1} via condition vs threshold."""
     if condition == CONDITION_EQ:
         return (values == thresholds).astype(float)
@@ -1028,9 +1074,11 @@ def _apply_condition(
     else:
         raise ValueError(f"Unknown condition: {condition}")
 
+
 # ---------------------------------------------------------------------------
 # sct_resistant helpers
 # ---------------------------------------------------------------------------
+
 
 def _sct_set_indices(outer_guess, obs_test_arr, flags_arr, distances, inner_radius, forced_curr):
     """Partition outer-guess stations into outer/inner/test groups.
@@ -1049,31 +1097,46 @@ def _sct_set_indices(outer_guess, obs_test_arr, flags_arr, distances, inner_radi
         return [], [], [], [], []
 
     indices_global_outer = [g for g, _ in outer_pairs]
-    indices_outer_inner = []    # [l] = i (outer index of l-th inner station)
+    indices_outer_inner = []  # [l] = i (outer index of l-th inner station)
     indices_global_test = []
-    indices_outer_test = []     # [m] = i (outer index of m-th test station)
-    indices_inner_test = []     # [m] = l (inner index of m-th test station)
+    indices_outer_test = []  # [m] = i (outer index of m-th test station)
+    indices_inner_test = []  # [m] = l (inner index of m-th test station)
 
     for i, (g, d) in enumerate(outer_pairs):
         if d <= inner_radius:
             li = len(indices_outer_inner)
             indices_outer_inner.append(i)
-            is_test = (g == forced_curr) if forced_curr >= 0 \
-                      else (obs_test_arr[g] == 1 and flags_arr[g] < 0)
+            is_test = (g == forced_curr) if forced_curr >= 0 else (obs_test_arr[g] == 1 and flags_arr[g] < 0)
             if is_test:
                 indices_global_test.append(g)
                 indices_outer_test.append(i)
                 indices_inner_test.append(li)
 
-    return (indices_global_outer, indices_global_test,
-            indices_outer_inner, indices_outer_test, indices_inner_test)
+    return (indices_global_outer, indices_global_test, indices_outer_inner, indices_outer_test, indices_inner_test)
 
 
 def _sct_core(
-    yo, yb, Sinv, S_uw, eps2_o, tpos_o, tneg_o,
-    mina_o, maxa_o, minv_o, maxv_o, minp, maxp,
-    ioi, iot, iit, igt,
-    basic, set_flag0, flags_arr, scores_arr,
+    yo,
+    yb,
+    Sinv,
+    S_uw,
+    eps2_o,
+    tpos_o,
+    tneg_o,
+    mina_o,
+    maxa_o,
+    minv_o,
+    maxv_o,
+    minp,
+    maxp,
+    ioi,
+    iot,
+    iit,
+    igt,
+    basic,
+    set_flag0,
+    flags_arr,
+    scores_arr,
 ):
     """Chi score and flag the worst inner-circle test station.
 
@@ -1110,9 +1173,7 @@ def _sct_core(
 
         prod = (yo[i] - ya) * (yo[i] - yav[li])
         chi_inner[li] = np.sqrt(max(float(prod), 0.0))
-        chi_inner_alt[li] = (
-            np.sqrt(eps2_o[i] / (1.0 + eps2_o[i])) * (maxv_o[i] - minv_o[i])
-        )
+        chi_inner_alt[li] = np.sqrt(eps2_o[i] / (1.0 + eps2_o[i])) * (maxv_o[i] - minv_o[i])
         if mina_o[i] <= yav[li] <= maxa_o[i]:
             chi_stat.append(chi_inner[li])
             chi_stat_alt.append(chi_inner_alt[li])
@@ -1172,6 +1233,7 @@ def _sct_core(
 # ---------------------------------------------------------------------------
 # sct_resistant
 # ---------------------------------------------------------------------------
+
 
 def sct_resistant_raw(
     lats,
@@ -1254,22 +1316,20 @@ def sct_resistant_raw(
             idx_all = [idx_all[k] for k in order]
             dist_all = [dist_all[k] for k in order]
 
-        igo, igt, ioi, iot, iit = _sct_set_indices(
-            idx_all, obs_test, flags, dist_all, inner_radius, forced_curr
-        )
+        igo, igt, ioi, iot, iit = _sct_set_indices(idx_all, obs_test, flags, dist_all, inner_radius, forced_curr)
         p_outer = len(igo)
         p_inner = len(ioi)
-        p_test  = len(igt)
+        p_test = len(igt)
 
         if p_outer < num_min_outer:
-            return 0, True   # isolated: too few outer neighbours
+            return 0, True  # isolated: too few outer neighbours
         if p_inner < 2:
-            return 0, True   # isolated: too few inner neighbours
+            return 0, True  # isolated: too few inner neighbours
         if p_test == 0:
             return 0, False
 
         g_arr = np.asarray(igo, dtype=int)
-        yo    = values[g_arr]
+        yo = values[g_arr]
         eps2_o = eps2[g_arr]
         tpos_o = tpos[g_arr]
         tneg_o = tneg[g_arr]
@@ -1279,9 +1339,15 @@ def sct_resistant_raw(
         maxv_o = values_maxv[g_arr]
 
         yb = _compute_background(
-            elevs[g_arr], yo, background_elab_type,
-            background_values, igo, num_min_prof, min_elev_diff,
-            value_minp, value_maxp,
+            elevs[g_arr],
+            yo,
+            background_elab_type,
+            background_values,
+            igo,
+            num_min_prof,
+            min_elev_diff,
+            value_minp,
+            value_maxp,
         )
 
         # small_innov: background within [minv, maxv] for all test stations
@@ -1290,12 +1356,12 @@ def sct_resistant_raw(
                 flags[g] = 0
             return 0, False
 
-        disth, distz = _compute_pairwise_distances(
-            lats[g_arr], lons[g_arr], elevs[g_arr]
-        )
+        disth, distz = _compute_pairwise_distances(lats[g_arr], lons[g_arr], elevs[g_arr])
         Dh_mean = _adaptive_dh_mean(
-            disth, kth_closest_obs_horizontal_scale,
-            min_horizontal_scale, max_horizontal_scale,
+            disth,
+            kth_closest_obs_horizontal_scale,
+            min_horizontal_scale,
+            max_horizontal_scale,
         )
         S = _build_sct_cov_matrix(disth, distz, Dh_mean, vertical_scale, eps2_o)
         try:
@@ -1308,9 +1374,27 @@ def sct_resistant_raw(
         np.fill_diagonal(S_uw, S_uw.diagonal() - eps2_o)
 
         n = _sct_core(
-            yo, yb, Sinv, S_uw, eps2_o, tpos_o, tneg_o,
-            mina_o, maxa_o, minv_o, maxv_o, value_minp, value_maxp,
-            ioi, iot, iit, igt, basic, set_flag0, flags, scores,
+            yo,
+            yb,
+            Sinv,
+            S_uw,
+            eps2_o,
+            tpos_o,
+            tneg_o,
+            mina_o,
+            maxa_o,
+            minv_o,
+            maxv_o,
+            value_minp,
+            value_maxp,
+            ioi,
+            iot,
+            iit,
+            igt,
+            basic,
+            set_flag0,
+            flags,
+            scores,
         )
         return n, False
 
@@ -1404,13 +1488,33 @@ def sct_resistant_py(
 
     try:
         flags_list, scores_list = sct_resistant_raw(
-            lats, lons, elevs, values, obs_to_check, background_values,
-            background_elab_type, num_min_outer, num_max_outer,
-            inner_radius, outer_radius, num_iterations, num_min_prof,
-            min_elev_diff, min_horizontal_scale, max_horizontal_scale,
-            kth_closest_obs_horizontal_scale, vertical_scale,
-            values_mina, values_maxa, values_minv, values_maxv,
-            eps2_arr, tpos_arr, tneg_arr, bdebug, bbasic,
+            lats,
+            lons,
+            elevs,
+            values,
+            obs_to_check,
+            background_values,
+            background_elab_type,
+            num_min_outer,
+            num_max_outer,
+            inner_radius,
+            outer_radius,
+            num_iterations,
+            num_min_prof,
+            min_elev_diff,
+            min_horizontal_scale,
+            max_horizontal_scale,
+            kth_closest_obs_horizontal_scale,
+            vertical_scale,
+            values_mina,
+            values_maxa,
+            values_minv,
+            values_maxv,
+            eps2_arr,
+            tpos_arr,
+            tneg_arr,
+            bdebug,
+            bbasic,
         )
     except Exception:
         return {}
@@ -1425,9 +1529,11 @@ def sct_resistant_py(
             my_dict["Parameter"].append(para)
     return my_dict if my_dict["Station"] else {}
 
+
 # ---------------------------------------------------------------------------
 # sct_dual
 # ---------------------------------------------------------------------------
+
 
 def sct_dual_raw(
     lats,
@@ -1516,8 +1622,10 @@ def sct_dual_raw(
 
             disth, distz = _compute_pairwise_distances(lats_b, lons_b, elevs_b)
             Dh_mean = _adaptive_dh_mean(
-                disth, kth_closest_obs_horizontal_scale,
-                min_horizontal_scale, max_horizontal_scale,
+                disth,
+                kth_closest_obs_horizontal_scale,
+                min_horizontal_scale,
+                max_horizontal_scale,
             )
 
             S = _build_sct_cov_matrix(disth, distz, Dh_mean, vertical_scale, eps2_b)
@@ -1586,14 +1694,18 @@ def sct_dual_raw(
 
                 # Leave-one-out IDI (same-class) and cross-class IDI
                 if i1 >= 0:  # station is w=1
-                    w1_idiv = (max(1.0 - Sinv_d_w1[i1] / Sinv_w1[i1, i1], 0.001)
-                               if Sinv_w1 is not None and Sinv_w1[i1, i1] != 0.0
-                               else 0.001)
+                    w1_idiv = (
+                        max(1.0 - Sinv_d_w1[i1] / Sinv_w1[i1, i1], 0.001)
+                        if Sinv_w1 is not None and Sinv_w1[i1, i1] != 0.0
+                        else 0.001
+                    )
                     w0_idiv = max(w0_idiv_cross, 0.0)
                 else:  # station is w=0
-                    w0_idiv = (max(1.0 - Sinv_d_w0[i0] / Sinv_w0[i0, i0], 0.001)
-                               if Sinv_w0 is not None and Sinv_w0[i0, i0] != 0.0
-                               else 0.001)
+                    w0_idiv = (
+                        max(1.0 - Sinv_d_w0[i0] / Sinv_w0[i0, i0], 0.001)
+                        if Sinv_w0 is not None and Sinv_w0[i0, i0] != 0.0
+                        else 0.001
+                    )
                     w1_idiv = max(w1_idiv_cross, 0.0)
 
                 if w1_idiv <= 0.0 or w0_idiv <= 0.0:
@@ -1666,10 +1778,24 @@ def sct_dual_py(
 
     try:
         flags_list = sct_dual_raw(
-            lats, lons, elevs, values, obs_to_check, ev_thr, condition,
-            num_min_outer, num_max_outer, inner_radius, outer_radius,
-            num_iterations, min_horizontal_scale, max_horizontal_scale,
-            kth_closest_obs_horizontal_scale, vertical_scale, tst_thr, debug,
+            lats,
+            lons,
+            elevs,
+            values,
+            obs_to_check,
+            ev_thr,
+            condition,
+            num_min_outer,
+            num_max_outer,
+            inner_radius,
+            outer_radius,
+            num_iterations,
+            min_horizontal_scale,
+            max_horizontal_scale,
+            kth_closest_obs_horizontal_scale,
+            vertical_scale,
+            tst_thr,
+            debug,
         )
     except Exception:
         return {}

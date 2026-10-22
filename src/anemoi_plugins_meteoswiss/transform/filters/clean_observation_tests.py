@@ -1,5 +1,6 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,14 +9,13 @@ import pandas as pd
 import titanlib
 import yaml
 
-
 _PARQUET_TO_QC = {
-    "2t":   "T_2M",
-    "2d":   "TD_2M",
+    "2t": "T_2M",
+    "2d": "TD_2M",
     "vmax": "VMAX10M",
-    "sp":   "PS",
-    "msl":  "PMSL",
-    "skt":  "T_G",
+    "sp": "PS",
+    "msl": "PMSL",
+    "skt": "T_G",
 }
 
 
@@ -40,7 +40,8 @@ except FileNotFoundError:
 
 LOG = logging.getLogger(__name__)
 
-#----------------------------------
+
+# ----------------------------------
 # isolation check
 def isolation_check(stations, lats, lons, elevs, para, date, num_min=2, radius=50000):
     """Flag stations with too few neighbours within radius (titanlib isolation_check).
@@ -66,10 +67,11 @@ def isolation_check(stations, lats, lons, elevs, para, date, num_min=2, radius=5
         my_dict["Station"].append(stations[idx])
         my_dict["Time"].append(date)
         my_dict["Parameter"].append(para)
-        LOG.info('isolation_check %s isolated station: %s', para, stations[idx])
+        LOG.info("isolation_check %s isolated station: %s", para, stations[idx])
     return my_dict if my_dict["Station"] else {}
 
-#----------------------------------
+
+# ----------------------------------
 # DWH quality flag test
 def DWH_flag(current_f, para, stationss, plausibility, qc_config=None):
     """Plausibility test using pre-fetched DWH plausibility values.
@@ -87,8 +89,8 @@ def DWH_flag(current_f, para, stationss, plausibility, qc_config=None):
             freq is a value_counts Series of the plausibility distribution.
             blacklist_dict is an empty dict when no stations are flagged.
     """
-    threshold = float((qc_config or c).DWH_flag[para]['dwh_plausibility_thr'])
-    LOG.info('DWH plausibility test for %s, threshold=%.2f', para, threshold)
+    threshold = float((qc_config or c).DWH_flag[para]["dwh_plausibility_thr"])
+    LOG.info("DWH plausibility test for %s, threshold=%.2f", para, threshold)
 
     # Restrict to the stations passed to this test and drop missing values
     pla = plausibility.reindex(stationss).dropna()
@@ -101,17 +103,32 @@ def DWH_flag(current_f, para, stationss, plausibility, qc_config=None):
             my_dict["Station"].append(station)
             my_dict["Time"].append(current_f)
             my_dict["Parameter"].append(para)
-            LOG.info('DWH flag %s %s (pi=%.3f)', para, station, flagged[station])
-        LOG.info('DWH flag %s blacklisted stations: %d', para, len(flagged))
+            LOG.info("DWH flag %s %s (pi=%.3f)", para, station, flagged[station])
+        LOG.info("DWH flag %s blacklisted stations: %d", para, len(flagged))
     else:
         my_dict = {}
 
     return my_dict, freq
 
-#-------------------------------------------------------------------------------
-#buddy check
-def buddy_check(stations,lats,lons,elevs,values,para,date,threshold=4,max_elev_diff=200,elev_gradient=-0.0065,
-                          min_std=1,num_iterations=5,num_min=3,radius=30000):
+
+# -------------------------------------------------------------------------------
+# buddy check
+def buddy_check(
+    stations,
+    lats,
+    lons,
+    elevs,
+    values,
+    para,
+    date,
+    threshold=4,
+    max_elev_diff=200,
+    elev_gradient=-0.0065,
+    min_std=1,
+    num_iterations=5,
+    num_min=3,
+    radius=30000,
+):
     """Run titanlib buddy_check with separate thresholds for SMN and other stations.
 
     The test is run twice on the full station set:
@@ -148,20 +165,22 @@ def buddy_check(stations,lats,lons,elevs,values,para,date,threshold=4,max_elev_d
     snames = np.asarray(stations)
     short_mask = np.array([len(s) == 3 for s in snames])
     points = titanlib.Points(lats, lons, elevs)
-    radius_arr  = np.full(points.size(), radius)
+    radius_arr = np.full(points.size(), radius)
     num_min_arr = np.full(points.size(), num_min)
     flagged_indices = set()
     # round 1: all stations, keep only SMN (3-letter) flags
-    LOG.info('titanlib buddy_check %s threshold=%.2f (SMN)', para, thr_short)
-    flags = titanlib.buddy_check(points, values, radius_arr, num_min_arr, thr_short,
-                                 max_elev_diff, elev_gradient, min_std, num_iterations)
+    LOG.info("titanlib buddy_check %s threshold=%.2f (SMN)", para, thr_short)
+    flags = titanlib.buddy_check(
+        points, values, radius_arr, num_min_arr, thr_short, max_elev_diff, elev_gradient, min_std, num_iterations
+    )
     for idx in np.nonzero(flags)[0]:
         if short_mask[idx]:
             flagged_indices.add(int(idx))
     # round 2: all stations, keep only other (longer-name) flags
-    LOG.info('titanlib buddy_check %s threshold=%.2f (other)', para, thr_long)
-    flags = titanlib.buddy_check(points, values, radius_arr, num_min_arr, thr_long,
-                                 max_elev_diff, elev_gradient, min_std, num_iterations)
+    LOG.info("titanlib buddy_check %s threshold=%.2f (other)", para, thr_long)
+    flags = titanlib.buddy_check(
+        points, values, radius_arr, num_min_arr, thr_long, max_elev_diff, elev_gradient, min_std, num_iterations
+    )
     for idx in np.nonzero(flags)[0]:
         if not short_mask[idx]:
             flagged_indices.add(int(idx))
@@ -172,18 +191,39 @@ def buddy_check(stations,lats,lons,elevs,values,para,date,threshold=4,max_elev_d
             my_dict["Station"].append(snames[idx])
             my_dict["Time"].append(date)
             my_dict["Parameter"].append(para)
-            LOG.info('titanlib buddy_check %s %s %.4f', para, snames[idx], values[idx])
+            LOG.info("titanlib buddy_check %s %s %.4f", para, snames[idx], values[idx])
             n += 1
-    LOG.info('titanlib buddy_check %s blacklisted stations: %d', para, n)
+    LOG.info("titanlib buddy_check %s blacklisted stations: %d", para, n)
     if len(my_dict["Station"]) == 0:
         my_dict = {}
     return my_dict
 
-#first guess test
-def first_guess_test(stations,lats,lons,elevs,values,background_values,para,date,background_elab_type=1,num_min_outer=3,num_max_outer=10,
-                    inner_radius=50000,outer_radius=100000,num_iterations=10,num_min_prof=1,min_elev_diff=250,
-                    min_horizontal_scale=250,max_horizontal_scale=100000,kth_closest_obs_horizontal_scale=2,
-                    bdebug=True,bbasic=True,tpostneg=5):
+
+# first guess test
+def first_guess_test(
+    stations,
+    lats,
+    lons,
+    elevs,
+    values,
+    background_values,
+    para,
+    date,
+    background_elab_type=1,
+    num_min_outer=3,
+    num_max_outer=10,
+    inner_radius=50000,
+    outer_radius=100000,
+    num_iterations=10,
+    num_min_prof=1,
+    min_elev_diff=250,
+    min_horizontal_scale=250,
+    max_horizontal_scale=100000,
+    kth_closest_obs_horizontal_scale=2,
+    bdebug=True,
+    bbasic=True,
+    tpostneg=5,
+):
     """Run titanlib fgt (first-guess test) with separate thresholds for SMN and other stations.
 
     The test is run twice on the full station set:
@@ -239,17 +279,35 @@ def first_guess_test(stations,lats,lons,elevs,values,background_values,para,date
     # round 1: all stations, keep only SMN (3-letter) flags
     tpos = np.repeat(1, N) * thr_short
     tneg = np.repeat(1, N) * thr_short
-    LOG.info('titanlib first_guess_test %s threshold=%.2f (SMN)', para, thr_short)
+    LOG.info("titanlib first_guess_test %s threshold=%.2f (SMN)", para, thr_short)
     try:
-        flags, scores = titanlib.fgt(points, values, obs_to_check, background_values, background_uncertainties,
-                                     background_elab_type, num_min_outer, num_max_outer, inner_radius,
-                                     outer_radius, num_iterations, num_min_prof, min_elev_diff,
-                                     values_mina, values_maxa, values_minv, values_maxv, tpos, tneg,
-                                     bdebug, bbasic)
+        flags, scores = titanlib.fgt(
+            points,
+            values,
+            obs_to_check,
+            background_values,
+            background_uncertainties,
+            background_elab_type,
+            num_min_outer,
+            num_max_outer,
+            inner_radius,
+            outer_radius,
+            num_iterations,
+            num_min_prof,
+            min_elev_diff,
+            values_mina,
+            values_maxa,
+            values_minv,
+            values_maxv,
+            tpos,
+            tneg,
+            bdebug,
+            bbasic,
+        )
     except Exception:
         flags = []
         scores = []
-        LOG.warning('exception in fgt test (SMN)')
+        LOG.warning("exception in fgt test (SMN)")
     if len(flags) > 0:
         for idx in np.where((flags > 0) & (scores > 0))[0]:
             if short_mask[idx]:
@@ -257,17 +315,35 @@ def first_guess_test(stations,lats,lons,elevs,values,background_values,para,date
     # round 2: all stations, keep only other (longer-name) flags
     tpos = np.repeat(1, N) * thr_long
     tneg = np.repeat(1, N) * thr_long
-    LOG.info('titanlib first_guess_test %s threshold=%.2f (other)', para, thr_long)
+    LOG.info("titanlib first_guess_test %s threshold=%.2f (other)", para, thr_long)
     try:
-        flags, scores = titanlib.fgt(points, values, obs_to_check, background_values, background_uncertainties,
-                                     background_elab_type, num_min_outer, num_max_outer, inner_radius,
-                                     outer_radius, num_iterations, num_min_prof, min_elev_diff,
-                                     values_mina, values_maxa, values_minv, values_maxv, tpos, tneg,
-                                     bdebug, bbasic)
+        flags, scores = titanlib.fgt(
+            points,
+            values,
+            obs_to_check,
+            background_values,
+            background_uncertainties,
+            background_elab_type,
+            num_min_outer,
+            num_max_outer,
+            inner_radius,
+            outer_radius,
+            num_iterations,
+            num_min_prof,
+            min_elev_diff,
+            values_mina,
+            values_maxa,
+            values_minv,
+            values_maxv,
+            tpos,
+            tneg,
+            bdebug,
+            bbasic,
+        )
     except Exception:
         flags = []
         scores = []
-        LOG.warning('exception in fgt test (other)')
+        LOG.warning("exception in fgt test (other)")
     if len(flags) > 0:
         for idx in np.where((flags > 0) & (scores > 0))[0]:
             if not short_mask[idx]:
@@ -279,16 +355,36 @@ def first_guess_test(stations,lats,lons,elevs,values,background_values,para,date
             my_dict["Station"].append(snames[idx])
             my_dict["Time"].append(date)
             my_dict["Parameter"].append(para)
-            LOG.info('titanlib first_guess_test %s %s %.4f', para, snames[idx], values[idx])
+            LOG.info("titanlib first_guess_test %s %s %.4f", para, snames[idx], values[idx])
             n += 1
-    LOG.info('titanlib first_guess_test %s blacklisted stations: %d', para, n)
+    LOG.info("titanlib first_guess_test %s blacklisted stations: %d", para, n)
     return my_dict
 
-#spacial concistency check resistant 
-def spacial_ct_resistant(stations,lats,lons,elevs,values,para,date,background_elab_type=1,num_min_outer=3,num_max_outer=10,
-                    inner_radius=50000,outer_radius=100000,num_iterations=10,num_min_prof=1,min_elev_diff=250,
-                    min_horizontal_scale=250,max_horizontal_scale=100000,kth_closest_obs_horizontal_scale=2,
-                    vertical_scale=200,bdebug=True,bbasic=True):
+
+# spacial concistency check resistant
+def spacial_ct_resistant(
+    stations,
+    lats,
+    lons,
+    elevs,
+    values,
+    para,
+    date,
+    background_elab_type=1,
+    num_min_outer=3,
+    num_max_outer=10,
+    inner_radius=50000,
+    outer_radius=100000,
+    num_iterations=10,
+    num_min_prof=1,
+    min_elev_diff=250,
+    min_horizontal_scale=250,
+    max_horizontal_scale=100000,
+    kth_closest_obs_horizontal_scale=2,
+    vertical_scale=200,
+    bdebug=True,
+    bbasic=True,
+):
     """Run titanlib sct_resistant (spatial consistency test, resistant variant).
 
     Args:
@@ -320,53 +416,98 @@ def spacial_ct_resistant(stations,lats,lons,elevs,values,para,date,background_el
     """
     points = titanlib.Points(lats, lons, elevs)
     npoints = len(lats)
-    N=npoints
+    N = npoints
     obs_to_check = np.repeat(1, npoints)
     background_values = np.repeat(0, npoints)
-    tpos = np.repeat(1,N) * 16
-    tneg = np.repeat(1,N) * 16
-    eps2 = np.repeat(1,N) * 0.5
+    tpos = np.repeat(1, N) * 16
+    tneg = np.repeat(1, N) * 16
+    eps2 = np.repeat(1, N) * 0.5
     values_mina = values - 15
     values_maxa = values + 15
     values_minv = values - 1
     values_maxv = values + 1
-    LOG.info('spacial_ct_resistant %s', para)
+    LOG.info("spacial_ct_resistant %s", para)
     try:
-        flags,scores = titanlib.sct_resistant(points, values, obs_to_check, background_values, 
-                        background_elab_type, num_min_outer, num_max_outer, 
-                        inner_radius, outer_radius, num_iterations, num_min_prof, 
-                        min_elev_diff, min_horizontal_scale, max_horizontal_scale, 
-                        kth_closest_obs_horizontal_scale, vertical_scale, 
-                        values_mina, values_maxa, values_minv, values_maxv,
-                        eps2, tpos, tneg, bdebug, bbasic)
+        flags, scores = titanlib.sct_resistant(
+            points,
+            values,
+            obs_to_check,
+            background_values,
+            background_elab_type,
+            num_min_outer,
+            num_max_outer,
+            inner_radius,
+            outer_radius,
+            num_iterations,
+            num_min_prof,
+            min_elev_diff,
+            min_horizontal_scale,
+            max_horizontal_scale,
+            kth_closest_obs_horizontal_scale,
+            vertical_scale,
+            values_mina,
+            values_maxa,
+            values_minv,
+            values_maxv,
+            eps2,
+            tpos,
+            tneg,
+            bdebug,
+            bbasic,
+        )
     except Exception:
-        flags=[]
-        scores=[]
-        LOG.warning('Spacial_ct_resistant '+'exeption in test')
-    if len(flags)>0:
-        indices=np.where((flags>0) &  (scores>15))
-        indices=indices[:][0]
-        nblack=len(indices)
-        my_dict = {"Station":[],"Time":[],"Parameter":[]}
-        n=0
-        for b in range(0,nblack):
+        flags = []
+        scores = []
+        LOG.warning("Spacial_ct_resistant " + "exeption in test")
+    if len(flags) > 0:
+        indices = np.where((flags > 0) & (scores > 15))
+        indices = indices[:][0]
+        nblack = len(indices)
+        my_dict = {"Station": [], "Time": [], "Parameter": []}
+        n = 0
+        for b in range(0, nblack):
             if np.isfinite(values[indices[b]]):
                 my_dict["Station"].append(stations[indices[b]])
                 my_dict["Time"].append(date)
                 my_dict["Parameter"].append(para)
-                LOG.info('titanlib sct_resistant %s %s %.4f score=%.4f', para, stations[indices[b]], values[indices[b]], scores[indices[b]])
-                n=n+1
-        LOG.info('spacial_ct_resistant %s blacklisted stations: %d', para, n)
+                LOG.info(
+                    "titanlib sct_resistant %s %s %.4f score=%.4f",
+                    para,
+                    stations[indices[b]],
+                    values[indices[b]],
+                    scores[indices[b]],
+                )
+                n = n + 1
+        LOG.info("spacial_ct_resistant %s blacklisted stations: %d", para, n)
     else:
-        my_dict={}
+        my_dict = {}
     return my_dict
-#-------------------------------------------------------------------------------------------
-#spacial concistency check dual
-def spacial_ct_dual(stations,lats,lons,elevs,values,para,date,num_min_outer=3,num_max_outer=10,
-                    inner_radius=50000,outer_radius=100000,num_iterations=10,
-                    min_horizontal_scale=250,max_horizontal_scale=100000,kth_closest_obs_horizontal_scale=2,
-                    vertical_scale=200,debug=True,condition = 1, event_thresholds = 0.1,test_thresholds = 0.8):
-    
+
+
+# -------------------------------------------------------------------------------------------
+# spacial concistency check dual
+def spacial_ct_dual(
+    stations,
+    lats,
+    lons,
+    elevs,
+    values,
+    para,
+    date,
+    num_min_outer=3,
+    num_max_outer=10,
+    inner_radius=50000,
+    outer_radius=100000,
+    num_iterations=10,
+    min_horizontal_scale=250,
+    max_horizontal_scale=100000,
+    kth_closest_obs_horizontal_scale=2,
+    vertical_scale=200,
+    debug=True,
+    condition=1,
+    event_thresholds=0.1,
+    test_thresholds=0.8,
+):
     """Run titanlib sct_dual (spatial consistency test, dual-threshold variant).
 
     Args:
@@ -400,42 +541,58 @@ def spacial_ct_dual(stations,lats,lons,elevs,values,para,date,num_min_outer=3,nu
     obs_to_check = np.repeat(1, npoints)
     test_thresholds = np.repeat(test_thresholds, npoints)
     event_thresholds = np.repeat(event_thresholds, npoints)
-    #print(locals())
-    LOG.info('titanlib spacial_ct_dual %s', para)
+    # print(locals())
+    LOG.info("titanlib spacial_ct_dual %s", para)
     try:
-        values=np.asarray(values, dtype=np.float64)
-        flags= titanlib.sct_dual(points, values, obs_to_check, event_thresholds, condition,
-                        num_min_outer, num_max_outer, inner_radius, outer_radius,
-                        num_iterations, min_horizontal_scale, max_horizontal_scale,
-                        kth_closest_obs_horizontal_scale, vertical_scale,
-                        test_thresholds, debug)
+        values = np.asarray(values, dtype=np.float64)
+        flags = titanlib.sct_dual(
+            points,
+            values,
+            obs_to_check,
+            event_thresholds,
+            condition,
+            num_min_outer,
+            num_max_outer,
+            inner_radius,
+            outer_radius,
+            num_iterations,
+            min_horizontal_scale,
+            max_horizontal_scale,
+            kth_closest_obs_horizontal_scale,
+            vertical_scale,
+            test_thresholds,
+            debug,
+        )
     except Exception:
-        flags=[]
-        LOG.warning('spacial_ct_dual '+'exeption in sct_resistant test')
-    if len(flags)>0:
-        indices=np.where((flags>0))
-        indices=indices[:][0]
-        nblack=len(indices)
-        my_dict = {"Station":[],"Time":[],"Parameter":[]}
-        n=0
-        for b in range(0,nblack):
+        flags = []
+        LOG.warning("spacial_ct_dual " + "exeption in sct_resistant test")
+    if len(flags) > 0:
+        indices = np.where((flags > 0))
+        indices = indices[:][0]
+        nblack = len(indices)
+        my_dict = {"Station": [], "Time": [], "Parameter": []}
+        n = 0
+        for b in range(0, nblack):
             if np.isfinite(values[indices[b]]):
                 my_dict["Station"].append(stations[indices[b]])
                 my_dict["Time"].append(date)
                 my_dict["Parameter"].append(para)
-                LOG.info('titanlib sct_dual %s %s %.4f', para, stations[indices[b]], values[indices[b]])
-                n=n+1
-        LOG.info('titanlib spacial_ct_dual %s blacklisted stations: %d', para, n)
+                LOG.info("titanlib sct_dual %s %s %.4f", para, stations[indices[b]], values[indices[b]])
+                n = n + 1
+        LOG.info("titanlib spacial_ct_dual %s blacklisted stations: %d", para, n)
     else:
-        my_dict={}
+        my_dict = {}
     return my_dict
-#--------------------------------------------------------------
+
+
+# --------------------------------------------------------------
 def find_indices(list_to_check, item_to_find):
     """Return all indices where list_to_check equals item_to_find."""
     return [idx for idx, value in enumerate(list_to_check) if value == item_to_find]
 
-#--------------------------------------------------------------
-def tests_summary (blacklist,weights,tests):
+
+# --------------------------------------------------------------
+def tests_summary(blacklist, weights, tests):
     """Aggregate per-test flags into a weighted score for each (time, station) pair.
 
     For each station the score is:
@@ -459,37 +616,39 @@ def tests_summary (blacklist,weights,tests):
         pandas.DataFrame: Shape (n_times, n_stations).  Each cell is the
             weighted flag score for that (time, station) pair.
     """
-    stations=[]
-    times=[]
-    for t in blacklist['tests']:
-        n=0
-        for sta in blacklist[t]['Station']:
-            stations.append(blacklist[t]['Station'][n])
-            times.append(blacklist[t]['Time'][n])
-            n=n+1       
-    times=np.unique(times)
-    stations=np.unique(stations)
-    qc=np.zeros((len(times),len(stations)))
-    ns=0
-   
+    stations = []
+    times = []
+    for t in blacklist["tests"]:
+        n = 0
+        for sta in blacklist[t]["Station"]:
+            stations.append(blacklist[t]["Station"][n])
+            times.append(blacklist[t]["Time"][n])
+            n = n + 1
+    times = np.unique(times)
+    stations = np.unique(stations)
+    qc = np.zeros((len(times), len(stations)))
+    ns = 0
+
     for sta in stations:
-        k=0
+        k = 0
         for time in times:
-            n=0
-            tt=0
+            n = 0
+            tt = 0
             for t in tests:
-                if sta in blacklist[t]['Station']:
-                    id=find_indices(blacklist[t]['Station'], sta)
+                if sta in blacklist[t]["Station"]:
+                    id = find_indices(blacklist[t]["Station"], sta)
                     for i in id:
-                        if time in blacklist[t]['Time'][i]:
-                            n=n+1*weights[tt]
-                tt=tt+1
-            qc[k,ns]=n/len(blacklist['tests'])
-            k=k+1
-        ns=ns+1
-    df=pd.DataFrame(data=qc,index=times,columns=stations)
-   
+                        if time in blacklist[t]["Time"][i]:
+                            n = n + 1 * weights[tt]
+                tt = tt + 1
+            qc[k, ns] = n / len(blacklist["tests"])
+            k = k + 1
+        ns = ns + 1
+    df = pd.DataFrame(data=qc, index=times, columns=stations)
+
     return df
+
+
 def hard_test(obs_all, datamin, datamax, var, time, limits=None):
     """Flag stations whose value falls outside absolute physical limits.
 
@@ -507,27 +666,27 @@ def hard_test(obs_all, datamin, datamax, var, time, limits=None):
             Always non-empty structure (never empty dict like other tests).
     """
 
-    LOG.info('hard test %s min=%.2f max=%.2f%s', var, datamin, datamax,
-             ' (seasonal+altitude)' if limits else '')
-    my_dict = {"Station":[],"Time":[],"Parameter":[]}
-    n=0
-    stations=obs_all['sta_name']
+    LOG.info("hard test %s min=%.2f max=%.2f%s", var, datamin, datamax, " (seasonal+altitude)" if limits else "")
+    my_dict = {"Station": [], "Time": [], "Parameter": []}
+    n = 0
+    stations = obs_all["sta_name"]
     for s in stations:
-        sta_data=obs_all[obs_all['sta_name']==s][var]
+        sta_data = obs_all[obs_all["sta_name"] == s][var]
         if not sta_data.isna().item():
             lo, hi = limits[s] if limits and s in limits else (datamin, datamax)
             if (sta_data.iloc[0] < lo) or (sta_data.iloc[0] > hi):
                 my_dict["Station"].append(stations[n])
                 my_dict["Time"].append(time)
                 my_dict["Parameter"].append(var)
-                LOG.info('hard test %s %s %.4f (limits: %.2f–%.2f)', var, stations[n],
-                         sta_data.iloc[0], lo, hi)
-        n=n+1
+                LOG.info("hard test %s %s %.4f (limits: %.2f–%.2f)", var, stations[n], sta_data.iloc[0], lo, hi)
+        n = n + 1
     return my_dict
 
-#--------------------------------------------------------------
-def plateau_test(data, window, std_lim, var, time, obs_path_in=None, gran_minutes=60,
-                 historical_raw=None, qc_config=None):
+
+# --------------------------------------------------------------
+def plateau_test(
+    data, window, std_lim, var, time, obs_path_in=None, gran_minutes=60, historical_raw=None, qc_config=None
+):
     """
     Plateau test: detect frozen/stuck sensors by checking that observations vary
     over a past time window.
@@ -551,7 +710,7 @@ def plateau_test(data, window, std_lim, var, time, obs_path_in=None, gran_minute
             empty dict when run but nothing flagged, or None when the test could not run
             (no obs_path_in, no timestamp in filename, or zero historical files available).
     """
-    LOG.info('plateau test for %s', var)
+    LOG.info("plateau test for %s", var)
     my_dict = {"Station": [], "Time": [], "Parameter": []}
 
     n_steps = int(window * 60 / gran_minutes)
@@ -562,16 +721,15 @@ def plateau_test(data, window, std_lim, var, time, obs_path_in=None, gran_minute
         Raw parquets use station nat_abbr as index and parquet column names
         (e.g. '2t') rather than the QC names (e.g. 'T_2M') used in df_qc.
         """
-        norm = pd.DataFrame({'sta_name': hist_df.index.to_list()})
+        norm = pd.DataFrame({"sta_name": hist_df.index.to_list()})
         # Map parquet column → QC column for this var
         for pc, (qp, conv) in (qc_config or c).parquet_to_qc.items():
             if qp == var and pc in hist_df.columns:
                 norm[var] = conv(hist_df[pc].to_numpy())
                 return norm
         # SP_10M is derived from U/V components
-        if var == 'SP_10M' and '10u' in hist_df.columns and '10v' in hist_df.columns:
-            norm[var] = np.sqrt(hist_df['10u'].to_numpy() ** 2 +
-                                hist_df['10v'].to_numpy() ** 2)
+        if var == "SP_10M" and "10u" in hist_df.columns and "10v" in hist_df.columns:
+            norm[var] = np.sqrt(hist_df["10u"].to_numpy() ** 2 + hist_df["10v"].to_numpy() ** 2)
         else:
             norm[var] = np.nan
         return norm
@@ -591,76 +749,83 @@ def plateau_test(data, window, std_lim, var, time, obs_path_in=None, gran_minute
     else:
         # Original path: discover and read files from disk
         if obs_path_in is None:
-            LOG.warning('plateau_test %s: obs_path_in not provided, cannot run test', var)
+            LOG.warning("plateau_test %s: obs_path_in not provided, cannot run test", var)
             return None
 
         import re as _re
+
         obs_path_in = Path(obs_path_in)
 
-        ts_match = _re.search(r'\d{12}', obs_path_in.stem)
+        ts_match = _re.search(r"\d{12}", obs_path_in.stem)
         if not ts_match:
             LOG.warning(
-                'plateau_test %s: no 12-digit timestamp found in filename %s, '
-                'cannot build historical file list',
-                var, obs_path_in.name,
+                "plateau_test %s: no 12-digit timestamp found in filename %s, cannot build historical file list",
+                var,
+                obs_path_in.name,
             )
             return None
         file_ts = ts_match.group()
-        current = datetime.strptime(file_ts, '%Y%m%d%H%M')
-        stem_pattern = obs_path_in.stem.replace(file_ts, '{}')
+        current = datetime.strptime(file_ts, "%Y%m%d%H%M")
+        stem_pattern = obs_path_in.stem.replace(file_ts, "{}")
 
         for step in range(1, n_steps + 1):
             t = current - timedelta(minutes=step * gran_minutes)
-            fn = obs_path_in.parent / (stem_pattern.format(t.strftime('%Y%m%d%H%M')) + obs_path_in.suffix)
+            fn = obs_path_in.parent / (stem_pattern.format(t.strftime("%Y%m%d%H%M")) + obs_path_in.suffix)
             if fn.exists():
                 try:
                     historical_dfs.append(_normalize_hist(pd.read_parquet(fn)))
                 except Exception as e:
-                    LOG.warning('plateau_test: could not read %s: %s', fn, e)
+                    LOG.warning("plateau_test: could not read %s: %s", fn, e)
                     missing.append(str(fn))
             else:
                 missing.append(str(fn))
 
     if missing:
         for mf in missing:
-            LOG.warning('plateau_test %s: missing file: %s', var, mf)
+            LOG.warning("plateau_test %s: missing file: %s", var, mf)
 
     n_found = len(historical_dfs)
     if n_found < n_steps / 2:
         LOG.warning(
-            'plateau_test %s: cannot run — only %d/%d historical files available (window=%dh, gran=%dmin)',
-            var, n_found, n_steps, window, gran_minutes,
+            "plateau_test %s: cannot run — only %d/%d historical files available (window=%dh, gran=%dmin)",
+            var,
+            n_found,
+            n_steps,
+            window,
+            gran_minutes,
         )
         return None
     if missing:
         LOG.warning(
-            'plateau_test %s: running on partial history (%d/%d files available)',
-            var, n_found, n_steps,
+            "plateau_test %s: running on partial history (%d/%d files available)",
+            var,
+            n_found,
+            n_steps,
         )
 
     # Only test stations present in every historical file to avoid spurious
     # plateau flags caused by a station first appearing mid-window.
-    always_available = set(data['sta_name'])
+    always_available = set(data["sta_name"])
     for hdf in historical_dfs:
-        always_available &= set(hdf['sta_name'].dropna())
-    skipped = len(set(data['sta_name'])) - len(always_available)
+        always_available &= set(hdf["sta_name"].dropna())
+    skipped = len(set(data["sta_name"])) - len(always_available)
     if skipped:
-        LOG.info('plateau_test %s: skipping %d station(s) not present in all historical files', var, skipped)
+        LOG.info("plateau_test %s: skipping %d station(s) not present in all historical files", var, skipped)
 
-    obs_all = pd.concat([data[[var, 'sta_name']]] + historical_dfs, ignore_index=True)
-    for s in data['sta_name']:
+    obs_all = pd.concat([data[[var, "sta_name"]]] + historical_dfs, ignore_index=True)
+    for s in data["sta_name"]:
         if s not in always_available:
             continue
-        cur_val = data.loc[data['sta_name'] == s, var]
+        cur_val = data.loc[data["sta_name"] == s, var]
         if len(cur_val) == 0 or pd.isna(cur_val.iloc[0]):
             continue
-        series = obs_all.loc[obs_all['sta_name'] == s, var]
+        series = obs_all.loc[obs_all["sta_name"] == s, var]
         sd = series.std()
         nn = series.count()
         if not pd.isna(sd) and sd <= std_lim and nn > n_steps / 2:
-            LOG.warning('plateau_test %s %s std=%.4f', var, s, sd)
+            LOG.warning("plateau_test %s %s std=%.4f", var, s, sd)
             my_dict["Station"].append(s)
             my_dict["Time"].append(time)
             my_dict["Parameter"].append(var)
-    LOG.info('plateau_test %s: %d stations flagged', var, len(my_dict["Station"]))
+    LOG.info("plateau_test %s: %d stations flagged", var, len(my_dict["Station"]))
     return my_dict

@@ -3,7 +3,9 @@ import logging
 import math
 import re
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,43 +22,43 @@ _OBS_ONLY_TESTS = {"hard", "isolation_check", "buddy_obs", "DWH_flag", "plateau_
 
 # QC parameter → parquet plausibility column
 _PAR2PI = {
-    "T_2M":    "2t_pi",
-    "TD_2M":   "2d_pi",
-    "SP_10M":  "ff_pi",
+    "T_2M": "2t_pi",
+    "TD_2M": "2d_pi",
+    "SP_10M": "ff_pi",
     "VMAX10M": "vmax_pi",
-    "PS":      "sp_pi",
-    "PMSL":    "msl_pi",
-    "T_G":     "skt_pi",
+    "PS": "sp_pi",
+    "PMSL": "msl_pi",
+    "T_G": "skt_pi",
 }
 
 # parquet column → QC parameter (SP_10M derived from 10u/10v separately)
 _PARQUET_TO_QC = {
-    "2t":   "T_2M",
-    "2d":   "TD_2M",
+    "2t": "T_2M",
+    "2d": "TD_2M",
     "vmax": "VMAX10M",
-    "sp":   "PS",
-    "msl":  "PMSL",
-    "skt":  "T_G",
+    "sp": "PS",
+    "msl": "PMSL",
+    "skt": "T_G",
 }
 
 # QC parameter → parquet columns to set NaN when flagged
 _QC_TO_PARQUET = {
-    "T_2M":    ["2t"],
-    "TD_2M":   ["2d"],
-    "SP_10M":  ["10u", "10v"],
+    "T_2M": ["2t"],
+    "TD_2M": ["2d"],
+    "SP_10M": ["10u", "10v"],
     "VMAX10M": ["vmax"],
-    "PS":      ["sp"],
-    "PMSL":    ["msl"],
-    "T_G":     ["skt"],
+    "PS": ["sp"],
+    "PMSL": ["msl"],
+    "T_G": ["skt"],
 }
 
 _SEASON_MONTHS = {
     "winter": {12, 1, 2},
     "spring": {3, 4, 5},
-    "fall":   {9, 10, 11},
+    "fall": {9, 10, 11},
     "summer": {6, 7, 8},
 }
-_BUDDY_TESTS             = {"buddy_obs", "buddy_diff"}
+_BUDDY_TESTS = {"buddy_obs", "buddy_diff"}
 _INVERSION_BLOCKING_TESTS = {"hard", "isolation_check", "plateau_test", "DWH_flag"}
 
 # Seasonal altitude-dependent hard-test thresholds.
@@ -69,10 +71,10 @@ _INVERSION_BLOCKING_TESTS = {"hard", "isolation_check", "plateau_test", "DWH_fla
 #   pch_max: Aug at sea level = config value, Jan/Feb ≈ config − 35 K
 # pch_min uses dry-adiabatic-like lapse (steeper): cold pools form readily at altitude.
 # pch_max uses moist-adiabatic lapse (ICAO standard): warm events follow slower gradient.
-_HARD_LAPSE_MIN  = 8.3     # K per 1000 m — lapse rate for pch_min altitude correction
-_HARD_LAPSE_MAX  = 6.5     # K per 1000 m — lapse rate for pch_max altitude correction
-_HARD_MIN_FLOOR  = 223.0   # K — absolute lower floor for pch_min (T_2M, T_G)
-_HARD_MIN_FLOOR_TD = 213.0 # K — lower floor for TD_2M (−60°C); dew points at high altitude can be much colder
+_HARD_LAPSE_MIN = 8.3  # K per 1000 m — lapse rate for pch_min altitude correction
+_HARD_LAPSE_MAX = 6.5  # K per 1000 m — lapse rate for pch_max altitude correction
+_HARD_MIN_FLOOR = 223.0  # K — absolute lower floor for pch_min (T_2M, T_G)
+_HARD_MIN_FLOOR_TD = 213.0  # K — lower floor for TD_2M (−60°C); dew points at high altitude can be much colder
 
 # Cosine seasonal deltas relative to the config sea-level anchor values.
 # pch_min anchor = coldest month (Jan, delta=0); pch_max anchor = warmest month (Jul, delta=0).
@@ -80,13 +82,33 @@ _HARD_MIN_FLOOR_TD = 213.0 # K — lower floor for TD_2M (−60°C); dew points 
 # Swing: pch_min 0→42 K (Jan→Jul); amplitude: pch_max 35→0 K (Jan→Jul).
 # Added to sea-level pch_min_0 (delta=0 in Jan, increases toward summer)
 _PCH_MIN_SEASONAL_DELTA: dict[int, float] = {
-    1:  0, 2:  3, 3: 10, 4: 21, 5: 31, 6: 39,
-    7: 42, 8: 39, 9: 32, 10: 21, 11: 10, 12:  3,
+    1: 0,
+    2: 3,
+    3: 10,
+    4: 21,
+    5: 31,
+    6: 39,
+    7: 42,
+    8: 39,
+    9: 32,
+    10: 21,
+    11: 10,
+    12: 3,
 }
 # Subtracted from sea-level pch_max_0 (delta=0 in Jul, increases toward winter)
 _PCH_MAX_SEASONAL_DELTA: dict[int, float] = {
-    1: 35, 2: 33, 3: 26, 4: 18, 5:  9, 6:  2,
-    7:  0, 8:  2, 9:  9, 10: 17, 11: 26, 12: 33,
+    1: 35,
+    2: 33,
+    3: 26,
+    4: 18,
+    5: 9,
+    6: 2,
+    7: 0,
+    8: 2,
+    9: 9,
+    10: 17,
+    11: 26,
+    12: 33,
 }
 # Parameters for which altitude+seasonal correction applies (temperature-like, in K)
 _HARD_ALTITUDE_PARAS = {"T_2M", "TD_2M", "T_G"}
@@ -113,7 +135,7 @@ def _seasonal_pch_max(base: float, month: int, alt_m: float) -> float:
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi   = math.radians(lat2 - lat1)
+    dphi = math.radians(lat2 - lat1)
     dlambda = math.radians(lon2 - lon1)
     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     return 6371.0 * 2 * math.asin(math.sqrt(a))
@@ -131,11 +153,11 @@ def _load_inversion_stations(yaml_path: Path) -> dict:
             if dh == 0:
                 continue
             entry = {
-                "ref":      info["ref"],
-                "alt":      int(info["alt"]),
-                "ref_alt":  int(info["ref_alt"]),
+                "ref": info["ref"],
+                "alt": int(info["alt"]),
+                "ref_alt": int(info["ref_alt"]),
                 "alt_diff": dh,
-                "ref2":     info.get("ref2"),
+                "ref2": info.get("ref2"),
                 "ref2_alt": int(info["ref2_alt"]) if info.get("ref2_alt") is not None else None,
                 "alt_diff2": (int(info["ref2_alt"]) - int(info["alt"])) if info.get("ref2_alt") is not None else None,
             }
@@ -146,8 +168,9 @@ def _load_inversion_stations(yaml_path: Path) -> dict:
     return result
 
 
-def _check_inversion_protection(station: str, para: str, positive_tests: list,
-                                df, month: int, qc_config: SimpleNamespace) -> tuple:
+def _check_inversion_protection(
+    station: str, para: str, positive_tests: list, df, month: int, qc_config: SimpleNamespace
+) -> tuple:
     """Return (protected, lapse_rate, confirming_stations) for this flag candidate.
 
     protected            – True if the flag should be suppressed due to inversion conditions.
@@ -241,6 +264,7 @@ def _check_inversion_protection(station: str, para: str, positive_tests: list,
             t_other = df.at[other, "2t"]
             if pd.isna(t_other):
                 continue
+
             def _other_lr(oinfo, t_o):
                 r = oinfo["ref"]
                 if r not in df.index or oinfo["alt_diff"] == 0:
@@ -256,6 +280,7 @@ def _check_inversion_protection(station: str, para: str, positive_tests: list,
                         return (tv - t_o) / dh2
                     return None
                 return (tv - t_o) / oinfo["alt_diff"]
+
             other_lr = _other_lr(other_info, t_other)
             if other_lr is not None and lr_min <= other_lr <= lr_max:
                 _confirming_with_dist.append((dist, other))
@@ -263,12 +288,10 @@ def _check_inversion_protection(station: str, para: str, positive_tests: list,
             return False, None, []
         _confirming_with_dist.sort()
         confirming_stations = [
-            {"station": s, "distance_km": round(d, 1)}
-            for d, s in _confirming_with_dist[:min_confirming]
+            {"station": s, "distance_km": round(d, 1)} for d, s in _confirming_with_dist[:min_confirming]
         ]
 
     return True, lr, confirming_stations
-
 
 
 def _load_qc_config(
@@ -301,9 +324,9 @@ def _load_qc_config(
         return x
 
     ns = SimpleNamespace(**cfg)
-    ns.fgt_excluded   = cfg.get("fgt_excluded", {})
+    ns.fgt_excluded = cfg.get("fgt_excluded", {})
     ns.obs_only_tests = _OBS_ONLY_TESTS
-    ns.par2pi        = _PAR2PI
+    ns.par2pi = _PAR2PI
     ns.parquet_to_qc = {col: (qp, _identity) for col, qp in _PARQUET_TO_QC.items()}
     ns.qc_to_parquet = _QC_TO_PARQUET
 
@@ -336,17 +359,16 @@ except FileNotFoundError:
     pass
 
 try:
-    from .clean_observation_tests import (
-        DWH_flag as _DWH_flag,
-        buddy_check as _buddy_check,
-        first_guess_test as _first_guess_test,
-        hard_test as _hard_test,
-        isolation_check as _isolation_check,
-        plateau_test as _plateau_test,
-        spacial_ct_dual as _spacial_ct_dual,
-        spacial_ct_resistant as _spacial_ct_resistant,
-        tests_summary as _tests_summary,
-    )
+    from .clean_observation_tests import DWH_flag as _DWH_flag
+    from .clean_observation_tests import buddy_check as _buddy_check
+    from .clean_observation_tests import first_guess_test as _first_guess_test
+    from .clean_observation_tests import hard_test as _hard_test
+    from .clean_observation_tests import isolation_check as _isolation_check
+    from .clean_observation_tests import plateau_test as _plateau_test
+    from .clean_observation_tests import spacial_ct_dual as _spacial_ct_dual
+    from .clean_observation_tests import spacial_ct_resistant as _spacial_ct_resistant
+    from .clean_observation_tests import tests_summary as _tests_summary
+
     _QC_AVAILABLE = True
 except ImportError as _e:
     LOG.warning("QC modules not available, cleaning will be a no-op: %s", _e)
@@ -423,9 +445,7 @@ class CleanObservation(Filter):
         inversion_protection_file: str = None,
     ):
         if model_interp not in ("nearest", "min_elev_diff"):
-            raise ValueError(
-                f"model_interp must be 'nearest' or 'min_elev_diff', got {model_interp!r}"
-            )
+            raise ValueError(f"model_interp must be 'nearest' or 'min_elev_diff', got {model_interp!r}")
         self.obs_path_in = Path(obs_path_in)
         self.obs_path_out = Path(obs_path_out)
         self.model_grib_path = model_grib_path
@@ -484,7 +504,7 @@ class CleanObservation(Filter):
         df.to_parquet(self.obs_path_out, columns=[c for c in df.columns if c not in pi_cols])
         LOG.info("Saved %d cleaned stations to %s", len(df), self.obs_path_out)
 
-        ts_match = re.search(r'\d{12}', self.obs_path_in.stem)
+        ts_match = re.search(r"\d{12}", self.obs_path_in.stem)
         obs_timestamp = ts_match.group() if ts_match else None
         json_path = self.obs_path_out.with_name(self.obs_path_out.stem + "_flagged.json")
         self._write_flagged_json(
@@ -586,7 +606,7 @@ class CleanObservation(Filter):
                 _hard_blacklisted.setdefault(_p, set()).add(_entry["station"])
 
         # Month of the current observation file — used for inversion protection
-        _ts = re.search(r'\d{12}', self.obs_path_in.stem)
+        _ts = re.search(r"\d{12}", self.obs_path_in.stem)
         _obs_month = int(_ts.group()[4:6]) if _ts else 0
 
         # Pre-load historical parquets once for all plateau_test calls
@@ -612,7 +632,8 @@ class CleanObservation(Filter):
             if skipped:
                 LOG.warning(
                     "%-10s  skipped %s — no model background (set --model-grib-path to enable)",
-                    para, skipped,
+                    para,
+                    skipped,
                 )
 
             # Blacklist accumulator expected by make_tests:
@@ -625,9 +646,19 @@ class CleanObservation(Filter):
 
             with np.errstate(invalid="ignore", divide="ignore"):
                 blacklist, _, executed_tests = self.make_tests(
-                    current_f, df_qc, df_diff, df_mod, para,
-                    stations.copy(), lats.copy(), lons.copy(), elevs.copy(),
-                    0, 0, my_dict, tests_to_do,
+                    current_f,
+                    df_qc,
+                    df_diff,
+                    df_mod,
+                    para,
+                    stations.copy(),
+                    lats.copy(),
+                    lons.copy(),
+                    elevs.copy(),
+                    0,
+                    0,
+                    my_dict,
+                    tests_to_do,
                     df_pi=df_pi,
                     obs_path_in=self.obs_path_in,
                     historical_raw=_historical_raw,
@@ -639,8 +670,8 @@ class CleanObservation(Filter):
             # isolation_check stations are flagged directly after the score loop.
             score_tests = [t for t in executed_tests if t in all_tests]
             self._tests_done[para] = executed_tests
-            blacklist['tests'] = score_tests
-            blacklist['n'] = len(score_tests)
+            blacklist["tests"] = score_tests
+            blacklist["n"] = len(score_tests)
             weights = [all_weights[t] for t in score_tests]
 
             # Score = sum(weight_i for flagging tests) / n_score_tests.
@@ -657,14 +688,14 @@ class CleanObservation(Filter):
                     score = qc_summary[station].iloc[0]
                     if score <= threshold:
                         continue
-                    pos = [t for t in executed_tests
-                           if station in blacklist.get(t, {}).get("Station", [])]
+                    pos = [t for t in executed_tests if station in blacklist.get(t, {}).get("Station", [])]
                     _protected, _lr, _confirming = _check_inversion_protection(
                         station, para, pos, df, _obs_month, self._qc_config
                     )
                     if _protected:
-                        LOG.info("Inversion protection: suppressing %s buddy flag for %s (lr=%.4f K/m)",
-                                 para, station, _lr)
+                        LOG.info(
+                            "Inversion protection: suppressing %s buddy flag for %s (lr=%.4f K/m)", para, station, _lr
+                        )
                         qc_summary = qc_summary.drop(columns=[station])
                         _obs_cols = [c for c in self._qc_config.qc_to_parquet.get(para, []) if c in df.columns]
                         _obs_val = (
@@ -672,14 +703,16 @@ class CleanObservation(Filter):
                             if _obs_cols and not pd.isna(df.at[station, _obs_cols[0]])
                             else None
                         )
-                        self._inversion_protected.append({
-                            "station":              station,
-                            "qc_parameter":         para,
-                            "obs_value":            _obs_val,
-                            "lapse_rate":           round(_lr, 6),
-                            "tests_suppressed":     pos,
-                            "confirming_stations":  _confirming,
-                        })
+                        self._inversion_protected.append(
+                            {
+                                "station": station,
+                                "qc_parameter": para,
+                                "obs_value": _obs_val,
+                                "lapse_rate": round(_lr, 6),
+                                "tests_suppressed": pos,
+                                "confirming_stations": _confirming,
+                            }
+                        )
 
             # stations_excluded: trusted stations (e.g. reference stations) that are
             # never blacklisted by automated QC, regardless of their score.
@@ -689,24 +722,23 @@ class CleanObservation(Filter):
                 if score <= threshold:
                     continue
                 if station in excluded:
-                    LOG.info("QC flagged %s for station %s but station is excluded — skipping",
-                             para, station)
+                    LOG.info("QC flagged %s for station %s but station is excluded — skipping", para, station)
                     continue
                 if station in _hard_blacklisted.get(para, set()):
-                    LOG.debug("QC also flagged %s / %s (score=%.2f) — already in hard blacklist, skipping",
-                              para, station, score)
+                    LOG.debug(
+                        "QC also flagged %s / %s (score=%.2f) — already in hard blacklist, skipping",
+                        para,
+                        station,
+                        score,
+                    )
                     continue
                 LOG.info("QC flagged %s for station %s (score=%.2f)", para, station, score)
                 flagged_stations.append(station)
                 # Which individual tests voted to flag this station?
-                positive_tests = [
-                    t for t in executed_tests
-                    if station in blacklist.get(t, {}).get("Station", [])
-                ]
+                positive_tests = [t for t in executed_tests if station in blacklist.get(t, {}).get("Station", [])]
                 # A QC parameter may map to multiple parquet columns
                 # (e.g. SP_10M → 10u and 10v); set all of them to NaN.
-                self._flag_station_columns(df, df_qc, station, para,
-                                           tests_positive=positive_tests)
+                self._flag_station_columns(df, df_qc, station, para, tests_positive=positive_tests)
 
             self._qc_diagnostics[para] = {
                 "scores": {col: float(qc_summary[col].iloc[0]) for col in qc_summary.columns},
@@ -738,32 +770,30 @@ class CleanObservation(Filter):
             pt_cfg = (getattr(self._qc_config, "plateau_test", None) or {}).get(para)
             if pt_cfg is None:
                 continue
-            gran   = int(pt_cfg.get("gran",   60))
+            gran = int(pt_cfg.get("gran", 60))
             window = int(pt_cfg.get("window", 24))
             for step in range(1, int(window * 60 / gran) + 1):
                 needed.add(step * gran)
         if not needed:
             return {}
 
-        ts_match = re.search(r'\d{12}', self.obs_path_in.stem)
+        ts_match = re.search(r"\d{12}", self.obs_path_in.stem)
         if not ts_match:
             return {}
-        current = datetime.strptime(ts_match.group(), '%Y%m%d%H%M')
-        stem_pattern = self.obs_path_in.stem.replace(ts_match.group(), '{}')
+        current = datetime.strptime(ts_match.group(), "%Y%m%d%H%M")
+        stem_pattern = self.obs_path_in.stem.replace(ts_match.group(), "{}")
 
         result = {}
         for offset_min in sorted(needed):
-            t  = current - timedelta(minutes=offset_min)
-            fn = self.obs_path_in.parent / (
-                stem_pattern.format(t.strftime('%Y%m%d%H%M')) + self.obs_path_in.suffix
-            )
+            t = current - timedelta(minutes=offset_min)
+            fn = self.obs_path_in.parent / (stem_pattern.format(t.strftime("%Y%m%d%H%M")) + self.obs_path_in.suffix)
             if fn.exists():
                 try:
                     result[offset_min] = pd.read_parquet(fn)
                 except Exception as exc:
-                    LOG.warning('plateau_test preload: could not read %s: %s', fn, exc)
+                    LOG.warning("plateau_test preload: could not read %s: %s", fn, exc)
 
-        LOG.info('plateau_test: preloaded %d/%d historical parquet files', len(result), len(needed))
+        LOG.info("plateau_test: preloaded %d/%d historical parquet files", len(result), len(needed))
         return result
 
     def make_tests(
@@ -824,12 +854,22 @@ class CleanObservation(Filter):
         elevs = np.delete(elevs, ind)
         mods = np.delete(df_mod[para].iloc[:].to_numpy(), ind)
         diffs = np.delete(df_diff[para].iloc[:].to_numpy(), ind)
-        LOG.info('make_tests %s: %d stations (non-NaN)', para, len(stations))
+        LOG.info("make_tests %s: %d stations (non-NaN)", para, len(stations))
 
         runners = self._build_test_runners(
-            tests_to_do, df_obs, values, diffs, mods,
-            stations, lats, lons, elevs,
-            para, current_f, df_pi, obs_path_in,
+            tests_to_do,
+            df_obs,
+            values,
+            diffs,
+            mods,
+            stations,
+            lats,
+            lons,
+            elevs,
+            para,
+            current_f,
+            df_pi,
+            obs_path_in,
             historical_raw=historical_raw,
         )
 
@@ -843,7 +883,7 @@ class CleanObservation(Filter):
                 blacklist, freq = raw
             elif test == "plateau_test":
                 if raw is None:
-                    LOG.warning('plateau_test skipped — no historical files available')
+                    LOG.warning("plateau_test skipped — no historical files available")
                     continue
                 blacklist = raw
             else:
@@ -851,7 +891,7 @@ class CleanObservation(Filter):
 
             self._merge_blacklist(my_dict, test, blacklist)
             n = len((blacklist or {}).get("Station", []))
-            LOG.info('%-18s %s blacklisted stations: %d', test, para, n)
+            LOG.info("%-18s %s blacklisted stations: %d", test, para, n)
             executed_tests.append(test)
 
         return my_dict, freq, executed_tests
@@ -890,11 +930,7 @@ class CleanObservation(Filter):
         lats = df["latitude"].to_numpy(dtype=float)
         lons = df["longitude"].to_numpy(dtype=float)
         # altitude may be missing for synthetic test data; default to 0 m a.s.l.
-        elevs = (
-            df["altitude"].to_numpy(dtype=float)
-            if "altitude" in df.columns
-            else np.zeros(len(df), dtype=float)
-        )
+        elevs = df["altitude"].to_numpy(dtype=float) if "altitude" in df.columns else np.zeros(len(df), dtype=float)
         df_qc["altitude"] = elevs
         stations = np.array(df.index.to_list())
 
@@ -924,22 +960,17 @@ class CleanObservation(Filter):
         if self.residuals_dir is not None:
             try:
                 df_mod, df_diff = self._load_residuals_at_stations(df_qc)
-                LOG.info("Pre-computed residuals loaded from %s; extended test set active",
-                         self.residuals_dir)
+                LOG.info("Pre-computed residuals loaded from %s; extended test set active", self.residuals_dir)
                 return df_mod, df_diff, self._qc_config.obs_only_tests | {"buddy_diff", "fgt"}
             except Exception as exc:
-                LOG.warning(
-                    "Failed to load pre-computed residuals (%s); falling back to obs-only tests", exc
-                )
+                LOG.warning("Failed to load pre-computed residuals (%s); falling back to obs-only tests", exc)
         elif self.model_grib_path is not None:
             try:
                 df_mod, df_diff = self._load_model_at_stations(df_qc, lats, lons, elevs)
                 LOG.info("Model background loaded from GRIB; extended test set active")
                 return df_mod, df_diff, self._qc_config.obs_only_tests | {"buddy_diff", "fgt"}
             except Exception as exc:
-                LOG.warning(
-                    "Failed to load model GRIB (%s); falling back to obs-only tests", exc
-                )
+                LOG.warning("Failed to load model GRIB (%s); falling back to obs-only tests", exc)
         df_mod, df_diff = self._nan_frames(df_qc)
         return df_mod, df_diff, self._qc_config.obs_only_tests
 
@@ -962,22 +993,18 @@ class CleanObservation(Filter):
         """
         # Record the QC-space value (e.g. wind speed scalar, not u/v)
         # that triggered the flag, for traceability in the JSON output.
-        cols = [
-            c for c in self._qc_config.qc_to_parquet.get(para, [])
-            if c in df.columns and station in df.index
-        ]
+        cols = [c for c in self._qc_config.qc_to_parquet.get(para, []) if c in df.columns and station in df.index]
         if cols:
-            qc_values = [
-                round(float(df.at[station, c]), 4) if not pd.isna(df.at[station, c]) else None
-                for c in cols
-            ]
-            self._flagged.append({
-                "station": station,
-                "column": cols,
-                "qc_parameter": para,
-                "qc_value": qc_values,
-                **extra,
-            })
+            qc_values = [round(float(df.at[station, c]), 4) if not pd.isna(df.at[station, c]) else None for c in cols]
+            self._flagged.append(
+                {
+                    "station": station,
+                    "column": cols,
+                    "qc_parameter": para,
+                    "qc_value": qc_values,
+                    **extra,
+                }
+            )
             for c in cols:
                 df.loc[station, c] = np.nan
 
@@ -1002,17 +1029,28 @@ class CleanObservation(Filter):
         (e.g. pure-Python replacements that do not require titanlib).
         """
         return {
-            "buddy_check":       _buddy_check,
-            "first_guess_test":  _first_guess_test,
-            "isolation_check":   _isolation_check,
-            "spacial_ct_dual":   _spacial_ct_dual,
+            "buddy_check": _buddy_check,
+            "first_guess_test": _first_guess_test,
+            "isolation_check": _isolation_check,
+            "spacial_ct_dual": _spacial_ct_dual,
             "spacial_ct_resistant": _spacial_ct_resistant,
         }
 
     def _build_test_runners(
-        self, tests_to_do, df_obs, values, diffs, mods,
-        stations, lats, lons, elevs,
-        para, current_f, df_pi, obs_path_in,
+        self,
+        tests_to_do,
+        df_obs,
+        values,
+        diffs,
+        mods,
+        stations,
+        lats,
+        lons,
+        elevs,
+        para,
+        current_f,
+        df_pi,
+        obs_path_in,
         historical_raw=None,
     ):
         """Return a dict mapping each requested test name to a zero-arg callable.
@@ -1027,11 +1065,11 @@ class CleanObservation(Filter):
         runners = {}
 
         if "hard" in tests_to_do:
-            pch_min = cfg.plausibility_thresholds[para]['pch_min']
-            pch_max = cfg.plausibility_thresholds[para]['pch_max']
+            pch_min = cfg.plausibility_thresholds[para]["pch_min"]
+            pch_max = cfg.plausibility_thresholds[para]["pch_max"]
             _hard_limits = None
             if para in _HARD_ALTITUDE_PARAS and obs_path_in is not None:
-                _ts = re.search(r'\d{12}', Path(obs_path_in).stem)
+                _ts = re.search(r"\d{12}", Path(obs_path_in).stem)
                 _month = int(_ts.group()[4:6]) if _ts else None
                 if _month and "altitude" in df_obs.columns:
                     _min_floor = _HARD_MIN_FLOOR_TD if para == "TD_2M" else _HARD_MIN_FLOOR
@@ -1042,24 +1080,44 @@ class CleanObservation(Filter):
                         )
                         for _, row in df_obs[["sta_name", "altitude"]].iterrows()
                     }
-            runners["hard"] = lambda: _hard_test(
-                df_obs, pch_min, pch_max, para, current_f, limits=_hard_limits
-            )
+            runners["hard"] = lambda: _hard_test(df_obs, pch_min, pch_max, para, current_f, limits=_hard_limits)
 
         if "buddy_obs" in tests_to_do:
             b = cfg.buddy[para]
             runners["buddy_obs"] = lambda: fns["buddy_check"](
-                stations, lats, lons, elevs, values, para, current_f,
-                b["threshold"], b["max_elev_diff"], b["elev_gradient"],
-                b["min_std"], b["num_iterations"], b["num_min"], b["radius"],
+                stations,
+                lats,
+                lons,
+                elevs,
+                values,
+                para,
+                current_f,
+                b["threshold"],
+                b["max_elev_diff"],
+                b["elev_gradient"],
+                b["min_std"],
+                b["num_iterations"],
+                b["num_min"],
+                b["radius"],
             )
 
         if "buddy_diff" in tests_to_do:
             bd = cfg.buddy_diff[para]
             runners["buddy_diff"] = lambda: fns["buddy_check"](
-                stations, lats, lons, elevs, diffs, para, current_f,
-                bd["threshold"], bd["max_elev_diff"], bd["elev_gradient"],
-                bd["min_std"], bd["num_iterations"], bd["num_min"], bd["radius"],
+                stations,
+                lats,
+                lons,
+                elevs,
+                diffs,
+                para,
+                current_f,
+                bd["threshold"],
+                bd["max_elev_diff"],
+                bd["elev_gradient"],
+                bd["min_std"],
+                bd["num_iterations"],
+                bd["num_min"],
+                bd["radius"],
             )
 
         if "fgt" in tests_to_do:
@@ -1067,27 +1125,49 @@ class CleanObservation(Filter):
             _fgt_excl = set(cfg.fgt_excluded.get(para, {}).get("stations", []))
 
             def _run_fgt(
-                _stations=stations, _lats=lats, _lons=lons, _elevs=elevs,
-                _values=values, _mods=mods, _fg=fg, _excl=_fgt_excl,
+                _stations=stations,
+                _lats=lats,
+                _lons=lons,
+                _elevs=elevs,
+                _values=values,
+                _mods=mods,
+                _fg=fg,
+                _excl=_fgt_excl,
             ):
                 if _excl:
                     mask = [s not in _excl for s in _stations]
-                    idx  = [i for i, m in enumerate(mask) if m]
-                    _s   = [_stations[i] for i in idx]
-                    _la  = _lats[idx] if hasattr(_lats, '__getitem__') else [_lats[i] for i in idx]
-                    _lo  = _lons[idx] if hasattr(_lons, '__getitem__') else [_lons[i] for i in idx]
-                    _el  = _elevs[idx] if hasattr(_elevs, '__getitem__') else [_elevs[i] for i in idx]
-                    _v   = _values[idx] if hasattr(_values, '__getitem__') else [_values[i] for i in idx]
-                    _m   = _mods[idx] if hasattr(_mods, '__getitem__') else [_mods[i] for i in idx]
+                    idx = [i for i, m in enumerate(mask) if m]
+                    _s = [_stations[i] for i in idx]
+                    _la = _lats[idx] if hasattr(_lats, "__getitem__") else [_lats[i] for i in idx]
+                    _lo = _lons[idx] if hasattr(_lons, "__getitem__") else [_lons[i] for i in idx]
+                    _el = _elevs[idx] if hasattr(_elevs, "__getitem__") else [_elevs[i] for i in idx]
+                    _v = _values[idx] if hasattr(_values, "__getitem__") else [_values[i] for i in idx]
+                    _m = _mods[idx] if hasattr(_mods, "__getitem__") else [_mods[i] for i in idx]
                 else:
                     _s, _la, _lo, _el, _v, _m = _stations, _lats, _lons, _elevs, _values, _mods
                 return fns["first_guess_test"](
-                    _s, _la, _lo, _el, _v, _m, para, current_f,
-                    _fg['background_elab_type'], _fg['num_min_outer'], _fg['num_max_outer'],
-                    _fg['inner_radius'], _fg['outer_radius'], _fg['num_iterations'],
-                    _fg['num_min_prof'], _fg['min_elev_diff'], _fg['min_horizontal_scale'],
-                    _fg['max_horizontal_scale'], _fg['kth_closest_obs_horizontal_scale'],
-                    bool(_fg['debug']), bool(_fg['basic']), _fg['tpostneg'],
+                    _s,
+                    _la,
+                    _lo,
+                    _el,
+                    _v,
+                    _m,
+                    para,
+                    current_f,
+                    _fg["background_elab_type"],
+                    _fg["num_min_outer"],
+                    _fg["num_max_outer"],
+                    _fg["inner_radius"],
+                    _fg["outer_radius"],
+                    _fg["num_iterations"],
+                    _fg["num_min_prof"],
+                    _fg["min_elev_diff"],
+                    _fg["min_horizontal_scale"],
+                    _fg["max_horizontal_scale"],
+                    _fg["kth_closest_obs_horizontal_scale"],
+                    bool(_fg["debug"]),
+                    bool(_fg["basic"]),
+                    _fg["tpostneg"],
                 )
 
             runners["fgt"] = _run_fgt
@@ -1095,24 +1175,52 @@ class CleanObservation(Filter):
         if "spt_resistant" in tests_to_do:
             sp = cfg.spt_resistant[para]
             runners["spt_resistant"] = lambda: fns["spacial_ct_resistant"](
-                stations, lats, lons, elevs, values, para, current_f,
-                sp['background_elab_type'], sp['num_min_outer'], sp['num_max_outer'],
-                sp['inner_radius'], sp['outer_radius'], sp['num_iterations'],
-                sp['num_min_prof'], sp['min_elev_diff'], sp['min_horizontal_scale'],
-                sp['max_horizontal_scale'], sp['kth_closest_obs_horizontal_scale'],
-                sp['vertical_scale'], sp['debug'], sp['basic'],
+                stations,
+                lats,
+                lons,
+                elevs,
+                values,
+                para,
+                current_f,
+                sp["background_elab_type"],
+                sp["num_min_outer"],
+                sp["num_max_outer"],
+                sp["inner_radius"],
+                sp["outer_radius"],
+                sp["num_iterations"],
+                sp["num_min_prof"],
+                sp["min_elev_diff"],
+                sp["min_horizontal_scale"],
+                sp["max_horizontal_scale"],
+                sp["kth_closest_obs_horizontal_scale"],
+                sp["vertical_scale"],
+                sp["debug"],
+                sp["basic"],
             )
 
         if "spt_dual" in tests_to_do:
             sd = cfg.sct_dual[para]
             runners["spt_dual"] = lambda: fns["spacial_ct_dual"](
-                stations, lats, lons, elevs, values, para, current_f,
-                sd['num_min_outer'], sd['num_max_outer'],
-                sd['inner_radius'], sd['outer_radius'], sd['num_iterations'],
-                sd['min_horizontal_scale'], sd['max_horizontal_scale'],
-                sd['kth_closest_obs_horizontal_scale'], sd['vertical_scale'],
-                bool(sd['debug']), sd['condition'],
-                float(sd['event_thresholds']), float(sd['test_thresholds']),
+                stations,
+                lats,
+                lons,
+                elevs,
+                values,
+                para,
+                current_f,
+                sd["num_min_outer"],
+                sd["num_max_outer"],
+                sd["inner_radius"],
+                sd["outer_radius"],
+                sd["num_iterations"],
+                sd["min_horizontal_scale"],
+                sd["max_horizontal_scale"],
+                sd["kth_closest_obs_horizontal_scale"],
+                sd["vertical_scale"],
+                bool(sd["debug"]),
+                sd["condition"],
+                float(sd["event_thresholds"]),
+                float(sd["test_thresholds"]),
             )
 
         if "DWH_flag" in tests_to_do:
@@ -1120,23 +1228,35 @@ class CleanObservation(Filter):
             if df_pi is not None and pi_col and pi_col in df_pi.columns:
                 pla_series = df_pi[pi_col]
             else:
-                LOG.warning('DWH_flag: no pi column for %s, skipping', para)
+                LOG.warning("DWH_flag: no pi column for %s, skipping", para)
                 pla_series = pd.Series(dtype=float)
             runners["DWH_flag"] = lambda: _DWH_flag(current_f, para, stations, pla_series, qc_config=cfg)
 
         if "plateau_test" in tests_to_do:
             pt = cfg.plateau_test[para]
             runners["plateau_test"] = lambda: _plateau_test(
-                df_obs, pt['window'], pt['sd'], para, current_f,
-                obs_path_in=obs_path_in, gran_minutes=pt['gran'],
-                historical_raw=historical_raw, qc_config=cfg,
+                df_obs,
+                pt["window"],
+                pt["sd"],
+                para,
+                current_f,
+                obs_path_in=obs_path_in,
+                gran_minutes=pt["gran"],
+                historical_raw=historical_raw,
+                qc_config=cfg,
             )
 
         if "isolation_check" in tests_to_do:
             ic = cfg.isolation_check[para]
             runners["isolation_check"] = lambda: fns["isolation_check"](
-                stations, lats, lons, elevs, para, current_f,
-                ic['num_min'], ic['radius'],
+                stations,
+                lats,
+                lons,
+                elevs,
+                para,
+                current_f,
+                ic["num_min"],
+                ic["radius"],
             )
 
         return runners
@@ -1155,10 +1275,7 @@ class CleanObservation(Filter):
             "tests_done": tests_done,
             "n_flagged": len(flagged),
             "n_flagged_per_parameter": n_per_para,
-            "flagged": [
-                {k: round(v, 2) if isinstance(v, float) else v for k, v in e.items()}
-                for e in flagged
-            ],
+            "flagged": [{k: round(v, 2) if isinstance(v, float) else v for k, v in e.items()} for e in flagged],
         }
         with open(json_path, "w") as fh:
             json.dump(output, fh, indent=2)
@@ -1168,6 +1285,7 @@ class CleanObservation(Filter):
     @staticmethod
     def _write_inversion_protection_json(json_path: Path, protected: list, obs_timestamp: str) -> None:
         """Write inversion-protection suppression report to *json_path*."""
+
         def _entry(e: dict) -> str:
             return (
                 "    {\n"
@@ -1185,14 +1303,13 @@ class CleanObservation(Filter):
             "{\n"
             f'  "obs_timestamp": {json.dumps(obs_timestamp)},\n'
             f'  "n_protected": {len(protected)},\n'
-            '  "protected": [\n'
-            + (entries + "\n" if entries else "")
-            + "  ]\n}\n"
+            '  "protected": [\n' + (entries + "\n" if entries else "") + "  ]\n}\n"
         )
         json_path.write_text(body)
         LOG.info(
             "Inversion protection report: %d suppressed flag(s) → %s",
-            len(protected), json_path,
+            len(protected),
+            json_path,
         )
 
     @staticmethod
@@ -1230,9 +1347,7 @@ class CleanObservation(Filter):
 
         matches = list(self.residuals_dir.glob(f"*{ts}*.parquet"))
         if not matches:
-            raise FileNotFoundError(
-                f"No residuals parquet matching *{ts}*.parquet in {self.residuals_dir}"
-            )
+            raise FileNotFoundError(f"No residuals parquet matching *{ts}*.parquet in {self.residuals_dir}")
         residuals_path = matches[0]
         if len(matches) > 1:
             LOG.warning("Multiple residuals files match %s — using %s", ts, residuals_path.name)
@@ -1252,8 +1367,7 @@ class CleanObservation(Filter):
             if para == "sta_name" or para not in df_res.columns:
                 continue
             diff_vals = np.array(
-                [float(df_res.at[stn, para]) if stn in df_res.index else np.nan
-                 for stn in station_names],
+                [float(df_res.at[stn, para]) if stn in df_res.index else np.nan for stn in station_names],
                 dtype=float,
             )
             df_diff[para] = diff_vals
@@ -1297,13 +1411,13 @@ class CleanObservation(Filter):
 
         # QC parameter -> GRIB shortName candidates (first match wins)
         _QC_TO_GRIB = {
-            "T_2M":    ["T_2M", "2t"],
-            "TD_2M":   ["TD_2M", "2d"],
+            "T_2M": ["T_2M", "2t"],
+            "TD_2M": ["TD_2M", "2d"],
             "VMAX10M": ["VMAX_10M", "vmax"],
             # SP_10M derived from U/V — handled separately below
         }
-        _U_SHORTNAMES    = ["U_10M", "10u"]
-        _V_SHORTNAMES    = ["V_10M", "10v"]
+        _U_SHORTNAMES = ["U_10M", "10u"]
+        _V_SHORTNAMES = ["V_10M", "10v"]
         _HSURF_SHORTNAMES = ["HSURF", "z"]
 
         LOG.info("Reading model GRIB: %s", self.model_grib_path)
@@ -1319,9 +1433,7 @@ class CleanObservation(Filter):
             lat_r = np.deg2rad(lat_deg)
             lon_r = np.deg2rad(lon_deg)
             return np.stack(
-                [np.cos(lat_r) * np.cos(lon_r),
-                 np.cos(lat_r) * np.sin(lon_r),
-                 np.sin(lat_r)],
+                [np.cos(lat_r) * np.cos(lon_r), np.cos(lat_r) * np.sin(lon_r), np.sin(lat_r)],
                 axis=-1,
             )
 
@@ -1354,10 +1466,9 @@ class CleanObservation(Filter):
                 station_idx = indices[:, 0]
             else:
                 LOG.debug("HSURF loaded (%d grid points)", len(grid_hsurf))
-                station_idx = np.array([
-                    nbrs[np.argmin(np.abs(grid_hsurf[nbrs] - sta_elev))]
-                    for nbrs, sta_elev in zip(indices, elevs)
-                ])
+                station_idx = np.array(
+                    [nbrs[np.argmin(np.abs(grid_hsurf[nbrs] - sta_elev))] for nbrs, sta_elev in zip(indices, elevs)]
+                )
         else:  # "nearest"
             _, station_idx = tree.query(_xyz(lats, lons), k=1)  # (n_sta,)
 
@@ -1377,9 +1488,7 @@ class CleanObservation(Filter):
             u_vals = _first_field_values(_U_SHORTNAMES)
             v_vals = _first_field_values(_V_SHORTNAMES)
             if u_vals is not None and v_vals is not None:
-                df_mod["SP_10M"] = np.sqrt(
-                    u_vals[station_idx] ** 2 + v_vals[station_idx] ** 2
-                )
+                df_mod["SP_10M"] = np.sqrt(u_vals[station_idx] ** 2 + v_vals[station_idx] ** 2)
                 LOG.debug("Derived SP_10M (U/V) for %d stations", len(station_idx))
 
         # df_diff = obs - model background (observation innovation).
@@ -1400,6 +1509,7 @@ class CleanObservation(Filter):
         """
         LOG.info("Generating QC station maps in %s", self.obs_path_out.parent)
         from clean_observation_plot import prepare_and_plot_station_maps
+
         prepare_and_plot_station_maps(
             getattr(self, "_flagged", []),
             getattr(self, "_qc_diagnostics", {}),

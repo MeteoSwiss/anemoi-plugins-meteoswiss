@@ -29,8 +29,8 @@ _ECMWF_NAME_TO_DWH_PARAMS = {
     "10u": ["fkl010z0", "dkl010z0"],
     "10v": ["fkl010z0", "dkl010z0"],
     "msl": ["pp0qffs0"],
-    "sp":  ["prestas0"],
-    "tp":  ["rre150h0"],
+    "sp": ["prestas0"],
+    "tp": ["rre150h0"],
     "vmax": ["fkl010z1"],
     "skt": ["tre005s0"],
 }
@@ -153,18 +153,10 @@ class RetrieveObservation(Filter):
             quality_info=4,  # request PlausibilityNu: adds {param}_pi columns (0–1)
         )
 
-        df["nat_abbr"] = df["station"].map(
-            dict(zip(catalog.station_id, catalog.nat_abbr))
-        )
-        df["latitude"] = df["station"].map(
-            dict(zip(catalog.station_id, catalog.latitude))
-        )
-        df["longitude"] = df["station"].map(
-            dict(zip(catalog.station_id, catalog.longitude))
-        )
-        df["altitude"] = df["station"].map(
-            dict(zip(catalog.station_id, catalog.elevation))
-        )
+        df["nat_abbr"] = df["station"].map(dict(zip(catalog.station_id, catalog.nat_abbr)))
+        df["latitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.latitude)))
+        df["longitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.longitude)))
+        df["altitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.elevation)))
 
         df = df.dropna(subset=["nat_abbr"]).set_index("nat_abbr")
         df.index.name = "station"
@@ -202,11 +194,15 @@ class RetrieveObservation(Filter):
         df = df.rename(columns={k: v for k, v in _PI_RENAME.items() if k in df.columns})
         pi_cols = [c for c in df.columns if c.endswith("_pi")]
 
-        result_cols = [c for c in self.ecmwf_names if c in df.columns] + [
-            "latitude",
-            "longitude",
-            "altitude",
-        ] + pi_cols
+        result_cols = (
+            [c for c in self.ecmwf_names if c in df.columns]
+            + [
+                "latitude",
+                "longitude",
+                "altitude",
+            ]
+            + pi_cols
+        )
         df = df[result_cols].copy()
 
         Path(self.obs_path).parent.mkdir(parents=True, exist_ok=True)

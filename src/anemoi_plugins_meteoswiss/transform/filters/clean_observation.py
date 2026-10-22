@@ -1494,4 +1494,3 @@ class CleanObservation(Filter):
                 df_diff[col] = df_qc[col].to_numpy() - df_mod[col].to_numpy()
 
         return df_mod, df_diff
-

@@ -371,8 +371,28 @@ try:
 
     _QC_AVAILABLE = True
 except ImportError as _e:
-    LOG.warning("QC modules not available, cleaning will be a no-op: %s", _e)
-    _QC_AVAILABLE = False
+    LOG.warning("titanlib not available, falling back to standalone pure-Python QC: %s", _e)
+    try:
+        import sys
+        from types import ModuleType as _MT
+
+        if "titanlib" not in sys.modules:
+            sys.modules["titanlib"] = _MT("titanlib")
+
+        from .clean_observation_tests import DWH_flag as _DWH_flag
+        from .clean_observation_tests import hard_test as _hard_test
+        from .clean_observation_tests import plateau_test as _plateau_test
+        from .clean_observation_tests import tests_summary as _tests_summary
+        from .clean_observation_tests_standalone import buddy_check_py as _buddy_check
+        from .clean_observation_tests_standalone import first_guess_test_py as _first_guess_test
+        from .clean_observation_tests_standalone import isolation_check_py as _isolation_check
+        from .clean_observation_tests_standalone import sct_dual_py as _spacial_ct_dual
+        from .clean_observation_tests_standalone import sct_resistant_py as _spacial_ct_resistant
+
+        _QC_AVAILABLE = True
+    except ImportError as _e2:
+        LOG.warning("Standalone QC modules also unavailable, cleaning will be a no-op: %s", _e2)
+        _QC_AVAILABLE = False
 
 
 class CleanObservation(Filter):

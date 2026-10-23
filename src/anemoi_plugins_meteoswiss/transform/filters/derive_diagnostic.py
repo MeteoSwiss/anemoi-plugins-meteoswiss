@@ -24,6 +24,9 @@ Usage::
                 orography_file: /path/to/external_parameter_icon_grid.nc
                 variables: [SP_10M, DD_10M, RELHUM_2M, TW_2M, HZEROCL, SNOWLMT,
                             CAPE_ML, CIN_ML, CAPE_MU, CIN_MU, PTYPE, TOT_SNOW]
+                # optional: CAPE/CIN as ICON (default: earthkit)
+                cape_cin_method: icon
+                vertical_grid_file: /path/to/icon_hhl.nc  # see scripts/extract_icon_hhl.py
 
 The inputs are read from the state by their GRIB name. Only
 the inputs needed by the requested ``variables`` are used.
@@ -44,6 +47,10 @@ Notes
 - ``n_threads`` (default: all CPUs available to the process, e.g. the Slurm
   allocation) splits the grid points of the expensive diagnostics (TW_2M,
   wet-bulb profile, CAPE/CIN) into chunks computed in parallel threads.
+- ``cape_cin_method: icon`` computes CAPE/CIN as ICON does (``cal_cape_cin``
+  and ``cal_cape_cin_mu``), on the ICON model levels of ``vertical_grid_file``
+  (interface heights, HHL) onto which the pressure levels are interpolated.
+  The default, ``earthkit``, integrates on the pressure levels themselves.
 """
 
 import logging
@@ -82,6 +89,7 @@ from earthkit.meteo.thermo import wet_bulb_temperature_from_dewpoint
 from earthkit.meteo.thermo import wet_bulb_temperature_from_specific_humidity
 from earthkit.meteo.vertical import geometric_height_from_geopotential
 
+from . import _icon_cape_cin as icon_cape_cin
 from .copy_prognostic_from_forecaster import _leadtime
 
 LOG = logging.getLogger(__name__)
@@ -105,6 +113,15 @@ MIN_MELTING_LAYER_DEPTH = 75.0  # m, minimum MELTLAYER_TOP - SNOWLMT
 EPT_METHOD = "bolton39"
 ML_DEPTH = 5000.0  # Pa, depth of the mixed layer averaged for CAPE_ML/CIN_ML
 MU_DEPTH = 30000.0  # Pa, depth searched for the most unstable parcel (CAPE_MU/CIN_MU)
+
+# CAPE/CIN with cape_cin_method="icon". ICON integrates up to kstart_moist, the
+# first full level below htop_moist_proc, and for ML not above k060, its 60 hPa
+# level, taken here from the standard atmosphere. Parcels are never buoyant
+# that high, so the exact level doesn't change CAPE/CIN.
+ICON_HTOP_MOIST_PROC = 22500.0  # m, ICON's default
+ICON_ML_TOP_PRESSURE = 6000.0  # Pa
+ICON_MU_HEIGHT_LIMIT = 3000.0  # m above ground, highest MU parcel start (ICON's caller)
+ICON_CHUNK_SIZE = 131072  # max points put on the model levels at once (~5 KB each with 80 levels)
 
 # INCA precipitation type and snow fraction.
 PREC_RATE_MIN = 0.1  # mm/h, minimum rate to assign a precipitation type
@@ -227,6 +244,9 @@ class DeriveDiagnostic(MatchingFieldsFilter):
         accumulated_precipitation: str | None = _DEFAULT_INPUTS["accumulated_precipitation"],
         snow_fraction_profile: Literal["linear", "logistic"] = "linear",
         n_threads: int | None = None,
+        cape_cin_method: Literal["earthkit", "icon"] = "earthkit",
+        vertical_grid_file: str | None = None,
+        vertical_grid_variable: str = "HHL",
     ) -> None:
         """``variables`` selects the diagnostics to derive, any of ``_SUPPORTED_VARIABLES``.
         The inputs (``u_10m`` ... ``accumulated_precipitation``) are the
@@ -238,6 +258,11 @@ class DeriveDiagnostic(MatchingFieldsFilter):
         across the melting layer used for ``TOT_SNOW``. ``n_threads`` is the
         number of threads the grid points are split over (default: all CPUs
         available to the process; 1 computes them all in the calling thread).
+        ``cape_cin_method`` is ``earthkit`` (on the pressure levels) or
+        ``icon`` (as ICON, on its model levels); ``icon`` requires
+        ``vertical_grid_file`` (NetCDF, variable ``vertical_grid_variable``:
+        the ICON interface heights in m, shape (interfaces, cells), on the
+        grid of the state).
         """
         if isinstance(variables, str):
             variables = [variables]
@@ -249,6 +274,8 @@ class DeriveDiagnostic(MatchingFieldsFilter):
             raise ValueError(f"Unsupported variable(s) {sorted(unknown)}; supported: {sorted(_SUPPORTED_VARIABLES)}.")
         if snow_fraction_profile not in ("linear", "logistic"):
             raise ValueError(f"`snow_fraction_profile` must be 'linear' or 'logistic', got {snow_fraction_profile!r}.")
+        if cape_cin_method not in ("earthkit", "icon"):
+            raise ValueError(f"`cape_cin_method` must be 'earthkit' or 'icon', got {cape_cin_method!r}.")
         if n_threads is None:
             n_threads = _available_cpus()
         if not isinstance(n_threads, int) or n_threads < 1:
@@ -265,6 +292,7 @@ class DeriveDiagnostic(MatchingFieldsFilter):
         self.accumulated_precipitation = accumulated_precipitation
         self.snow_fraction_profile = snow_fraction_profile
         self.n_threads = n_threads
+        self.cape_cin_method = cape_cin_method
         self.variables = variables
 
         requested = set(variables)
@@ -289,6 +317,15 @@ class DeriveDiagnostic(MatchingFieldsFilter):
             if orography_file is None:
                 raise ValueError(f"{sorted(_VERTICAL_VARIABLES & requested)} require `orography_file`.")
             self._orography = _load_orography(Path(orography_file), orography_variable)
+
+        # ICON interface heights and integration tops, for CAPE/CIN as ICON.
+        self._hhl = None
+        self._icon_kmoist: dict[str, int] = {}
+        if self._parcels and cape_cin_method == "icon":
+            if vertical_grid_file is None:
+                raise ValueError("`cape_cin_method: icon` requires `vertical_grid_file`.")
+            self._hhl = _load_vertical_grid(Path(vertical_grid_file), vertical_grid_variable)
+            self._icon_kmoist = _icon_integration_tops(self._hhl)
 
         # Match only the inputs the requested variables need. Grouped by level,
         # a pressure-level input arrives as a FieldList, which the base class
@@ -454,6 +491,11 @@ class DeriveDiagnostic(MatchingFieldsFilter):
                 f"Orography has {orography.size} points but the state has {t_2m.size}; "
                 "derive-diagnostic must run on the native grid of the orography file."
             )
+        if self._hhl is not None and self._hhl.shape[1] != t_2m.size:
+            raise ValueError(
+                f"Vertical grid has {self._hhl.shape[1]} points but the state has {t_2m.size}; "
+                "derive-diagnostic must run on the native grid of the vertical grid file."
+            )
 
         level_fields = {"t": temperature_levels, "z": geopotential_levels}
         if self._needs_wet_bulb_profile or self._parcels:
@@ -503,12 +545,14 @@ class DeriveDiagnostic(MatchingFieldsFilter):
                 )
 
         if self._parcels:
+            icon = self.cape_cin_method == "icon"
             with _timer(timings, "CAPE/CIN column"):
                 p, height, t, q = _environment_column(
                     t_2m=t_2m,
                     td_2m=td_2m,
                     sp=sp,
-                    orography=orography,
+                    # ICON's model surface, to which PS and the 2 m fields refer
+                    orography=self._hhl[-1] if icon else orography,
                     pressure=pressure,
                     t_levels=profiles["t"],
                     q_levels=profiles["q"],
@@ -517,12 +561,21 @@ class DeriveDiagnostic(MatchingFieldsFilter):
                 )
             for kind in self._parcels:
                 with _timer(timings, f"CAPE_{kind}/CIN_{kind}"):
-                    diagnostics[f"CAPE_{kind}"], diagnostics[f"CIN_{kind}"] = _map_over_points(
-                        _cape_cin,
-                        self.n_threads,
-                        per_point={"p": p, "height": height, "t": t, "q": q},
-                        shared={"kind": kind},
-                    )
+                    if icon:
+                        cape_cin = _map_over_points(
+                            _cape_cin_icon,
+                            self.n_threads,
+                            per_point={"p": p, "height": height, "t": t, "q": q, "hhl": self._hhl},
+                            shared={"kind": kind, "kmoist": self._icon_kmoist[kind]},
+                        )
+                    else:
+                        cape_cin = _map_over_points(
+                            _cape_cin,
+                            self.n_threads,
+                            per_point={"p": p, "height": height, "t": t, "q": q},
+                            shared={"kind": kind},
+                        )
+                    diagnostics[f"CAPE_{kind}"], diagnostics[f"CIN_{kind}"] = cape_cin
 
         return diagnostics
 
@@ -651,6 +704,51 @@ def _load_orography(path: Path, variable: str) -> np.ndarray:
         orography = ds[variable].values.astype(np.float64).ravel()
     LOG.info("derive-diagnostic: orography (%d points) loaded from %s", orography.size, path)
     return orography
+
+
+def _load_vertical_grid(path: Path, variable: str) -> np.ndarray:
+    """Load the ICON interface heights (m), shape (interfaces, points), top-down
+    as in ICON: the last interface is the model surface."""
+    with xr.open_dataset(path) as ds:
+        hhl = ds[variable].values.astype(np.float64)
+    if hhl.ndim != 2:
+        raise ValueError(f"{variable} in {path} must have shape (interfaces, cells), got {hhl.shape}.")
+    if hhl[0].mean() < hhl[-1].mean():
+        hhl = hhl[::-1]
+    LOG.info(
+        "derive-diagnostic: vertical grid (%d levels, %d points) loaded from %s", hhl.shape[0] - 1, hhl.shape[1], path
+    )
+    return np.ascontiguousarray(hhl)
+
+
+def _standard_atmosphere_pressure(height: np.ndarray) -> np.ndarray:
+    """Pressure (Pa) of the ICAO standard atmosphere: 6.5 K/km lapse rate up to
+    11 km, isothermal above."""
+    t0, lapse_rate, p0 = 288.15, 0.0065, 101325.0
+    z_tropopause = 11000.0
+    t_tropopause = t0 - lapse_rate * z_tropopause
+    p_tropopause = p0 * (t_tropopause / t0) ** (constants.g / (constants.Rd * lapse_rate))
+    troposphere = p0 * (np.maximum(t0 - lapse_rate * height, t_tropopause) / t0) ** (
+        constants.g / (constants.Rd * lapse_rate)
+    )
+    stratosphere = p_tropopause * np.exp(-constants.g * (height - z_tropopause) / (constants.Rd * t_tropopause))
+    return np.where(height <= z_tropopause, troposphere, stratosphere)
+
+
+def _icon_integration_tops(hhl: np.ndarray) -> dict[str, int]:
+    """Zero-based uppermost level of the ICON CAPE/CIN integration per parcel:
+    ``kstart_moist`` for MU, ``max(kstart_moist, k060)`` for ML."""
+    # The upper levels are flat; take the highest of each over the domain.
+    full_levels = (0.5 * (hhl[:-1] + hhl[1:])).max(axis=1)
+    kstart_moist = int(np.argmax(full_levels < ICON_HTOP_MOIST_PROC))
+    k060 = int(np.argmax(_standard_atmosphere_pressure(full_levels) > ICON_ML_TOP_PRESSURE))
+    tops = {"ML": max(kstart_moist, k060), "MU": kstart_moist}
+    LOG.info(
+        "derive-diagnostic: ICON CAPE/CIN integrated up to level %s (full-level heights %s m)",
+        tops,
+        {kind: round(float(full_levels[k])) for kind, k in tops.items()},
+    )
+    return tops
 
 
 def _as_single_field(x: ekd.Field | ekd.FieldList | None) -> ekd.Field | None:
@@ -991,6 +1089,67 @@ def _integrate_cape_cin(
     cape = np.where(has_lfc, np.maximum(cape_area.sum(axis=0), 0.0), 0.0)
     cin = np.where(has_lfc, -np.where(segment <= lfc_index, negative, 0.0).sum(axis=0), np.nan)
     return cape, cin
+
+
+def _on_model_levels(
+    p: np.ndarray, height: np.ndarray, t: np.ndarray, q: np.ndarray, hhl: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Temperature, specific humidity and pressure of the bottom-up environment
+    column interpolated to the full levels of the interface heights ``hhl``.
+
+    T, q and log p are linear in height between the column points. Above the
+    column top, T and q are kept constant and log p is extrapolated. Returns
+    arrays of shape (points, levels), top-down, as the ICON port takes them
+    (transposed views: the port reads one level of many points at a time).
+    """
+    height = np.maximum.accumulate(height, axis=0)  # guards against a level just below the 2 m point
+    full_levels = 0.5 * (hhl[:-1] + hhl[1:])
+    upper = np.clip((height[None] <= full_levels[:, None]).sum(axis=1), 1, height.shape[0] - 1)
+    lower = upper - 1
+    h_lower, h_upper = np.take_along_axis(height, lower, axis=0), np.take_along_axis(height, upper, axis=0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        weight = np.maximum(np.where(h_upper > h_lower, (full_levels - h_lower) / (h_upper - h_lower), 0.0), 0.0)
+
+    def interpolate(x: np.ndarray, w: np.ndarray) -> np.ndarray:
+        x_lower = np.take_along_axis(x, lower, axis=0)
+        return (x_lower + w * (np.take_along_axis(x, upper, axis=0) - x_lower)).T
+
+    within = np.minimum(weight, 1.0)
+    return interpolate(t, within), interpolate(q, within), np.exp(interpolate(np.log(p), weight))
+
+
+def _cape_cin_icon(
+    p: np.ndarray,
+    height: np.ndarray,
+    t: np.ndarray,
+    q: np.ndarray,
+    hhl: np.ndarray,
+    *,
+    kind: Literal["ML", "MU"],
+    kmoist: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """CAPE and CIN (J/kg) as ICON's ``cal_cape_cin`` (``ML``) or
+    ``cal_cape_cin_mu`` (``MU``), of the environment column put on the ICON
+    model levels of ``hhl`` (interfaces, points). CIN is NaN where ICON's is
+    missing: no LFC, or no CAPE.
+    """
+    n_points = p.shape[-1]
+    cape, cin = np.empty(n_points), np.empty(n_points)
+    # Equal chunks: the port's cost per chunk is largely per level, not per point.
+    bounds = np.linspace(0, n_points, -(-n_points // ICON_CHUNK_SIZE) + 1).astype(int)
+    for start, stop in zip(bounds[:-1], bounds[1:]):
+        points = slice(start, stop)
+        te, qve, prs = _on_model_levels(p[:, points], height[:, points], t[:, points], q[:, points], hhl[:, points])
+        cape[points], cin[points] = icon_cape_cin.cape_cin(
+            te,
+            qve,
+            prs,
+            hhl[:, points].T,
+            kmoist=kmoist,
+            parcel=kind.lower(),
+            z_limit=ICON_MU_HEIGHT_LIMIT,
+        )
+    return cape, np.where(cin == icon_cape_cin.MISSING, np.nan, cin)
 
 
 def _melting_layer_depth(snowlmt: np.ndarray, melting_layer_top: np.ndarray) -> np.ndarray:

@@ -950,6 +950,144 @@ def test_derive_diagnostic_cape_cin_ml_and_mu(orography_file):
     np.testing.assert_array_equal(by_name["CAPE_MU"], cape_mu)
 
 
+# ICON-like interface heights for the test columns: 40 layers, thin near the
+# ground, terrain-following, model top at 22 km.
+_HHL_TOP = 22000.0
+_HHL_FLAT = _HHL_TOP * np.linspace(1.0, 0.0, 41) ** 2
+
+
+def _hhl(orography):
+    return _HHL_FLAT[:, None] + np.asarray(orography)[None, :] * (1.0 - _HHL_FLAT[:, None] / _HHL_TOP)
+
+
+@pytest.fixture
+def vertical_grid_file(tmp_path):
+    path = tmp_path / "hhl.nc"
+    xr.Dataset({"HHL": (("interface", "cell"), _hhl(_tiled(_OROGRAPHY)))}).to_netcdf(path)
+    return path
+
+
+def _icon_cape_cin_outputs(orography_file, vertical_grid_file, variables, **kwargs):
+    result = _vertical_diagnostics(
+        orography_file, variables, cape_cin_method="icon", vertical_grid_file=str(vertical_grid_file), **kwargs
+    ).forward(_vertical_fieldlist())
+    return {f.metadata("param"): f.to_numpy(flatten=True) for f in result if f.metadata("param") in variables}
+
+
+def test_derive_diagnostic_cape_cin_icon(orography_file, vertical_grid_file):
+    from anemoi_plugins_meteoswiss.transform.filters import _icon_cape_cin
+    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _environment_column
+    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _icon_integration_tops
+    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _on_model_levels
+
+    variables = ["CAPE_ML", "CIN_ML", "CAPE_MU", "CIN_MU"]
+    by_name = {name: x[:4] for name, x in _icon_cape_cin_outputs(orography_file, vertical_grid_file, variables).items()}
+
+    # The ICON port on the test columns put on the model levels, from ICON's model surface.
+    hhl = _hhl(_OROGRAPHY)
+    pressure = np.array(_LEVELS, dtype=float) * 100.0
+    column = _environment_column(
+        t_2m=_T_2M,
+        td_2m=_TD_2M,
+        sp=_SP,
+        orography=hhl[-1],
+        pressure=pressure,
+        t_levels=_T_LEVELS,
+        q_levels=_Q_LEVELS,
+        level_heights=np.repeat(np.array(_LEVEL_HEIGHTS)[:, None], 4, axis=1),
+        above_ground=pressure[:, None] < _SP[None, :],
+    )
+    te, qve, prs = _on_model_levels(*column, hhl)
+    tops = _icon_integration_tops(hhl)
+    for kind in ("ML", "MU"):
+        cape, cin = _icon_cape_cin.cape_cin(te, qve, prs, hhl.T.copy(), kmoist=tops[kind], parcel=kind.lower())
+        np.testing.assert_array_equal(by_name[f"CAPE_{kind}"], cape)
+        np.testing.assert_array_equal(by_name[f"CIN_{kind}"], np.where(cin == _icon_cape_cin.MISSING, np.nan, cin))
+        # ICON's CIN is missing without CAPE; the moist lowland column has some.
+        np.testing.assert_array_equal(np.isnan(by_name[f"CIN_{kind}"]), by_name[f"CAPE_{kind}"] < 1e-8)
+        assert by_name[f"CAPE_{kind}"][0] > 0.0
+    # Not the earthkit integration.
+    earthkit = _vertical_diagnostics(orography_file, ["CAPE_ML"]).forward(_vertical_fieldlist())
+    cape_earthkit = next(f for f in earthkit if f.metadata("param") == "CAPE_ML").to_numpy(flatten=True)[:4]
+    assert by_name["CAPE_ML"][0] != cape_earthkit[0]
+
+
+def test_derive_diagnostic_cape_cin_icon_chunks_and_threads(orography_file, vertical_grid_file, monkeypatch):
+    """Chunks of points and threads give exactly the single-chunk, single-thread result."""
+    from anemoi_plugins_meteoswiss.transform.filters import derive_diagnostic
+
+    variables = ["CAPE_ML", "CIN_ML", "CAPE_MU", "CIN_MU"]
+    reference = _icon_cape_cin_outputs(orography_file, vertical_grid_file, variables, n_threads=1)
+    monkeypatch.setattr(derive_diagnostic, "ICON_CHUNK_SIZE", 100003)
+    chunked = _icon_cape_cin_outputs(orography_file, vertical_grid_file, variables, n_threads=3)
+    for name in variables:
+        np.testing.assert_array_equal(chunked[name], reference[name])
+
+
+def test_derive_diagnostic_cape_cin_earthkit_ignores_vertical_grid(orography_file, vertical_grid_file):
+    """The default method is earthkit, and the vertical grid doesn't change it."""
+    variables = ["CAPE_ML", "CIN_ML", "CAPE_MU", "CIN_MU"]
+
+    def run(**kwargs):
+        result = _vertical_diagnostics(orography_file, variables, **kwargs).forward(_vertical_fieldlist())
+        return {f.metadata("param"): f.to_numpy(flatten=True) for f in result if f.metadata("param") in variables}
+
+    default = run()
+    explicit = run(cape_cin_method="earthkit", vertical_grid_file=str(vertical_grid_file))
+    for name in variables:
+        np.testing.assert_array_equal(explicit[name], default[name])
+
+
+def test_derive_diagnostic_cape_cin_icon_requires_vertical_grid(orography_file):
+    with pytest.raises(ValueError, match="vertical_grid_file"):
+        _vertical_diagnostics(orography_file, ["CAPE_ML"], cape_cin_method="icon")
+    # Without CAPE/CIN the vertical grid isn't needed.
+    _vertical_diagnostics(orography_file, ["HZEROCL"], cape_cin_method="icon")
+
+
+def test_derive_diagnostic_rejects_unknown_cape_cin_method(orography_file):
+    with pytest.raises(ValueError, match="cape_cin_method"):
+        _vertical_diagnostics(orography_file, ["CAPE_ML"], cape_cin_method="cosmo")
+
+
+def test_derive_diagnostic_rejects_vertical_grid_size_mismatch(orography_file, tmp_path):
+    path = tmp_path / "hhl.nc"
+    xr.Dataset({"HHL": (("interface", "cell"), _hhl(np.zeros(7)))}).to_netcdf(path)
+    diagnostics = _vertical_diagnostics(orography_file, ["CAPE_ML"], cape_cin_method="icon", vertical_grid_file=path)
+    with pytest.raises(ValueError, match="native grid"):
+        diagnostics.forward(_vertical_fieldlist())
+
+
+def test_on_model_levels():
+    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _on_model_levels
+
+    # Bottom-up column: 2 m point, a level collapsed onto it (below ground), two
+    # levels above. T and q linear in height, log p linear in height.
+    height = np.array([[2.0], [2.0], [1002.0], [3002.0]])
+    t = 290.0 - 0.0065 * (height - 2.0)
+    q = 0.010 - 2e-6 * (height - 2.0)
+    p = 100000.0 * np.exp(-(height - 2.0) / 8000.0)
+    # Full levels at 4002 m (above the column top), 2002 m and 502 m.
+    hhl = np.array([[5002.0], [3002.0], [1002.0], [2.0]])
+    te, qve, prs = _on_model_levels(p, height, t, q, hhl)
+    full = 0.5 * (hhl[:-1] + hhl[1:])[:, 0]
+    np.testing.assert_allclose(prs[0], 100000.0 * np.exp(-(full - 2.0) / 8000.0))
+    # Below the column top T and q are interpolated; above it they're kept constant.
+    np.testing.assert_allclose(te[0, 1:], 290.0 - 0.0065 * (full[1:] - 2.0))
+    np.testing.assert_allclose(qve[0, 1:], 0.010 - 2e-6 * (full[1:] - 2.0))
+    np.testing.assert_allclose([te[0, 0], qve[0, 0]], [t[-1, 0], q[-1, 0]])
+
+
+def test_icon_integration_tops():
+    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _icon_integration_tops
+
+    # Full levels at 23000, 21000, 19300 and 9300 m: the first below 22.5 km is
+    # level 1; the first above 60 hPa in the standard atmosphere (19300 m:
+    # 61 hPa, 21000 m: 47 hPa) is level 2.
+    hhl = np.repeat(np.array([[24000.0], [22000.0], [20000.0], [18600.0], [0.0]]), 3, axis=1)
+    assert _icon_integration_tops(hhl) == {"ML": 2, "MU": 1}
+
+
 def test_precipitation_type():
     from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _precipitation_type
 

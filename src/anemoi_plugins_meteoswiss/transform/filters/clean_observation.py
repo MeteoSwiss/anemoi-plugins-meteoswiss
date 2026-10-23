@@ -501,7 +501,7 @@ class CleanObservation(Filter):
         # Drop _pi columns (DWH plausibility values) from output — they are only
         # needed internally during QC and should not propagate downstream.
         pi_cols = [c for c in df.columns if c.endswith("_pi")]
-        df.to_parquet(self.obs_path_out, columns=[c for c in df.columns if c not in pi_cols])
+        df[[c for c in df.columns if c not in pi_cols]].to_parquet(self.obs_path_out)
         LOG.info("Saved %d cleaned stations to %s", len(df), self.obs_path_out)
 
         ts_match = re.search(r"\d{12}", self.obs_path_in.stem)

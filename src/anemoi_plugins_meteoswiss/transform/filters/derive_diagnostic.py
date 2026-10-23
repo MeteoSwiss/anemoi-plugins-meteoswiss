@@ -21,21 +21,12 @@ Usage::
           post_processors:
           - forward_transform_filter:
               derive-diagnostic:
-                u_10m: U_10M
-                v_10m: V_10M
-                temperature_2m: T_2M
-                dewpoint_2m: TD_2M
-                surface_pressure: PS
-                temperature_levels: T
-                specific_humidity_levels: QV
-                geopotential_levels: FI
-                accumulated_precipitation: TOT_PREC
                 orography_file: /path/to/external_parameter_icon_grid.nc
                 variables: [SP_10M, DD_10M, RELHUM_2M, TW_2M, HZEROCL, SNOWLMT,
                             CAPE_ML, CIN_ML, CAPE_MU, CIN_MU, PTYPE, TOT_SNOW]
 
-Only the inputs needed by the requested ``variables`` must be given, e.g.
-``SP_10M`` alone needs only the wind components.
+The inputs are read from the state by their GRIB name. Only
+the inputs needed by the requested ``variables`` are used.
 
 Notes
 -----
@@ -176,6 +167,19 @@ _ALL_INPUTS = (
     "geopotential_levels",
     "accumulated_precipitation",
 )
+# GRIB names of the inputs in the Varda output state; precipitation is
+# accumulated from the start of the forecast, in kg m-2.
+_DEFAULT_INPUTS = {
+    "u_10m": "U_10M",
+    "v_10m": "V_10M",
+    "temperature_2m": "T_2M",
+    "dewpoint_2m": "TD_2M",
+    "surface_pressure": "PS",
+    "temperature_levels": "T",
+    "specific_humidity_levels": "QV",
+    "geopotential_levels": "FI",
+    "accumulated_precipitation": "TOT_PREC",
+}
 
 
 class DeriveDiagnostic(MatchingFieldsFilter):
@@ -210,22 +214,24 @@ class DeriveDiagnostic(MatchingFieldsFilter):
         self,
         *,
         variables: str | list[str],
-        u_10m: str | None = None,
-        v_10m: str | None = None,
-        temperature_2m: str | None = None,
-        dewpoint_2m: str | None = None,
-        surface_pressure: str | None = None,
-        temperature_levels: str | None = None,
-        specific_humidity_levels: str | None = None,
-        geopotential_levels: str | None = None,
+        u_10m: str | None = _DEFAULT_INPUTS["u_10m"],
+        v_10m: str | None = _DEFAULT_INPUTS["v_10m"],
+        temperature_2m: str | None = _DEFAULT_INPUTS["temperature_2m"],
+        dewpoint_2m: str | None = _DEFAULT_INPUTS["dewpoint_2m"],
+        surface_pressure: str | None = _DEFAULT_INPUTS["surface_pressure"],
+        temperature_levels: str | None = _DEFAULT_INPUTS["temperature_levels"],
+        specific_humidity_levels: str | None = _DEFAULT_INPUTS["specific_humidity_levels"],
+        geopotential_levels: str | None = _DEFAULT_INPUTS["geopotential_levels"],
         orography_file: str | None = None,
         orography_variable: str = "topography_c",
-        accumulated_precipitation: str | None = None,
+        accumulated_precipitation: str | None = _DEFAULT_INPUTS["accumulated_precipitation"],
         snow_fraction_profile: Literal["linear", "logistic"] = "linear",
         n_threads: int | None = None,
     ) -> None:
         """``variables`` selects the diagnostics to derive, any of ``_SUPPORTED_VARIABLES``.
-        ``orography_file`` (NetCDF, variable ``orography_variable`` in m) is
+        The inputs (``u_10m`` ... ``accumulated_precipitation``) are the
+        ``param`` names of the fields in the state, by default their GRIB
+        names. ``orography_file`` (NetCDF, variable ``orography_variable`` in m) is
         required for the outputs computed from the pressure levels.
         ``accumulated_precipitation`` is accumulated from the start of the
         forecast (kg m-2). ``snow_fraction_profile`` is the snow fraction

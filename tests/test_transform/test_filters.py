@@ -633,7 +633,7 @@ def test_derive_diagnostic_rejects_unknown_variable():
 
 def test_derive_diagnostic_requires_inputs_of_requested_variables():
     with pytest.raises(ValueError, match="surface_pressure"):
-        DeriveDiagnostic(temperature_2m="2t", dewpoint_2m="2d", variables=["TW_2M"])
+        DeriveDiagnostic(temperature_2m="2t", dewpoint_2m="2d", surface_pressure=None, variables=["TW_2M"])
 
 
 def test_derive_diagnostic_vertical_requires_orography():
@@ -1066,7 +1066,14 @@ def test_derive_diagnostic_rejects_meltlayer_top(orography_file):
 
 def test_derive_diagnostic_precipitation_type_requires_precipitation(orography_file):
     with pytest.raises(ValueError, match="precipitation"):
-        _vertical_diagnostics(orography_file, ["PTYPE"])
+        _vertical_diagnostics(orography_file, ["PTYPE"], accumulated_precipitation=None)
+
+
+def test_derive_diagnostic_default_inputs_are_grib_names():
+    diagnostics = DeriveDiagnostic(variables=["SP_10M", "RELHUM_2M"])
+    assert diagnostics.MATCHING.forward == ("u_10m", "v_10m", "temperature_2m", "dewpoint_2m")
+    assert (diagnostics.u_10m, diagnostics.v_10m) == ("U_10M", "V_10M")
+    assert (diagnostics.temperature_2m, diagnostics.dewpoint_2m) == ("T_2M", "TD_2M")
 
 
 def test_derive_diagnostic_threads_match_single_thread(orography_file):

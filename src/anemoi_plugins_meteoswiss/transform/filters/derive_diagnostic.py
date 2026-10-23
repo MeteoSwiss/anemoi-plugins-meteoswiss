@@ -24,7 +24,7 @@ Usage::
                 orography_file: /path/to/external_parameter_icon_grid.nc
                 variables: [SP_10M, DD_10M, RELHUM_2M, TW_2M, HZEROCL, SNOWLMT,
                             CAPE_ML, CIN_ML, CAPE_MU, CIN_MU, PTYPE, TOT_SNOW]
-                # optional: CAPE/CIN as ICON (default: earthkit)
+                # optional: CAPE/CIN as ICON (default: pressure_levels)
                 cape_cin_method: icon
                 vertical_grid_file: /path/to/icon_hhl.nc  # see scripts/extract_icon_hhl.py
 
@@ -50,7 +50,7 @@ Notes
 - ``cape_cin_method: icon`` computes CAPE/CIN as ICON does (``cal_cape_cin``
   and ``cal_cape_cin_mu``), on the ICON model levels of ``vertical_grid_file``
   (interface heights, HHL) onto which the pressure levels are interpolated.
-  The default, ``earthkit``, integrates on the pressure levels themselves.
+  The default, ``pressure_levels``, integrates on the pressure levels themselves.
 """
 
 import logging
@@ -244,7 +244,7 @@ class DeriveDiagnostic(MatchingFieldsFilter):
         accumulated_precipitation: str | None = _DEFAULT_INPUTS["accumulated_precipitation"],
         snow_fraction_profile: Literal["linear", "logistic"] = "linear",
         n_threads: int | None = None,
-        cape_cin_method: Literal["earthkit", "icon"] = "earthkit",
+        cape_cin_method: Literal["pressure_levels", "icon"] = "pressure_levels",
         vertical_grid_file: str | None = None,
         vertical_grid_variable: str = "HHL",
     ) -> None:
@@ -258,7 +258,7 @@ class DeriveDiagnostic(MatchingFieldsFilter):
         across the melting layer used for ``TOT_SNOW``. ``n_threads`` is the
         number of threads the grid points are split over (default: all CPUs
         available to the process; 1 computes them all in the calling thread).
-        ``cape_cin_method`` is ``earthkit`` (on the pressure levels) or
+        ``cape_cin_method`` is ``pressure_levels`` (on the pressure levels) or
         ``icon`` (as ICON, on its model levels); ``icon`` requires
         ``vertical_grid_file`` (NetCDF, variable ``vertical_grid_variable``:
         the ICON interface heights in m, shape (interfaces, cells), on the
@@ -274,8 +274,8 @@ class DeriveDiagnostic(MatchingFieldsFilter):
             raise ValueError(f"Unsupported variable(s) {sorted(unknown)}; supported: {sorted(_SUPPORTED_VARIABLES)}.")
         if snow_fraction_profile not in ("linear", "logistic"):
             raise ValueError(f"`snow_fraction_profile` must be 'linear' or 'logistic', got {snow_fraction_profile!r}.")
-        if cape_cin_method not in ("earthkit", "icon"):
-            raise ValueError(f"`cape_cin_method` must be 'earthkit' or 'icon', got {cape_cin_method!r}.")
+        if cape_cin_method not in ("pressure_levels", "icon"):
+            raise ValueError(f"`cape_cin_method` must be 'pressure_levels' or 'icon', got {cape_cin_method!r}.")
         if n_threads is None:
             n_threads = _available_cpus()
         if not isinstance(n_threads, int) or n_threads < 1:

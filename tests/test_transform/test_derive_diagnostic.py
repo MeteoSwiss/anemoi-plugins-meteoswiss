@@ -520,10 +520,10 @@ def test_derive_diagnostic_cape_cin_icon(orography_file, vertical_grid_file):
         # ICON's CIN is missing without CAPE; the moist lowland column has some.
         np.testing.assert_array_equal(np.isnan(by_name[f"CIN_{kind}"]), by_name[f"CAPE_{kind}"] < 1e-8)
         assert by_name[f"CAPE_{kind}"][0] > 0.0
-    # Not the earthkit integration.
-    earthkit = _vertical_diagnostics(orography_file, ["CAPE_ML"]).forward(_vertical_fieldlist())
-    cape_earthkit = next(f for f in earthkit if f.metadata("param") == "CAPE_ML").to_numpy(flatten=True)[:4]
-    assert by_name["CAPE_ML"][0] != cape_earthkit[0]
+    # Not the integration on the pressure levels.
+    default = _vertical_diagnostics(orography_file, ["CAPE_ML"]).forward(_vertical_fieldlist())
+    cape_default = next(f for f in default if f.metadata("param") == "CAPE_ML").to_numpy(flatten=True)[:4]
+    assert by_name["CAPE_ML"][0] != cape_default[0]
 
 
 def test_derive_diagnostic_cape_cin_icon_chunks_and_threads(orography_file, vertical_grid_file, monkeypatch):
@@ -538,8 +538,8 @@ def test_derive_diagnostic_cape_cin_icon_chunks_and_threads(orography_file, vert
         np.testing.assert_array_equal(chunked[name], reference[name])
 
 
-def test_derive_diagnostic_cape_cin_earthkit_ignores_vertical_grid(orography_file, vertical_grid_file):
-    """The default method is earthkit, and the vertical grid doesn't change it."""
+def test_derive_diagnostic_cape_cin_pressure_levels_ignores_vertical_grid(orography_file, vertical_grid_file):
+    """The default method is pressure_levels, and the vertical grid doesn't change it."""
     variables = ["CAPE_ML", "CIN_ML", "CAPE_MU", "CIN_MU"]
 
     def run(**kwargs):
@@ -547,7 +547,7 @@ def test_derive_diagnostic_cape_cin_earthkit_ignores_vertical_grid(orography_fil
         return {f.metadata("param"): f.to_numpy(flatten=True) for f in result if f.metadata("param") in variables}
 
     default = run()
-    explicit = run(cape_cin_method="earthkit", vertical_grid_file=str(vertical_grid_file))
+    explicit = run(cape_cin_method="pressure_levels", vertical_grid_file=str(vertical_grid_file))
     for name in variables:
         np.testing.assert_array_equal(explicit[name], default[name])
 

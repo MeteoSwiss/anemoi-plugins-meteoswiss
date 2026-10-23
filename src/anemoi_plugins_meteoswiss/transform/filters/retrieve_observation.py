@@ -160,7 +160,7 @@ class RetrieveObservation(Filter):
         df["nat_abbr"] = df["station"].map(dict(zip(catalog.station_id, catalog.nat_abbr)))
         df["latitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.latitude)))
         df["longitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.longitude)))
-        df["altitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.elevation)))
+        df["elevation"] = df["station"].map(dict(zip(catalog.station_id, catalog.elevation)))
 
         df = df.dropna(subset=["nat_abbr"]).set_index("nat_abbr")
         df.index.name = "station"
@@ -208,7 +208,7 @@ class RetrieveObservation(Filter):
             + [
                 "latitude",
                 "longitude",
-                "altitude",
+                "elevation",
             ]
             + pi_cols
         )

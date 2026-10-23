@@ -924,7 +924,7 @@ class CleanObservation(Filter):
         lats = df["latitude"].to_numpy(dtype=float)
         lons = df["longitude"].to_numpy(dtype=float)
         # altitude may be missing for synthetic test data; default to 0 m a.s.l.
-        elevs = df["altitude"].to_numpy(dtype=float) if "altitude" in df.columns else np.zeros(len(df), dtype=float)
+        elevs = df["elevation"].to_numpy(dtype=float) if "elevation" in df.columns else np.zeros(len(df), dtype=float)
         df_qc["altitude"] = elevs
         stations = np.array(df.index.to_list())
 

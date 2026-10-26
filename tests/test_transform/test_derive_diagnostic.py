@@ -123,6 +123,19 @@ def test_derive_diagnostic_subset_of_variables(data_dir):
     np.testing.assert_allclose(by_param["SP_10M"].to_numpy(flatten=True), expected_speed)
 
 
+def test_derive_diagnostic_collects_garbage_each_step(data_dir, monkeypatch):
+    """Each call frees the states of the previous steps kept alive by reference cycles."""
+    from anemoi_plugins_meteoswiss.transform.filters import derive_diagnostic
+
+    calls = []
+    monkeypatch.setattr(derive_diagnostic.gc, "collect", lambda: calls.append(1))
+    fieldlist, *_ = _synthetic_components(data_dir)
+    diagnostics = DeriveDiagnostic(u_10m="10u", v_10m="10v", variables="SP_10M")
+    for _ in range(3):
+        diagnostics.forward(fieldlist)
+    assert len(calls) == 3
+
+
 def test_derive_diagnostic_requires_at_least_one_variable():
     with pytest.raises(ValueError, match="at least one"):
         DeriveDiagnostic(

@@ -51,8 +51,13 @@ Notes
   and ``cal_cape_cin_mu``), on the ICON model levels of ``vertical_grid_file``
   (interface heights, HHL) onto which the pressure levels are interpolated.
   The default, ``pressure_levels``, integrates on the pressure levels themselves.
+- The filter runs a full garbage collection at each step. anemoi-inference's
+  wrapped state fields form a reference cycle once their metadata is read, so
+  every output state outlives its step until Python's rare full collections;
+  without this, a 120 h downscaler run grows to over 200 GB.
 """
 
+import gc
 import logging
 import os
 import time
@@ -353,6 +358,8 @@ class DeriveDiagnostic(MatchingFieldsFilter):
         time missing precipitation is an error. The check should run on TOT_PREC
         only because it is an input. TOT_SNOW is an output and requires no check
         """
+        # Free the previous steps' states, kept alive by a reference cycle.
+        gc.collect()
         if "accumulated_precipitation" not in self.MATCHING.forward or self.accumulated_precipitation in data.metadata(
             "param"
         ):

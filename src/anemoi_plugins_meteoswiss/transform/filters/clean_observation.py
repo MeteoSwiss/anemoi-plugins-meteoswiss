@@ -476,6 +476,7 @@ class CleanObservation(Filter):
         self._grid_lons = None
         if icon_orog_file is not None:
             import xarray as xr
+
             ds = xr.open_dataset(icon_orog_file)
             self._grid_lats = np.degrees(ds["clat"].values.astype(np.float64)).ravel()
             self._grid_lons = np.degrees(ds["clon"].values.astype(np.float64)).ravel()

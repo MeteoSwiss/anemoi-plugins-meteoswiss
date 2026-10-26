@@ -515,7 +515,7 @@ class CleanObservation(Filter):
         df = pd.read_parquet(self.obs_path_in)
         LOG.info("Loaded %d stations from %s", len(df), self.obs_path_in)
 
-        df = self._clean(df)
+        df = self._clean(df, data=data)
 
         self.obs_path_out.parent.mkdir(parents=True, exist_ok=True)
         # Drop _pi columns (DWH plausibility values) from output — they are only
@@ -544,7 +544,7 @@ class CleanObservation(Filter):
 
         return data
 
-    def _clean(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _clean(self, df: pd.DataFrame, data: "ekd.FieldList | None" = None) -> pd.DataFrame:
         """Apply QC tests and set suspected values to NaN.
 
         Two stages:
@@ -607,7 +607,7 @@ class CleanObservation(Filter):
                     df.loc[station, parquet_col] = np.nan
 
         df_qc, lats, lons, elevs, stations, df_pi = self._build_df_qc(df)
-        df_mod, df_diff, active_tests = self._resolve_model_background(df_qc, lats, lons, elevs)
+        df_mod, df_diff, active_tests = self._resolve_model_background(df_qc, lats, lons, elevs, data=data)
 
         current_f = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
         _t0 = time.monotonic()
@@ -956,10 +956,10 @@ class CleanObservation(Filter):
 
         return df_qc, lats, lons, elevs, stations, df_pi
 
-    def _resolve_model_background(self, df_qc: pd.DataFrame, lats, lons, elevs):
+    def _resolve_model_background(self, df_qc: pd.DataFrame, lats, lons, elevs, data=None):
         """Load the NWP background and decide which test set is active.
 
-        Priority: ``residuals_dir`` > ``model_grib_path`` > obs-only fallback.
+        Priority: ``residuals_dir`` > ``model_grib_path`` > pipeline FieldList > obs-only fallback.
 
         Returns
         -------
@@ -985,6 +985,13 @@ class CleanObservation(Filter):
                 return df_mod, df_diff, self._qc_config.obs_only_tests | {"buddy_diff", "fgt"}
             except Exception as exc:
                 LOG.warning("Failed to load model GRIB (%s); falling back to obs-only tests", exc)
+        elif data is not None:
+            try:
+                df_mod, df_diff = self._load_model_from_fieldlist(df_qc, lats, lons, elevs, data)
+                LOG.info("Model background loaded from pipeline FieldList; extended test set active")
+                return df_mod, df_diff, self._qc_config.obs_only_tests | {"buddy_diff", "fgt"}
+            except Exception as exc:
+                LOG.warning("Failed to load model from pipeline FieldList (%s); falling back to obs-only tests", exc)
         df_mod, df_diff = self._nan_frames(df_qc)
         return df_mod, df_diff, self._qc_config.obs_only_tests
 

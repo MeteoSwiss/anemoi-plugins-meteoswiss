@@ -1521,3 +1521,96 @@ class CleanObservation(Filter):
                 df_diff[col] = df_qc[col].to_numpy() - df_mod[col].to_numpy()
 
         return df_mod, df_diff
+
+    def _load_model_from_fieldlist(
+        self,
+        df_qc: pd.DataFrame,
+        lats: np.ndarray,
+        lons: np.ndarray,
+        elevs: np.ndarray,
+        data: ekd.FieldList,
+    ):
+        """Interpolate model fields from the pipeline FieldList to station locations.
+
+        Equivalent to ``_load_model_at_stations`` but reads directly from the
+        in-memory ``ekd.FieldList`` passed through the pipeline instead of
+        loading a GRIB file from disk.  This lets ``clean_observation`` use the
+        same model background as ``nudge_toward_observation`` without requiring
+        an explicit ``model_grib_path``.
+
+        Parameters and return values are the same as ``_load_model_at_stations``.
+        """
+        from scipy.spatial import cKDTree
+
+        _QC_TO_GRIB = {
+            "T_2M": ["T_2M", "2t"],
+            "TD_2M": ["TD_2M", "2d"],
+            "VMAX10M": ["VMAX_10M", "vmax"],
+        }
+        _U_SHORTNAMES = ["U_10M", "10u"]
+        _V_SHORTNAMES = ["V_10M", "10v"]
+        _HSURF_SHORTNAMES = ["HSURF", "z"]
+
+        if len(data) == 0:
+            raise ValueError("Pipeline FieldList is empty — cannot extract model background")
+
+        ll = data[0].to_latlon()
+        grid_lats = np.asarray(ll["lat"]).flatten()
+        grid_lons = np.asarray(ll["lon"]).flatten()
+
+        def _xyz(lat_deg, lon_deg):
+            lat_r = np.deg2rad(lat_deg)
+            lon_r = np.deg2rad(lon_deg)
+            return np.stack(
+                [np.cos(lat_r) * np.cos(lon_r), np.cos(lat_r) * np.sin(lon_r), np.sin(lat_r)],
+                axis=-1,
+            )
+
+        tree = cKDTree(_xyz(grid_lats, grid_lons))
+
+        def _first_field_values(shortnames):
+            for sn in shortnames:
+                try:
+                    sel = data.sel(shortName=sn)
+                    if len(sel) > 0:
+                        return np.asarray(sel[0].values).flatten()
+                except Exception:
+                    pass
+            return None
+
+        if self.model_interp == "min_elev_diff":
+            _, indices = tree.query(_xyz(lats, lons), k=4)
+            grid_hsurf = _first_field_values(_HSURF_SHORTNAMES)
+            if grid_hsurf is None:
+                LOG.warning("HSURF not found in pipeline FieldList; falling back to nearest for min_elev_diff")
+                station_idx = indices[:, 0]
+            else:
+                station_idx = np.array(
+                    [nbrs[np.argmin(np.abs(grid_hsurf[nbrs] - sta_elev))] for nbrs, sta_elev in zip(indices, elevs)]
+                )
+        else:
+            _, station_idx = tree.query(_xyz(lats, lons), k=1)
+
+        df_mod, _ = self._nan_frames(df_qc)
+
+        for para, shortnames in _QC_TO_GRIB.items():
+            if para not in df_qc.columns:
+                continue
+            vals = _first_field_values(shortnames)
+            if vals is not None:
+                df_mod[para] = vals[station_idx]
+                LOG.debug("Interpolated %s from pipeline FieldList to %d stations", para, len(station_idx))
+
+        if "SP_10M" in df_qc.columns:
+            u_vals = _first_field_values(_U_SHORTNAMES)
+            v_vals = _first_field_values(_V_SHORTNAMES)
+            if u_vals is not None and v_vals is not None:
+                df_mod["SP_10M"] = np.sqrt(u_vals[station_idx] ** 2 + v_vals[station_idx] ** 2)
+                LOG.debug("Derived SP_10M (U/V) from pipeline FieldList for %d stations", len(station_idx))
+
+        df_diff = df_qc.copy()
+        for col in df_qc.columns:
+            if col != "sta_name":
+                df_diff[col] = df_qc[col].to_numpy() - df_mod[col].to_numpy()
+
+        return df_mod, df_diff

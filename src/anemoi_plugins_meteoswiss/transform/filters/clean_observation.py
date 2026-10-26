@@ -472,6 +472,7 @@ class CleanObservation(Filter):
         self.model_grib_path = model_grib_path
         self.model_interp = model_interp
         self.residuals_dir = Path(residuals_dir) if residuals_dir is not None else None
+        self._cleaning_done = False
         self._grid_lats = None
         self._grid_lons = None
         if icon_orog_file is not None:
@@ -520,6 +521,9 @@ class CleanObservation(Filter):
         ekd.FieldList
             The input *data*, unchanged.
         """
+        if self._cleaning_done:
+            return data
+
         if not self.obs_path_in.exists():
             raise FileNotFoundError(f"Observation file not found: {self.obs_path_in}")
 
@@ -553,6 +557,7 @@ class CleanObservation(Filter):
                 inv_json_path = json_path.parent / f"inversion_protection_{obs_timestamp}.json"
                 self._write_inversion_protection_json(inv_json_path, protected, obs_timestamp)
 
+        self._cleaning_done = True
         return data
 
     def _clean(self, df: pd.DataFrame, data: "ekd.FieldList | None" = None) -> pd.DataFrame:

@@ -460,6 +460,7 @@ class CleanObservation(Filter):
         model_grib_path: str = None,
         model_interp: str = "nearest",
         residuals_dir: str = None,
+        icon_orog_file: str = None,
         config_file: str = None,
         hard_blacklist_file: str = None,
         inversion_protection_file: str = None,
@@ -471,6 +472,15 @@ class CleanObservation(Filter):
         self.model_grib_path = model_grib_path
         self.model_interp = model_interp
         self.residuals_dir = Path(residuals_dir) if residuals_dir is not None else None
+        self._grid_lats = None
+        self._grid_lons = None
+        if icon_orog_file is not None:
+            import xarray as xr
+            ds = xr.open_dataset(icon_orog_file)
+            self._grid_lats = np.degrees(ds["clat"].values.astype(np.float64)).ravel()
+            self._grid_lons = np.degrees(ds["clon"].values.astype(np.float64)).ravel()
+            ds.close()
+            LOG.info("CleanObservation: loaded ICON grid from %s (%d cells)", icon_orog_file, len(self._grid_lats))
         if config_file is not None or hard_blacklist_file is not None or inversion_protection_file is not None:
             self._qc_config = _load_qc_config(
                 config_file=config_file,
@@ -1554,9 +1564,13 @@ class CleanObservation(Filter):
         if len(data) == 0:
             raise ValueError("Pipeline FieldList is empty — cannot extract model background")
 
-        ll = data[0].to_latlon()
-        grid_lats = np.asarray(ll["lat"]).flatten()
-        grid_lons = np.asarray(ll["lon"]).flatten()
+        if self._grid_lats is not None:
+            grid_lats = self._grid_lats
+            grid_lons = self._grid_lons
+        else:
+            ll = data[0].to_latlon()
+            grid_lats = np.asarray(ll["lat"]).flatten()
+            grid_lons = np.asarray(ll["lon"]).flatten()
 
         def _xyz(lat_deg, lon_deg):
             lat_r = np.deg2rad(lat_deg)

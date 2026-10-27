@@ -23,6 +23,7 @@ def _suppress_stdout(fn, *args, **kwargs):
         os.dup2(saved_fd, 1)
         os.close(saved_fd)
 
+
 _PARQUET_TO_QC = {
     "2t": "T_2M",
     "2d": "TD_2M",
@@ -720,7 +721,16 @@ def hard_test(obs_all, datamin, datamax, var, time, limits=None, verbose=True):
 
 # --------------------------------------------------------------
 def plateau_test(
-    data, window, std_lim, var, time, obs_path_in=None, gran_minutes=60, historical_raw=None, qc_config=None, verbose=True
+    data,
+    window,
+    std_lim,
+    var,
+    time,
+    obs_path_in=None,
+    gran_minutes=60,
+    historical_raw=None,
+    qc_config=None,
+    verbose=True,
 ):
     """
     Plateau test: detect frozen/stuck sensors by checking that observations vary

@@ -628,9 +628,7 @@ class CleanObservation(Filter):
                         continue
                     df.loc[station, parquet_col] = np.nan
         if _bl_summary:
-            _bl_parts = ", ".join(
-                f"{p}: {len(ss)}" for p, ss in sorted(_bl_summary.items())
-            )
+            _bl_parts = ", ".join(f"{p}: {len(ss)}" for p, ss in sorted(_bl_summary.items()))
             LOG.info("Hard blacklist summary — %s", _bl_parts)
         else:
             LOG.info("Hard blacklist: no stations applied")
@@ -738,7 +736,10 @@ class CleanObservation(Filter):
                     if _protected:
                         if _verbose:
                             LOG.info(
-                                "Inversion protection: suppressing %s buddy flag for %s (lr=%.4f K/m)", para, station, _lr
+                                "Inversion protection: suppressing %s buddy flag for %s (lr=%.4f K/m)",
+                                para,
+                                station,
+                                _lr,
                             )
                         qc_summary = qc_summary.drop(columns=[station])
                         _obs_cols = [c for c in self._qc_config.qc_to_parquet.get(para, []) if c in df.columns]
@@ -801,9 +802,7 @@ class CleanObservation(Filter):
                 t: len([s for s in flagged_stations if s in blacklist.get(t, {}).get("Station", [])])
                 for t in executed_tests
             }
-            _pt_str = ", ".join(
-                f"{t}: {n}" for t, n in _per_test_counts.items() if n
-            ) or "—"
+            _pt_str = ", ".join(f"{t}: {n}" for t, n in _per_test_counts.items() if n) or "—"
             LOG.info("%-10s  flagged %d  [%s]", para, len(flagged_stations), _pt_str)
 
         # --- Done: hard blacklist (Stage 1) + automated QC (Stage 2) complete -------
@@ -1142,7 +1141,9 @@ class CleanObservation(Filter):
                         )
                         for _, row in df_obs[["sta_name", "altitude"]].iterrows()
                     }
-            runners["hard"] = lambda: _hard_test(df_obs, pch_min, pch_max, para, current_f, limits=_hard_limits, verbose=_verbose)
+            runners["hard"] = lambda: _hard_test(
+                df_obs, pch_min, pch_max, para, current_f, limits=_hard_limits, verbose=_verbose
+            )
 
         if "buddy_obs" in tests_to_do:
             b = cfg.buddy[para]
@@ -1297,7 +1298,9 @@ class CleanObservation(Filter):
             else:
                 LOG.warning("DWH_flag: no pi column for %s, skipping", para)
                 pla_series = pd.Series(dtype=float)
-            runners["DWH_flag"] = lambda: _DWH_flag(current_f, para, stations, pla_series, qc_config=cfg, verbose=_verbose)
+            runners["DWH_flag"] = lambda: _DWH_flag(
+                current_f, para, stations, pla_series, qc_config=cfg, verbose=_verbose
+            )
 
         if "plateau_test" in tests_to_do:
             pt = cfg.plateau_test[para]

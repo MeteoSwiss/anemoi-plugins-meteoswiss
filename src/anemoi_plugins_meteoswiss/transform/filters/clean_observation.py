@@ -325,6 +325,7 @@ def _load_qc_config(
 
     ns = SimpleNamespace(**cfg)
     ns.fgt_excluded = cfg.get("fgt_excluded", {})
+    ns.verbose = bool(cfg.get("verbose", False))
     ns.obs_only_tests = _OBS_ONLY_TESTS
     ns.par2pi = _PAR2PI
     ns.parquet_to_qc = {col: (qp, _identity) for col, qp in _PARQUET_TO_QC.items()}
@@ -606,21 +607,33 @@ class CleanObservation(Filter):
         # Inversion-protected entries: flags that were suppressed by inversion_protection
         self._inversion_protected: list = []
 
+        _verbose = getattr(self._qc_config, "verbose", False)
+
         if not _QC_AVAILABLE:
             LOG.warning("QC modules unavailable, skipping cleaning")
             return df
 
         # --- Stage 1: hard blacklist — applied before QC so tests never see these values ----
+        _bl_summary: dict[str, list] = {}
         for entry in self._qc_config.hard_blacklist.values():
             station = entry["station"]
             if station not in df.index:
                 continue
             for para in entry["paras"]:
-                LOG.info("Hard blacklist (pre-QC): setting %s / %s to NaN", station, para)
+                if _verbose:
+                    LOG.info("Hard blacklist (pre-QC): setting %s / %s to NaN", station, para)
+                _bl_summary.setdefault(para, []).append(station)
                 for parquet_col in self._qc_config.qc_to_parquet.get(para, []):
                     if parquet_col not in df.columns or station not in df.index:
                         continue
                     df.loc[station, parquet_col] = np.nan
+        if _bl_summary:
+            _bl_parts = ", ".join(
+                f"{p}: {len(ss)}" for p, ss in sorted(_bl_summary.items())
+            )
+            LOG.info("Hard blacklist summary — %s", _bl_parts)
+        else:
+            LOG.info("Hard blacklist: no stations applied")
 
         df_qc, lats, lons, elevs, stations, df_pi = self._build_df_qc(df)
         df_mod, df_diff, active_tests = self._resolve_model_background(df_qc, lats, lons, elevs, data=data)
@@ -723,9 +736,10 @@ class CleanObservation(Filter):
                         station, para, pos, df, _obs_month, self._qc_config
                     )
                     if _protected:
-                        LOG.info(
-                            "Inversion protection: suppressing %s buddy flag for %s (lr=%.4f K/m)", para, station, _lr
-                        )
+                        if _verbose:
+                            LOG.info(
+                                "Inversion protection: suppressing %s buddy flag for %s (lr=%.4f K/m)", para, station, _lr
+                            )
                         qc_summary = qc_summary.drop(columns=[station])
                         _obs_cols = [c for c in self._qc_config.qc_to_parquet.get(para, []) if c in df.columns]
                         _obs_val = (
@@ -752,7 +766,8 @@ class CleanObservation(Filter):
                 if score <= threshold:
                     continue
                 if station in excluded:
-                    LOG.info("QC flagged %s for station %s but station is excluded — skipping", para, station)
+                    if _verbose:
+                        LOG.info("QC flagged %s for station %s but station is excluded — skipping", para, station)
                     continue
                 if station in _hard_blacklisted.get(para, set()):
                     LOG.debug(
@@ -762,7 +777,8 @@ class CleanObservation(Filter):
                         score,
                     )
                     continue
-                LOG.info("QC flagged %s for station %s (score=%.2f)", para, station, score)
+                if _verbose:
+                    LOG.info("QC flagged %s for station %s (score=%.2f)", para, station, score)
                 flagged_stations.append(station)
                 # Which individual tests voted to flag this station?
                 positive_tests = [t for t in executed_tests if station in blacklist.get(t, {}).get("Station", [])]
@@ -781,6 +797,14 @@ class CleanObservation(Filter):
                     if k not in ("n", "tests")
                 },
             }
+            _per_test_counts = {
+                t: len([s for s in flagged_stations if s in blacklist.get(t, {}).get("Station", [])])
+                for t in executed_tests
+            }
+            _pt_str = ", ".join(
+                f"{t}: {n}" for t, n in _per_test_counts.items() if n
+            ) or "—"
+            LOG.info("%-10s  flagged %d  [%s]", para, len(flagged_stations), _pt_str)
 
         # --- Done: hard blacklist (Stage 1) + automated QC (Stage 2) complete -------
         self._qc_duration: float = time.monotonic() - _t0
@@ -1100,6 +1124,7 @@ class CleanObservation(Filter):
         cfg = self._qc_config
         fns = self._spatial_fns()
         runners = {}
+        _verbose = getattr(cfg, "verbose", False)
 
         if "hard" in tests_to_do:
             pch_min = cfg.plausibility_thresholds[para]["pch_min"]
@@ -1117,7 +1142,7 @@ class CleanObservation(Filter):
                         )
                         for _, row in df_obs[["sta_name", "altitude"]].iterrows()
                     }
-            runners["hard"] = lambda: _hard_test(df_obs, pch_min, pch_max, para, current_f, limits=_hard_limits)
+            runners["hard"] = lambda: _hard_test(df_obs, pch_min, pch_max, para, current_f, limits=_hard_limits, verbose=_verbose)
 
         if "buddy_obs" in tests_to_do:
             b = cfg.buddy[para]
@@ -1136,6 +1161,7 @@ class CleanObservation(Filter):
                 b["num_iterations"],
                 b["num_min"],
                 b["radius"],
+                verbose=_verbose,
             )
 
         if "buddy_diff" in tests_to_do:
@@ -1155,6 +1181,7 @@ class CleanObservation(Filter):
                 bd["num_iterations"],
                 bd["num_min"],
                 bd["radius"],
+                verbose=_verbose,
             )
 
         if "fgt" in tests_to_do:
@@ -1205,6 +1232,7 @@ class CleanObservation(Filter):
                     bool(_fg["debug"]),
                     bool(_fg["basic"]),
                     _fg["tpostneg"],
+                    verbose=_verbose,
                 )
 
             runners["fgt"] = _run_fgt
@@ -1233,6 +1261,7 @@ class CleanObservation(Filter):
                 sp["vertical_scale"],
                 sp["debug"],
                 sp["basic"],
+                verbose=_verbose,
             )
 
         if "spt_dual" in tests_to_do:
@@ -1258,6 +1287,7 @@ class CleanObservation(Filter):
                 sd["condition"],
                 float(sd["event_thresholds"]),
                 float(sd["test_thresholds"]),
+                verbose=_verbose,
             )
 
         if "DWH_flag" in tests_to_do:
@@ -1267,7 +1297,7 @@ class CleanObservation(Filter):
             else:
                 LOG.warning("DWH_flag: no pi column for %s, skipping", para)
                 pla_series = pd.Series(dtype=float)
-            runners["DWH_flag"] = lambda: _DWH_flag(current_f, para, stations, pla_series, qc_config=cfg)
+            runners["DWH_flag"] = lambda: _DWH_flag(current_f, para, stations, pla_series, qc_config=cfg, verbose=_verbose)
 
         if "plateau_test" in tests_to_do:
             pt = cfg.plateau_test[para]
@@ -1281,6 +1311,7 @@ class CleanObservation(Filter):
                 gran_minutes=pt["gran"],
                 historical_raw=historical_raw,
                 qc_config=cfg,
+                verbose=_verbose,
             )
 
         if "isolation_check" in tests_to_do:
@@ -1294,6 +1325,7 @@ class CleanObservation(Filter):
                 current_f,
                 ic["num_min"],
                 ic["radius"],
+                verbose=_verbose,
             )
 
         return runners

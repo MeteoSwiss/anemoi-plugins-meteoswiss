@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
@@ -8,6 +9,19 @@ import numpy as np
 import pandas as pd
 import titanlib
 import yaml
+
+
+def _suppress_stdout(fn, *args, **kwargs):
+    """Call fn(*args, **kwargs) while silencing C-level stdout (titanlib prints)."""
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    saved_fd = os.dup(1)
+    os.dup2(devnull_fd, 1)
+    os.close(devnull_fd)
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        os.dup2(saved_fd, 1)
+        os.close(saved_fd)
 
 _PARQUET_TO_QC = {
     "2t": "T_2M",
@@ -43,7 +57,7 @@ LOG = logging.getLogger(__name__)
 
 # ----------------------------------
 # isolation check
-def isolation_check(stations, lats, lons, elevs, para, date, num_min=2, radius=50000):
+def isolation_check(stations, lats, lons, elevs, para, date, num_min=2, radius=50000, verbose=True):
     """Flag stations with too few neighbours within radius (titanlib isolation_check).
 
     Args:
@@ -67,13 +81,14 @@ def isolation_check(stations, lats, lons, elevs, para, date, num_min=2, radius=5
         my_dict["Station"].append(stations[idx])
         my_dict["Time"].append(date)
         my_dict["Parameter"].append(para)
-        LOG.info("isolation_check %s isolated station: %s", para, stations[idx])
+        if verbose:
+            LOG.info("isolation_check %s isolated station: %s", para, stations[idx])
     return my_dict if my_dict["Station"] else {}
 
 
 # ----------------------------------
 # DWH quality flag test
-def DWH_flag(current_f, para, stationss, plausibility, qc_config=None):
+def DWH_flag(current_f, para, stationss, plausibility, qc_config=None, verbose=True):
     """Plausibility test using pre-fetched DWH plausibility values.
 
     Args:
@@ -90,7 +105,8 @@ def DWH_flag(current_f, para, stationss, plausibility, qc_config=None):
             blacklist_dict is an empty dict when no stations are flagged.
     """
     threshold = float((qc_config or c).DWH_flag[para]["dwh_plausibility_thr"])
-    LOG.info("DWH plausibility test for %s, threshold=%.2f", para, threshold)
+    if verbose:
+        LOG.info("DWH plausibility test for %s, threshold=%.2f", para, threshold)
 
     # Restrict to the stations passed to this test and drop missing values
     pla = plausibility.reindex(stationss).dropna()
@@ -103,7 +119,8 @@ def DWH_flag(current_f, para, stationss, plausibility, qc_config=None):
             my_dict["Station"].append(station)
             my_dict["Time"].append(current_f)
             my_dict["Parameter"].append(para)
-            LOG.info("DWH flag %s %s (pi=%.3f)", para, station, flagged[station])
+            if verbose:
+                LOG.info("DWH flag %s %s (pi=%.3f)", para, station, flagged[station])
         LOG.info("DWH flag %s blacklisted stations: %d", para, len(flagged))
     else:
         my_dict = {}
@@ -128,6 +145,7 @@ def buddy_check(
     num_iterations=5,
     num_min=3,
     radius=30000,
+    verbose=True,
 ):
     """Run titanlib buddy_check with separate thresholds for SMN and other stations.
 
@@ -169,7 +187,8 @@ def buddy_check(
     num_min_arr = np.full(points.size(), num_min)
     flagged_indices = set()
     # round 1: all stations, keep only SMN (3-letter) flags
-    LOG.info("titanlib buddy_check %s threshold=%.2f (SMN)", para, thr_short)
+    if verbose:
+        LOG.info("titanlib buddy_check %s threshold=%.2f (SMN)", para, thr_short)
     flags = titanlib.buddy_check(
         points, values, radius_arr, num_min_arr, thr_short, max_elev_diff, elev_gradient, min_std, num_iterations
     )
@@ -177,7 +196,8 @@ def buddy_check(
         if short_mask[idx]:
             flagged_indices.add(int(idx))
     # round 2: all stations, keep only other (longer-name) flags
-    LOG.info("titanlib buddy_check %s threshold=%.2f (other)", para, thr_long)
+    if verbose:
+        LOG.info("titanlib buddy_check %s threshold=%.2f (other)", para, thr_long)
     flags = titanlib.buddy_check(
         points, values, radius_arr, num_min_arr, thr_long, max_elev_diff, elev_gradient, min_std, num_iterations
     )
@@ -191,7 +211,8 @@ def buddy_check(
             my_dict["Station"].append(snames[idx])
             my_dict["Time"].append(date)
             my_dict["Parameter"].append(para)
-            LOG.info("titanlib buddy_check %s %s %.4f", para, snames[idx], values[idx])
+            if verbose:
+                LOG.info("titanlib buddy_check %s %s %.4f", para, snames[idx], values[idx])
             n += 1
     LOG.info("titanlib buddy_check %s blacklisted stations: %d", para, n)
     if len(my_dict["Station"]) == 0:
@@ -223,6 +244,7 @@ def first_guess_test(
     bdebug=True,
     bbasic=True,
     tpostneg=5,
+    verbose=True,
 ):
     """Run titanlib fgt (first-guess test) with separate thresholds for SMN and other stations.
 
@@ -279,9 +301,11 @@ def first_guess_test(
     # round 1: all stations, keep only SMN (3-letter) flags
     tpos = np.repeat(1, N) * thr_short
     tneg = np.repeat(1, N) * thr_short
-    LOG.info("titanlib first_guess_test %s threshold=%.2f (SMN)", para, thr_short)
+    if verbose:
+        LOG.info("titanlib first_guess_test %s threshold=%.2f (SMN)", para, thr_short)
     try:
-        flags, scores = titanlib.fgt(
+        flags, scores = _suppress_stdout(
+            titanlib.fgt,
             points,
             values,
             obs_to_check,
@@ -315,9 +339,11 @@ def first_guess_test(
     # round 2: all stations, keep only other (longer-name) flags
     tpos = np.repeat(1, N) * thr_long
     tneg = np.repeat(1, N) * thr_long
-    LOG.info("titanlib first_guess_test %s threshold=%.2f (other)", para, thr_long)
+    if verbose:
+        LOG.info("titanlib first_guess_test %s threshold=%.2f (other)", para, thr_long)
     try:
-        flags, scores = titanlib.fgt(
+        flags, scores = _suppress_stdout(
+            titanlib.fgt,
             points,
             values,
             obs_to_check,
@@ -355,7 +381,8 @@ def first_guess_test(
             my_dict["Station"].append(snames[idx])
             my_dict["Time"].append(date)
             my_dict["Parameter"].append(para)
-            LOG.info("titanlib first_guess_test %s %s %.4f", para, snames[idx], values[idx])
+            if verbose:
+                LOG.info("titanlib first_guess_test %s %s %.4f", para, snames[idx], values[idx])
             n += 1
     LOG.info("titanlib first_guess_test %s blacklisted stations: %d", para, n)
     return my_dict
@@ -384,6 +411,7 @@ def spacial_ct_resistant(
     vertical_scale=200,
     bdebug=True,
     bbasic=True,
+    verbose=True,
 ):
     """Run titanlib sct_resistant (spatial consistency test, resistant variant).
 
@@ -426,7 +454,8 @@ def spacial_ct_resistant(
     values_maxa = values + 15
     values_minv = values - 1
     values_maxv = values + 1
-    LOG.info("spacial_ct_resistant %s", para)
+    if verbose:
+        LOG.info("spacial_ct_resistant %s", para)
     try:
         flags, scores = titanlib.sct_resistant(
             points,
@@ -470,13 +499,14 @@ def spacial_ct_resistant(
                 my_dict["Station"].append(stations[indices[b]])
                 my_dict["Time"].append(date)
                 my_dict["Parameter"].append(para)
-                LOG.info(
-                    "titanlib sct_resistant %s %s %.4f score=%.4f",
-                    para,
-                    stations[indices[b]],
-                    values[indices[b]],
-                    scores[indices[b]],
-                )
+                if verbose:
+                    LOG.info(
+                        "titanlib sct_resistant %s %s %.4f score=%.4f",
+                        para,
+                        stations[indices[b]],
+                        values[indices[b]],
+                        scores[indices[b]],
+                    )
                 n = n + 1
         LOG.info("spacial_ct_resistant %s blacklisted stations: %d", para, n)
     else:
@@ -507,6 +537,7 @@ def spacial_ct_dual(
     condition=1,
     event_thresholds=0.1,
     test_thresholds=0.8,
+    verbose=True,
 ):
     """Run titanlib sct_dual (spatial consistency test, dual-threshold variant).
 
@@ -542,7 +573,8 @@ def spacial_ct_dual(
     test_thresholds = np.repeat(test_thresholds, npoints)
     event_thresholds = np.repeat(event_thresholds, npoints)
     # print(locals())
-    LOG.info("titanlib spacial_ct_dual %s", para)
+    if verbose:
+        LOG.info("titanlib spacial_ct_dual %s", para)
     try:
         values = np.asarray(values, dtype=np.float64)
         flags = titanlib.sct_dual(
@@ -577,7 +609,8 @@ def spacial_ct_dual(
                 my_dict["Station"].append(stations[indices[b]])
                 my_dict["Time"].append(date)
                 my_dict["Parameter"].append(para)
-                LOG.info("titanlib sct_dual %s %s %.4f", para, stations[indices[b]], values[indices[b]])
+                if verbose:
+                    LOG.info("titanlib sct_dual %s %s %.4f", para, stations[indices[b]], values[indices[b]])
                 n = n + 1
         LOG.info("titanlib spacial_ct_dual %s blacklisted stations: %d", para, n)
     else:
@@ -649,7 +682,7 @@ def tests_summary(blacklist, weights, tests):
     return df
 
 
-def hard_test(obs_all, datamin, datamax, var, time, limits=None):
+def hard_test(obs_all, datamin, datamax, var, time, limits=None, verbose=True):
     """Flag stations whose value falls outside absolute physical limits.
 
     Args:
@@ -666,7 +699,8 @@ def hard_test(obs_all, datamin, datamax, var, time, limits=None):
             Always non-empty structure (never empty dict like other tests).
     """
 
-    LOG.info("hard test %s min=%.2f max=%.2f%s", var, datamin, datamax, " (seasonal+altitude)" if limits else "")
+    if verbose:
+        LOG.info("hard test %s min=%.2f max=%.2f%s", var, datamin, datamax, " (seasonal+altitude)" if limits else "")
     my_dict = {"Station": [], "Time": [], "Parameter": []}
     n = 0
     stations = obs_all["sta_name"]
@@ -678,14 +712,15 @@ def hard_test(obs_all, datamin, datamax, var, time, limits=None):
                 my_dict["Station"].append(stations[n])
                 my_dict["Time"].append(time)
                 my_dict["Parameter"].append(var)
-                LOG.info("hard test %s %s %.4f (limits: %.2f–%.2f)", var, stations[n], sta_data.iloc[0], lo, hi)
+                if verbose:
+                    LOG.info("hard test %s %s %.4f (limits: %.2f–%.2f)", var, stations[n], sta_data.iloc[0], lo, hi)
         n = n + 1
     return my_dict
 
 
 # --------------------------------------------------------------
 def plateau_test(
-    data, window, std_lim, var, time, obs_path_in=None, gran_minutes=60, historical_raw=None, qc_config=None
+    data, window, std_lim, var, time, obs_path_in=None, gran_minutes=60, historical_raw=None, qc_config=None, verbose=True
 ):
     """
     Plateau test: detect frozen/stuck sensors by checking that observations vary
@@ -710,7 +745,8 @@ def plateau_test(
             empty dict when run but nothing flagged, or None when the test could not run
             (no obs_path_in, no timestamp in filename, or zero historical files available).
     """
-    LOG.info("plateau test for %s", var)
+    if verbose:
+        LOG.info("plateau test for %s", var)
     my_dict = {"Station": [], "Time": [], "Parameter": []}
 
     n_steps = int(window * 60 / gran_minutes)

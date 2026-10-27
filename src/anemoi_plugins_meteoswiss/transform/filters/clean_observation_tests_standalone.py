@@ -176,6 +176,7 @@ def isolation_check_py(
     num_min: int = 2,
     radius: float = 50_000,
     vertical_radius: float | None = None,
+    verbose: bool = True,
 ) -> dict:
     """
     Isolation check – same interface as clean_observation_tests.isolation_check.
@@ -305,6 +306,7 @@ def buddy_check_py(
     num_iterations: int = 5,
     num_min: int = 3,
     radius: float = 30_000,
+    verbose: bool = True,
 ) -> dict:
     """
     Buddy check – same interface as clean_observation_tests.buddy_check.
@@ -934,6 +936,7 @@ def first_guess_test_py(
     bdebug: bool = False,
     bbasic: bool = True,
     tpostneg=5,
+    verbose: bool = True,
 ) -> dict:
     """
     FGT wrapper – same interface as clean_observation_tests.first_guess_test.
@@ -1460,6 +1463,7 @@ def sct_resistant_py(
     vertical_scale: float = 200,
     bdebug: bool = False,
     bbasic: bool = True,
+    verbose: bool = True,
 ) -> dict:
     """
     SCT resistant – same interface as clean_observation_tests.spacial_ct_resistant.
@@ -1760,6 +1764,7 @@ def sct_dual_py(
     condition: int = 1,
     event_thresholds: float = 0.1,
     test_thresholds: float = 0.8,
+    verbose: bool = True,
 ) -> dict:
     """
     SCT dual – same interface as clean_observation_tests.spacial_ct_dual.

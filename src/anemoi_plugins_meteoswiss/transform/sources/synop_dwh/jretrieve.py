@@ -21,7 +21,7 @@ import subprocess
 import time
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from typing import Any, Sequence
@@ -36,6 +36,11 @@ HARDCODED_BINARY_PATH = "/oprusers/osm/opr.inn/bin/jretrievedwh.py"
 CONF_NAME = ".jretrievedwh-conf.prod.py"
 DEFAULT_META_FIELDS: tuple[str, ...] = ("lat", "lon", "elev", "name", "nat_abbr")
 DEFAULT_USE_LIMITATION = 40
+# Split long retrievals into windows of at most this many days. jretrievedwh
+# responses for very large queries (a full month of 10-min data over ~150
+# stations, ~0.6 M rows) can exceed the subprocess timeout and have been seen to
+# contain the odd malformed line; windows of this size stay well under both.
+DEFAULT_MAX_CHUNK_DAYS = 10
 
 CATALOG_TIME_RANGE_START = datetime(1900, 1, 1)
 CATALOG_TIME_RANGE_END = datetime(2100, 12, 31, 23, 59)
@@ -326,7 +331,11 @@ def _parse_csv(csv_text: str) -> pd.DataFrame:
     csv_text = csv_text.strip()
     if not csv_text:
         return pd.DataFrame()
-    return pd.read_csv(StringIO(csv_text), sep=";")
+    # Belt-and-suspenders: a very large jretrievedwh response can carry the odd
+    # malformed row. Chunked retrieval keeps responses small enough to avoid
+    # this, but if one slips through, drop that row (and log it) rather than
+    # failing the whole build.
+    return pd.read_csv(StringIO(csv_text), sep=";", on_bad_lines="warn")
 
 
 def fetch_meta(
@@ -389,6 +398,7 @@ def fetch_data(
     use_limitation: int = DEFAULT_USE_LIMITATION,
     info: Sequence[str] | None = None,
     timeout_s: int = 600,
+    max_chunk_days: int = DEFAULT_MAX_CHUNK_DAYS,
 ) -> pd.DataFrame:
     """Fetch observation data for the given selection / time range.
 
@@ -396,24 +406,40 @@ def fetch_data(
     plus one column per requested parameter. `info` adds per-station metadata
     columns to each row via jretrieve's `-j` option (e.g. ("nat_abbr","lat","lon")),
     so callers can key on nat_abbr without a separate meta join.
+
+    The time range is retrieved in windows of at most ``max_chunk_days`` and the
+    results concatenated, so a single jretrievedwh call never has to return an
+    oversized response (which risks the subprocess timeout and malformed rows).
     """
     if not params:
         raise ValueError("params must be non-empty.")
     binary = _resolve_binary()
     env = _build_env(stage)
+    step = timedelta(minutes=int(increment_minutes))
+    window = timedelta(days=int(max_chunk_days))
 
-    argv = [
-        binary,
-        "-s", seq_type,
-        "-n", ",".join(params),
-        "-t", f"{_fmt_time(start)},{_fmt_time(end)},{int(increment_minutes)}",
-        "--use-limitation", str(use_limitation),
-        "--format", "csv",
-        *_stations_to_argv(stations),
-    ]
-    if info:
-        argv += ["-j", ",".join(info)]
-    LOG.info("jretrieve data: %s", " ".join(argv))
-    text = _run_with_retry(argv, env=env, timeout_s=timeout_s)
-    df = _parse_csv(text)
-    return df
+    frames: list[pd.DataFrame] = []
+    chunk_start = start
+    while chunk_start <= end:
+        chunk_end = min(chunk_start + window - step, end)
+        argv = [
+            binary,
+            "-s", seq_type,
+            "-n", ",".join(params),
+            "-t", f"{_fmt_time(chunk_start)},{_fmt_time(chunk_end)},{int(increment_minutes)}",
+            "--use-limitation", str(use_limitation),
+            "--format", "csv",
+            *_stations_to_argv(stations),
+        ]
+        if info:
+            argv += ["-j", ",".join(info)]
+        LOG.info("jretrieve data: %s", " ".join(argv))
+        text = _run_with_retry(argv, env=env, timeout_s=timeout_s)
+        chunk = _parse_csv(text)
+        if len(chunk):
+            frames.append(chunk)
+        chunk_start = chunk_end + step
+
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)

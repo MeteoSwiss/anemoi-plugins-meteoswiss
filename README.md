@@ -9,6 +9,17 @@ Collection of [anemoi plugins](https://anemoi.readthedocs.io/projects/plugins/en
 | `rea-l-ch1-precip` | `ReaLCh1Precip` | REA-L-CH1 precipitation accumulation from FDB |
 | `rea-l-ch1-wind-gust` | `ReaLCh1WindGust` | REA-L-CH1 wind gust max from FDB |
 | `synop-dwh` | `SynopDwhSource` | MeteoSwiss synop station observations from DWH |
+| `icon-static` | `IconStatic` | Time-invariant ICON-CH1 grid fields (e.g. `lsm`) from the extpar file |
+
+## Filters (`anemoi.transform.filters`)
+
+| YAML key | Class | What it does |
+|---|---|---|
+| `grid-nearest` | `GridNearest` | Nearest-neighbour project point observations onto the (cropped) ICON-CH1 grid |
+
+(plus `assign-grid`, `destagger`, `clip-lateral-boundaries`,
+`model-to-pressure-level`, `omega-from-w`, `geopotential-from-height`,
+`average-flux-to-cumulative-quantity`.)
 
 ### `synop-dwh`
 
@@ -61,6 +72,45 @@ input:
   `latitude`/`longitude` indexed by station, wrapped via
   `XarrayFieldList.from_xarray`. The gridded creator picks up `station` as the
   cell dimension and writes per-station `latitudes`/`longitudes` zarr arrays.
+- Set `include_altitude: true` to add a time-invariant `stalt` variable (station
+  altitude from the catalog). It rides through `grid-nearest` and lands on each
+  station's cell — useful as a per-cell altitude feature.
+
+### `grid-nearest` and `icon-static` (observations on the ICON-CH1 grid)
+
+To build a dataset *on the ICON-CH1 grid* (instead of one cell per station),
+pipe the `synop-dwh` source through the `grid-nearest` filter and join a static
+land-sea mask + forcings computed on the same grid. The crop
+(`[west, east, south, north]`, default `CH_EXTENT` ≈ Switzerland) reduces the
+~1.15M-cell ICON-CH1 domain to ~90k cells; cells without a nearby station are
+`NaN`.
+
+```yaml
+input:
+  join:
+    - pipe:
+        - synop-dwh: { param: [tre200s0, ...], include_altitude: true, stations: {...} }
+        - grid-nearest:
+            grid: { icon: { path: /scratch/.../icon_grid_0001_R19B08_mch.nc } }
+            crop: [5.7, 10.6, 45.7, 47.95]   # [W, E, S, N]; omit for the full grid
+            max_distance_km: 5               # drop stations with no cell this close
+    - icon-static:
+        grid: { icon: { path: /scratch/.../icon_grid_0001_R19B08_mch.nc } }
+        crop: [5.7, 10.6, 45.7, 47.95]       # identical crop → identical cell axis
+        param: [lsm, orography, sdor, slor]  # see EXTPAR_VARIABLES for the full set
+    - pipe:
+        - forcings:
+            template: ${input.join.1.icon-static}   # a full-grid field as template
+            param: [cos_latitude, ..., cos_solar_zenith_angle]
+        - rename:
+            param: { cos_solar_zenith_angle: cos_sza }
+```
+
+`grid-nearest` and `icon-static` share `transform/icon_grid.py` (`cropped_icon_grid`)
+so they resolve the same, identically-ordered cell axis — a prerequisite for the
+join. `icon-static` reads static fields from the ICON *extpar* file (the grid file
+itself carries only geometry). See
+[config/surface-dwh-smn-icon-ch1-2024-10m-v0.1.yaml](../../config/surface-dwh-smn-icon-ch1-2024-10m-v0.1.yaml).
 
 ## Tests
 

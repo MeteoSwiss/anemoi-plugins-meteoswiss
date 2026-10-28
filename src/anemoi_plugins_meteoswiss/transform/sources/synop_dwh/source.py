@@ -16,10 +16,23 @@ import xarray as xr
 from anemoi.datasets.create.source import Source
 from anemoi.datasets.create.sources.xarray_support import XarrayFieldList
 
+from ...icon_grid import ICON_EXTPAR_PATH, ICON_GRID_PATH
 from . import jretrieve
 from .stations import StationCatalog
 
 LOG = logging.getLogger(__name__)
+
+# Standard gravity, for converting orography height [m] to geopotential [m^2/s^2].
+_GRAVITY = 9.80665
+# DWH short name -> callable converting its native unit to SI (used by si_units).
+_SI_CONVERT = {
+    "tre200s0": lambda v: v + 273.15,   # 2 m temperature      degC -> K
+    "tde200s0": lambda v: v + 273.15,   # 2 m dew point        degC -> K
+    "prestas0": lambda v: v * 100.0,    # surface pressure     hPa  -> Pa
+    "pp0qffs0": lambda v: v * 100.0,    # mean sea level pres. hPa  -> Pa
+}
+# Per-station fields sampled at the nearest ICON-CH1 cell (tabular layout only).
+GRID_FIELD_CHOICES = {"lsm", "z", "grid_index", "distance"}
 
 # SwissMetNet stations carry an official WMO-synop WIGOS id (Swiss block 06,
 # e.g. 0-20000-0-06710); agrometeo / precip-only gauges have only a national
@@ -69,6 +82,14 @@ class SynopDwhSource(Source):
         seq_type: str = "surface",
         increment_minutes: int = 10,
         timeout: int = 600,
+        include_altitude: bool = False,
+        layout: str = "gridded",
+        forcings: list[str] | None = None,
+        wind_to_uv: bool = False,
+        si_units: bool = False,
+        grid_fields: list[str] | None = None,
+        grid: dict[str, Any] | None = None,
+        extpar_path: str | None = None,
     ):
         super().__init__(context)
         if not param:
@@ -87,6 +108,25 @@ class SynopDwhSource(Source):
         self.seq_type: str = seq_type
         self.increment_minutes: int = int(increment_minutes)
         self.timeout: int = int(timeout)
+        self.include_altitude: bool = bool(include_altitude)
+        if layout not in ("gridded", "tabular"):
+            raise ValueError(f"layout must be 'gridded' or 'tabular', got {layout!r}.")
+        self.layout: str = layout
+        self.forcings: list[str] = list(forcings) if forcings else []
+        self.wind_to_uv: bool = bool(wind_to_uv)
+        if (self.forcings or self.wind_to_uv) and layout != "tabular":
+            raise ValueError("forcings / wind_to_uv are only supported with layout='tabular'.")
+        if self.wind_to_uv and not {"dkl010z0", "fkl010z0"}.issubset(self.param):
+            raise ValueError("wind_to_uv requires 'dkl010z0' and 'fkl010z0' in param.")
+        self.si_units: bool = bool(si_units)
+        self.grid_fields: list[str] = list(grid_fields) if grid_fields else []
+        unknown = set(self.grid_fields) - GRID_FIELD_CHOICES
+        if unknown:
+            raise ValueError(f"Unknown grid_fields {sorted(unknown)}; choose from {sorted(GRID_FIELD_CHOICES)}.")
+        if self.grid_fields and layout != "tabular":
+            raise ValueError("grid_fields are only supported with layout='tabular'.")
+        self.grid: dict[str, Any] = grid or {"icon": {"path": ICON_GRID_PATH}}
+        self.extpar_path: str = extpar_path or ICON_EXTPAR_PATH
 
     @staticmethod
     def _as_datetime(v: Any) -> datetime | None:
@@ -193,8 +233,128 @@ class SynopDwhSource(Source):
             timeout_s=self.timeout,
         )
 
+        if self.layout == "tabular":
+            return self._df_to_frame(df, catalog)
+
         ds = self._df_to_xarray(df, date_list, catalog)
         return XarrayFieldList.from_xarray(ds)
+
+    def _df_to_frame(self, df: pd.DataFrame, catalog: StationCatalog) -> pd.DataFrame:
+        """Long-form observation table for the tabular layout: one row per
+        (station, time), with `date`/`latitude`/`longitude` columns plus one
+        column per parameter. `__`-prefixed columns become meta-variables.
+        Station altitude is emitted as `stalt` when `include_altitude` is set."""
+        if df.empty:
+            empty = {"date": pd.Series([], dtype="datetime64[ns]")}
+            for c in self._frame_value_columns():
+                empty[c] = pd.Series([], dtype="float32")
+            return pd.DataFrame(empty)
+
+        df = df.copy()
+        sid_to_idx = {sid: i for i, sid in enumerate(catalog.station_id)}
+        si = df["station"].map(sid_to_idx)
+        df = df[si.notna()].copy()
+        si = si[si.notna()].astype(int).to_numpy()
+
+        # The tabular store converts the whole frame to float32 and only supports
+        # the four standard meta columns (__date/__time/__latitude/__longitude),
+        # so the numeric DWH station id is emitted as an ordinary `stationId`
+        # column (exclude it from model inputs via variable selection).
+        out = pd.DataFrame(
+            {
+                "date": pd.to_datetime(df["termin"], format="%Y%m%d%H%M%S").to_numpy(),
+                "latitude": catalog.latitude[si].astype("float32"),
+                "longitude": catalog.longitude[si].astype("float32"),
+                "stationId": catalog.station_id[si].astype("float32"),
+            }
+        )
+        for p in self.param:
+            if p in df.columns:
+                out[p] = self._to_si(p, df[p].to_numpy(dtype="float32"))
+            else:
+                out[p] = np.float32("nan")
+        if self.include_altitude:
+            out["stalt"] = catalog.elevation[si].astype("float32")
+        for name in self.grid_fields:
+            out[name] = self.station_grid_fields[name][si]
+
+        if self.wind_to_uv:
+            self._convert_wind_to_uv(out)
+        if self.forcings:
+            out = self._add_forcings(out)
+        return out.reset_index(drop=True)
+
+    def _to_si(self, param: str, values: np.ndarray) -> np.ndarray:
+        """Convert a parameter to SI units when `si_units` is set (degC->K,
+        hPa->Pa); pass other parameters through unchanged."""
+        if self.si_units and param in _SI_CONVERT:
+            return _SI_CONVERT[param](values).astype("float32")
+        return values
+
+    def _frame_value_columns(self) -> list[str]:
+        """Non-date columns in the exact order `_df_to_frame` produces them, so an
+        empty group yields a frame with the same schema as a populated one."""
+        params = [p for p in self.param if not (self.wind_to_uv and p in ("dkl010z0", "fkl010z0"))]
+        cols = ["latitude", "longitude", "stationId"] + params
+        if self.include_altitude:
+            cols.append("stalt")
+        cols += list(self.grid_fields)
+        if self.wind_to_uv:
+            cols += ["u10m", "v10m"]
+        cols += list(self.forcings)
+        return cols
+
+    @functools.cached_property
+    def station_grid_fields(self) -> dict[str, np.ndarray]:
+        """Per-station fields sampled at the nearest ICON-CH1 cell, keyed over the
+        canonical station catalog: `grid_index` (cell index into the full ICON-CH1
+        grid), `distance` (great-circle km to that cell), `lsm` (FR_LAND there) and
+        `z` (geopotential = model orography x g there)."""
+        from anemoi.transform.spatial import latlon_to_xyz
+        from scipy.spatial import KDTree
+
+        from ...icon_grid import icon_latlon
+
+        cat = self.catalog
+        glat, glon = icon_latlon(self.grid)
+        gx, gy, gz = latlon_to_xyz(np.asarray(glat), np.asarray(glon))
+        tree = KDTree(np.stack([gx, gy, gz], axis=-1))
+        sx, sy, sz = latlon_to_xyz(cat.latitude, cat.longitude)
+        chord, idx = tree.query(np.stack([sx, sy, sz], axis=-1))
+        dist_km = 2.0 * np.arcsin(np.clip(chord / 2.0, 0.0, 1.0)) * 6371.0
+
+        fields: dict[str, np.ndarray] = {}
+        if "grid_index" in self.grid_fields:
+            fields["grid_index"] = idx.astype("float32")
+        if "distance" in self.grid_fields:
+            fields["distance"] = dist_km.astype("float32")
+        if {"lsm", "z"} & set(self.grid_fields):
+            with xr.open_dataset(self.extpar_path) as ds:
+                if "lsm" in self.grid_fields:
+                    fields["lsm"] = np.asarray(ds["FR_LAND"].values).reshape(-1)[idx].astype("float32")
+                if "z" in self.grid_fields:
+                    topo = np.asarray(ds["topography_c"].values).reshape(-1)[idx]
+                    fields["z"] = (topo * _GRAVITY).astype("float32")
+        return fields
+
+    def _convert_wind_to_uv(self, out: pd.DataFrame) -> None:
+        """Replace wind direction/speed columns (dkl010z0/fkl010z0) with 10 m
+        u/v components (meteorological convention: direction is where the wind
+        blows *from*)."""
+        theta = np.deg2rad(out.pop("dkl010z0").to_numpy(dtype="float32"))
+        speed = out.pop("fkl010z0").to_numpy(dtype="float32")
+        out["u10m"] = (-speed * np.sin(theta)).astype("float32")
+        out["v10m"] = (-speed * np.cos(theta)).astype("float32")
+
+    def _add_forcings(self, out: pd.DataFrame) -> pd.DataFrame:
+        """Append forcing columns using anemoi's own tabular computation, so the
+        values match the `add-forcings` filter exactly. That filter keys off a
+        `datetime` column, so we bridge our `date` column across the call."""
+        from anemoi.transform.filters.tabular.add_forcings import AddForcings
+
+        tmp = out.rename(columns={"date": "datetime"})
+        tmp = AddForcings(columns=self.forcings).forward(tmp)
+        return tmp.rename(columns={"datetime": "date"})
 
     def _df_to_xarray(
         self,
@@ -234,10 +394,16 @@ class SynopDwhSource(Source):
             for p in self.param:
                 arr = np.full((n_t, n_s), np.nan, dtype=np.float32)
                 if p in df.columns:
-                    arr[df["_ti"].to_numpy(), df["_si"].to_numpy()] = (
-                        df[p].to_numpy(dtype=np.float32)
+                    arr[df["_ti"].to_numpy(), df["_si"].to_numpy()] = self._to_si(
+                        p, df[p].to_numpy(dtype=np.float32)
                     )
                 data_vars[p] = (("time", "station"), arr)
+
+        # Station altitude as a time-invariant variable, so it rides through the
+        # gridding filter and lands on each station's cell (useful as `stalt`).
+        if self.include_altitude:
+            stalt = np.tile(catalog.elevation.astype(np.float32), (n_t, 1))
+            data_vars["stalt"] = (("time", "station"), stalt)
 
         # Attach CF-ish attributes so the xarray flavour guesser picks the dims.
         ds = xr.Dataset(data_vars=data_vars, coords=coords)

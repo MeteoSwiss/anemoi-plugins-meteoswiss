@@ -24,10 +24,12 @@ destagger = "anemoi_plugins_meteoswiss.transform.filters:Destagger"
 clip-lateral-boundaries = "anemoi_plugins_meteoswiss.transform.filters:ClipLateralBoundaries"
 model-to-pressure-level = "anemoi_plugins_meteoswiss.transform.filters:ModelToPressureLevel"
 assign-grid = "anemoi_plugins_meteoswiss.transform.filters:AssignGrid"
+grid-nearest = "anemoi_plugins_meteoswiss.transform.filters:GridNearest"
 omega-from-w = "anemoi_plugins_meteoswiss.transform.filters:OmegaFromW"
 geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:GeopotentialFromHeight"
 
 [project.entry-points."anemoi.datasets.create.sources"]
+icon-static = "anemoi_plugins_meteoswiss.transform.sources:IconStatic"
 rea-l-ch1-precip = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1Precip"
 rea-l-ch1-wind-gust = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1WindGust"
 synop-dwh = "anemoi_plugins_meteoswiss.transform.sources:SynopDwhSource"

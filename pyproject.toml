@@ -10,7 +10,6 @@ dependencies = [
     "anemoi-plugins",
     "anemoi-transform",
     "earthkit-meteo",
-    "meteodata-lab",
 ]
 
 
@@ -29,6 +28,7 @@ geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:Geopoten
 [project.entry-points."anemoi.datasets.create.sources"]
 rea-l-ch1-precip = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1Precip"
 rea-l-ch1-wind-gust = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1WindGust"
+thx-lightning = "anemoi_plugins_meteoswiss.transform.sources:ThxLightning"
 
 [build-system]
 requires = ["hatchling"]
@@ -43,4 +43,3 @@ dev = [
 [tool.uv.sources]
 anemoi-plugins = { git = "https://github.com/ecmwf/anemoi-plugins.git" }
 earthkit-meteo = { git = "https://github.com/ecmwf/earthkit-meteo.git" , rev = "develop" }
-meteodata-lab = { git = "https://github.com/MeteoSwiss/meteodata-lab.git", rev = "main" }

@@ -11,6 +11,9 @@ eccodes_definitions = (
 )
 os.environ["ECCODES_DEFINITION_PATH"] = str(eccodes_definitions)
 
+# load the eccodes library before zarr/numcodecs, otherwise gribapi segfaults on import
+import eccodes  # noqa: E402, F401
+
 
 @pytest.fixture
 def hostname():

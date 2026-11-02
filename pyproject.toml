@@ -20,11 +20,14 @@ anemoi-plugins-meteoswiss = "anemoi_plugins_meteoswiss:main"
 [project.entry-points."anemoi.transform.filters"]
 average-flux-to-cumulative-quantity = "anemoi_plugins_meteoswiss.transform.filters:AverageFluxToCumulativeQuantity"
 destagger = "anemoi_plugins_meteoswiss.transform.filters:Destagger"
+fill-missing = "anemoi_plugins_meteoswiss.transform.filters:FillMissing"
 clip-lateral-boundaries = "anemoi_plugins_meteoswiss.transform.filters:ClipLateralBoundaries"
 model-to-pressure-level = "anemoi_plugins_meteoswiss.transform.filters:ModelToPressureLevel"
 assign-grid = "anemoi_plugins_meteoswiss.transform.filters:AssignGrid"
 omega-from-w = "anemoi_plugins_meteoswiss.transform.filters:OmegaFromW"
 geopotential-from-height = "anemoi_plugins_meteoswiss.transform.filters:GeopotentialFromHeight"
+height-above-ground = "anemoi_plugins_meteoswiss.transform.filters:HeightAboveGround"
+soil-depth-levels = "anemoi_plugins_meteoswiss.transform.filters:SoilDepthLevels"
 
 [project.entry-points."anemoi.datasets.create.sources"]
 rea-l-ch1-precip = "anemoi_plugins_meteoswiss.transform.sources:ReaLCh1Precip"

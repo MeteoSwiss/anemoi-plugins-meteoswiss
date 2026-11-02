@@ -111,7 +111,15 @@ def test_execute_reduces_each_window(fake_fdb):
     assert_array_equal(out[1].values, [-(1440 - 350)])
     assert_array_equal(out[2].values, [1500])
     assert_array_equal(out[3].values, [-(1500 - 350)])
-    assert out[0].metadata_overrides == {"level": None, "levelist": None}
+    assert out[0].metadata_overrides == {
+        "level": None,
+        "levelist": None,
+        "levtype": "sfc",
+        "stepType": "max",
+        "typeOfStatisticalProcessing": 2,
+        "startStep": 0,
+        "endStep": 6,
+    }
 
 
 def test_execute_statistics(fake_fdb):
@@ -164,6 +172,9 @@ def test_against_fdb():
     )
     actual = source.execute([date_])[0]
     assert actual.datetime()["valid_time"] == date_
+    assert actual.metadata("levtype") == "sfc"
+    assert actual.metadata("stepType") == "max"
+    assert (actual.metadata("startStep"), actual.metadata("endStep")) == (0, 6)
 
     expected = []
     for valid in module.window(date_, timedelta(hours=6)):

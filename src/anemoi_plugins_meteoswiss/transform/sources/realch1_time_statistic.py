@@ -97,6 +97,10 @@ STATISTICS: dict[str, Callable[[np.ndarray], np.ndarray]] = {
     "mean": lambda values: np.mean(values, axis=0),
 }
 
+# GRIB2 code table 4.10 and the eccodes stepType of the output fields
+TYPE_OF_STATISTICAL_PROCESSING = {"max": 2, "min": 3, "mean": 0}
+STEP_TYPE = {"max": "max", "min": "min", "mean": "avg"}
+
 
 class ReaLCh1TimeStatistic(Source):
     """Statistic of REA-L-CH1 surface fields over the period ending at each date."""
@@ -124,13 +128,20 @@ class ReaLCh1TimeStatistic(Source):
         super().__init__(context)
 
         if statistic not in STATISTICS:
-            raise ValueError(f"statistic must be one of {sorted(STATISTICS)}, got {statistic!r}.")
+            raise ValueError(
+                f"statistic must be one of {sorted(STATISTICS)}, got {statistic!r}."
+            )
         if not 1 <= period_hours <= 24:
-            raise ValueError(f"period_hours must be between 1 and 24, got {period_hours}.")
+            raise ValueError(
+                f"period_hours must be between 1 and 24, got {period_hours}."
+            )
 
         self.statistic = statistic
         self.period = timedelta(hours=period_hours)
-        self.param_ids = [_param_id(p) for p in (param if isinstance(param, list) else [param])]
+        self.period_hours = period_hours
+        self.param_ids = [
+            _param_id(p) for p in (param if isinstance(param, list) else [param])
+        ]
         self.grid = grid_registry.from_config({"icon": {"path": ICON_GRID_PATH}})
 
     def execute(self, dates: list[datetime]) -> ekd.FieldList:
@@ -145,10 +156,26 @@ class ReaLCh1TimeStatistic(Source):
                 try:
                     window_fields = [fields[(param_id, t)] for t in windows[d]]
                 except KeyError as e:
-                    raise ValueError(f"Missing field for param {param_id} valid at {e.args[0][1]}") from None
-                values = STATISTICS[self.statistic](np.stack([f.values for f in window_fields]))
-                # the last field of the window is valid at the dataset date
-                field = window_fields[-1].clone(values=values, level=None, levelist=None)
+                    raise ValueError(
+                        f"Missing field for param {param_id} valid at {e.args[0][1]}"
+                    ) from None
+                values = STATISTICS[self.statistic](
+                    np.stack([f.values for f in window_fields])
+                )
+                # the last field of the window is valid at the dataset date; the period is encoded
+                # as (0, period) like the output of anemoi's accumulate, whatever the run
+                field = window_fields[-1].clone(
+                    values=values,
+                    level=None,
+                    levelist=None,
+                    levtype="sfc",
+                    stepType=STEP_TYPE[self.statistic],
+                    typeOfStatisticalProcessing=TYPE_OF_STATISTICAL_PROCESSING[
+                        self.statistic
+                    ],
+                    startStep=0,
+                    endStep=self.period_hours,
+                )
                 out.append(new_field_from_grid(field, self.grid))
         return new_fieldlist_from_list(out)
 
@@ -167,8 +194,15 @@ class ReaLCh1WindGust(ReaLCh1TimeStatistic):
             The aggregation period in minutes, a multiple of 60 (default: 60).
         """
         if aggregation_period_minutes % 60:
-            raise ValueError(f"aggregation_period_minutes must be a multiple of 60, got {aggregation_period_minutes}.")
-        super().__init__(context, param="VMAX_10M", statistic="max", period_hours=aggregation_period_minutes // 60)
+            raise ValueError(
+                f"aggregation_period_minutes must be a multiple of 60, got {aggregation_period_minutes}."
+            )
+        super().__init__(
+            context,
+            param="VMAX_10M",
+            statistic="max",
+            period_hours=aggregation_period_minutes // 60,
+        )
 
 
 def _param_id(param: str | int) -> int:
@@ -177,7 +211,9 @@ def _param_id(param: str | int) -> int:
     try:
         return PARAM_IDS[param]
     except KeyError:
-        raise ValueError(f"Unknown parameter {param!r}, use a paramId or one of {sorted(PARAM_IDS)}.") from None
+        raise ValueError(
+            f"Unknown parameter {param!r}, use a paramId or one of {sorted(PARAM_IDS)}."
+        ) from None
 
 
 def _naive(d: datetime) -> datetime:
@@ -188,7 +224,9 @@ def window(date: datetime, period: timedelta) -> list[datetime]:
     """Valid times of the archived fields in (date - period, date]."""
     minutes = int(period.total_seconds() // 60)
     if minutes <= 0 or minutes % DT:
-        raise ValueError(f"The period must be a positive multiple of {DT} minutes, got {period}.")
+        raise ValueError(
+            f"The period must be a positive multiple of {DT} minutes, got {period}."
+        )
     return [date - timedelta(minutes=m) for m in range(minutes - DT, -1, -DT)]
 
 
@@ -198,7 +236,9 @@ def run_and_step(valid: datetime) -> tuple[date_type, int]:
     Midnight belongs to the previous day's run (step 24 h), there is no step 0.
     """
     run_date = (valid - timedelta(minutes=1)).date()
-    step = int((valid - datetime.combine(run_date, datetime.min.time())).total_seconds() // 60)
+    step = int(
+        (valid - datetime.combine(run_date, datetime.min.time())).total_seconds() // 60
+    )
     return run_date, step
 
 
@@ -228,7 +268,9 @@ def requests(param_ids: list[int], times: list[datetime]) -> list[dict[str, Any]
     ]
 
 
-def _retrieve(param_ids: list[int], times: list[datetime]) -> dict[tuple[int, datetime], ekd.Field]:
+def _retrieve(
+    param_ids: list[int], times: list[datetime]
+) -> dict[tuple[int, datetime], ekd.Field]:
     """Fields keyed by (paramId, valid time)."""
     fields = {}
     for request in requests(param_ids, times):

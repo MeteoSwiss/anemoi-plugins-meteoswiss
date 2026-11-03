@@ -114,8 +114,12 @@ class SynopDwhSource(Source):
         self.layout: str = layout
         self.forcings: list[str] = list(forcings) if forcings else []
         self.wind_to_uv: bool = bool(wind_to_uv)
-        if (self.forcings or self.wind_to_uv) and layout != "tabular":
-            raise ValueError("forcings / wind_to_uv are only supported with layout='tabular'.")
+        # Forcings are tabular-only (the gridded layout gets forcings from the
+        # anemoi `forcings` source on the grid). wind_to_uv works for both: the
+        # dir/speed -> u/v conversion is a per-station operation done before the
+        # nearest-neighbour gridding, so it is identical in station and grid space.
+        if self.forcings and layout != "tabular":
+            raise ValueError("forcings are only supported with layout='tabular'.")
         if self.wind_to_uv and not {"dkl010z0", "fkl010z0"}.issubset(self.param):
             raise ValueError("wind_to_uv requires 'dkl010z0' and 'fkl010z0' in param.")
         self.si_units: bool = bool(si_units)
@@ -337,6 +341,16 @@ class SynopDwhSource(Source):
                     fields["z"] = (topo * _GRAVITY).astype("float32")
         return fields
 
+    def _cube_wind_to_uv(self, data_vars: dict[str, tuple[tuple[str, ...], np.ndarray]]) -> None:
+        """Replace the dir/speed (dkl010z0/fkl010z0) cubes with 10 m u/v component
+        cubes, same meteorological convention as `_convert_wind_to_uv` (direction
+        is where the wind blows *from*). NaN in either input propagates to u/v."""
+        dims, theta = data_vars.pop("dkl010z0")
+        _, speed = data_vars.pop("fkl010z0")
+        theta = np.deg2rad(theta)
+        data_vars["u10m"] = (dims, (-speed * np.sin(theta)).astype(np.float32))
+        data_vars["v10m"] = (dims, (-speed * np.cos(theta)).astype(np.float32))
+
     def _convert_wind_to_uv(self, out: pd.DataFrame) -> None:
         """Replace wind direction/speed columns (dkl010z0/fkl010z0) with 10 m
         u/v components (meteorological convention: direction is where the wind
@@ -398,6 +412,11 @@ class SynopDwhSource(Source):
                         p, df[p].to_numpy(dtype=np.float32)
                     )
                 data_vars[p] = (("time", "station"), arr)
+
+        # Replace dir/speed with 10 m u/v components (in station space, before
+        # the nearest-neighbour gridding).
+        if self.wind_to_uv:
+            self._cube_wind_to_uv(data_vars)
 
         # Station altitude as a time-invariant variable, so it rides through the
         # gridding filter and lands on each station's cell (useful as `stalt`).

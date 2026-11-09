@@ -89,13 +89,19 @@ class ThxLightning(Source):
         import numpy as np
         import xarray as xr
         from collections import defaultdict
+        from datetime import timedelta
 
         out = []
 
-        # Group requested dates by calendar day to open each file at most once.
+        # Group requested dates by the file day that contains them.
+        # With END convention, 00:00 timestamps (label = end of [23:50, 00:00))
+        # are stored as the last step of the PREVIOUS day's file.
         by_day: dict = defaultdict(list)
         for date in dates:
-            by_day[date.date()].append(date)
+            file_date = date.date()
+            if date.hour == 0 and date.minute == 0 and date.second == 0:
+                file_date = (date - timedelta(days=1)).date()
+            by_day[file_date].append(date)
 
         for day in sorted(by_day):
             nc_path = self.data_dir / f"lightning_{self.grid_type}_{day.strftime('%Y%m%d')}.nc"

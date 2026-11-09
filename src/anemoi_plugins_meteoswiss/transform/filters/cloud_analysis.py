@@ -456,10 +456,12 @@ class CloudAnalysis(Filter):
         Directory containing SAFNWC NetCDF files.
     output_dir : str
         Directory where CT_analysis_{timestamp}.nc files are written.
-    icon_extpar_file : str
+    icon_extpar_file : str, optional
         ICON-CH1 extpar NetCDF (clat/clon in radians, topography_c in metres,
-        FR_LAKE as fraction 0-1).  Same file as nudging plugin's icon_orog_file.
+        FR_LAKE as fraction 0-1).  Alias: icon_orog_file (same as nudging plugin).
         Example: external_parameter_icon_grid_0001_R19B08_mch.nc
+    icon_orog_file : str, optional
+        Alias for icon_extpar_file; accepted for consistency with the nudging plugin.
     satellites : list of str, optional
         SAF satellite IDs to try in order.  Default: MTI1, MTI2, MTI3, MSG4, MSG3.
     domains : list of str, optional
@@ -499,8 +501,9 @@ class CloudAnalysis(Filter):
         self,
         saf_dir: str,
         output_dir: str,
-        icon_extpar_file: str,
+        icon_extpar_file: str = None,
         satellites: list = None,
+        icon_orog_file: str = None,
         domains: list = None,
         use_plax: bool = True,
         lim_low_m: float = 2400.0,
@@ -517,7 +520,10 @@ class CloudAnalysis(Filter):
         super().__init__()
         self._saf_dir = Path(saf_dir)
         self._output_dir = Path(output_dir)
-        self._icon_extpar_file = Path(icon_extpar_file)
+        extpar = icon_extpar_file or icon_orog_file
+        if extpar is None:
+            raise ValueError("icon_extpar_file (or icon_orog_file) is required")
+        self._icon_extpar_file = Path(extpar)
         self._satellites = satellites or ["MTI1", "MTI2", "MTI3", "MSG4", "MSG3"]
         self._domains = domains or ["alps-NR", "alps-VISIR"]
         self._use_plax = use_plax
@@ -555,20 +561,24 @@ class CloudAnalysis(Filter):
     # ── ICON field extraction from FieldList ───────────────────────────────────
 
     def _extract_icon_from_fieldlist(self, data: ekd.FieldList) -> dict:
-        """Extract CLCT/CLCL/CLCM/CLCH from the earthkit FieldList by shortName."""
+        """Extract CLCT/CLCL/CLCM/CLCH from the earthkit FieldList by shortName.
+
+        Uses data.sel(shortName=...) like the nudging plugin so that earthkit
+        can optimise the lookup (index scan rather than iterating all fields).
+        """
+        short_to_icon = {v: k for k, v in self._icon_shortnames.items()}
         icon_geo = {}
-        for icon_name, short_name in self._icon_shortnames.items():
-            candidates = [
-                f for f in data if f.metadata("shortName", default=None) == short_name
-            ]
-            if not candidates:
-                LOG.warning(
-                    "Field '%s' (shortName='%s') not found in FieldList",
-                    icon_name, short_name,
-                )
-                continue
-            vals = candidates[0].to_numpy()
+        for field in data.sel(shortName=list(self._icon_shortnames.values())):
+            short_name = field.metadata("shortName")
+            icon_name = short_to_icon[short_name]
+            vals = field.to_numpy()
             icon_geo[icon_name] = vals / 100.0 if np.nanmax(vals) > 1.5 else vals
+        missing = [k for k in self._icon_shortnames if k not in icon_geo]
+        if missing:
+            LOG.warning(
+                "ICON cloud fields not found in FieldList: %s (shortNames: %s)",
+                missing, [self._icon_shortnames[k] for k in missing],
+            )
         if not icon_geo:
             raise ValueError(
                 "No ICON cloud fields found in the FieldList. "
@@ -634,10 +644,9 @@ class CloudAnalysis(Filter):
         )
 
         # ── Load ICON cloud fields ─────────────────────────────────────────────
-        if self._icon_source == "fieldlist":
-            LOG.info("Reading ICON cloud fields from FieldList ...")
-            icon_geo = self._extract_icon_from_fieldlist(data)
-        else:
+        # Default: read CLCT/CLCL/CLCM/CLCH directly from the input FieldList.
+        # Option:  icon_source="grib" reads from an external ICON-CH1-EPS GRIB.
+        if self._icon_source == "grib":
             run_time, lead_h, grib_path = _find_icon_run(
                 ref_time, self._icon_base_dir, self._icon_offset_h, self._icon_member
             )
@@ -646,6 +655,9 @@ class CloudAnalysis(Filter):
                 run_time.strftime("%Y-%m-%dT%H:%M UTC"), lead_h, grib_path.name,
             )
             icon_geo = _read_icon_grib(grib_path)
+        else:
+            LOG.info("Reading ICON cloud fields from FieldList ...")
+            icon_geo = self._extract_icon_from_fieldlist(data)
 
         LOG.info("ICON fields available: %s", list(icon_geo))
 

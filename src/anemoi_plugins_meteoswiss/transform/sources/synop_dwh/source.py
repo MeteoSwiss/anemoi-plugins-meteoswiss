@@ -31,6 +31,21 @@ _SI_CONVERT = {
     "prestas0": lambda v: v * 100.0,    # surface pressure     hPa  -> Pa
     "pp0qffs0": lambda v: v * 100.0,    # mean sea level pres. hPa  -> Pa
 }
+# Physical plausibility ranges in NATIVE DWH units. Values outside [lo, hi] are
+# masked to NaN before any unit conversion (controlled by `physical_qc`). This
+# strips in-band missing-data sentinels (e.g. a 100000 degC marker seen on some
+# partner stations) and grossly non-physical readings (e.g. a bad mean-sea-level
+# pressure reduction of 620 hPa). Parameters not listed are passed through
+# unchecked. MSL pressure (pp0qffs0) gets a tighter floor than station pressure
+# (prestas0), which is legitimately low at high-altitude stations.
+_PHYS_RANGE: dict[str, tuple[float, float]] = {
+    "tre200s0": (-90.0, 60.0),    # degC, 2 m air temperature
+    "tde200s0": (-90.0, 60.0),    # degC, 2 m dew point
+    "prestas0": (400.0, 1100.0),  # hPa, station pressure
+    "pp0qffs0": (850.0, 1100.0),  # hPa, mean sea level pressure
+    "fkl010z0": (0.0, 100.0),     # m/s, 10 m wind speed
+    "dkl010z0": (0.0, 360.0),     # deg, 10 m wind direction
+}
 # Per-station fields sampled at the nearest ICON-CH1 cell (tabular layout only).
 GRID_FIELD_CHOICES = {"lsm", "z", "grid_index", "distance"}
 
@@ -82,11 +97,13 @@ class SynopDwhSource(Source):
         seq_type: str = "surface",
         increment_minutes: int = 10,
         timeout: int = 600,
+        use_limitation: int = jretrieve.DEFAULT_USE_LIMITATION,
         include_altitude: bool = False,
         layout: str = "gridded",
         forcings: list[str] | None = None,
         wind_to_uv: bool = False,
         si_units: bool = False,
+        physical_qc: bool = True,
         grid_fields: list[str] | None = None,
         grid: dict[str, Any] | None = None,
         extpar_path: str | None = None,
@@ -108,6 +125,17 @@ class SynopDwhSource(Source):
         self.seq_type: str = seq_type
         self.increment_minutes: int = int(increment_minutes)
         self.timeout: int = int(timeout)
+        # Terms-of-use ceiling: DWH returns only observations with
+        # use_limitation <= this value. 10/20/30 are shareable with external
+        # research (30 = "transfer to Swiss task forces and research allowed");
+        # 40/50 are internal/task-force only. Keep the default permissive (40,
+        # matching prior builds); shareable products set `use_limitation: 30`.
+        if int(use_limitation) not in jretrieve.ALLOWED_USE_LIMITATIONS:
+            raise ValueError(
+                f"use_limitation must be one of "
+                f"{sorted(jretrieve.ALLOWED_USE_LIMITATIONS)}, got {use_limitation!r}."
+            )
+        self.use_limitation: int = int(use_limitation)
         self.include_altitude: bool = bool(include_altitude)
         if layout not in ("gridded", "tabular"):
             raise ValueError(f"layout must be 'gridded' or 'tabular', got {layout!r}.")
@@ -123,6 +151,7 @@ class SynopDwhSource(Source):
         if self.wind_to_uv and not {"dkl010z0", "fkl010z0"}.issubset(self.param):
             raise ValueError("wind_to_uv requires 'dkl010z0' and 'fkl010z0' in param.")
         self.si_units: bool = bool(si_units)
+        self.physical_qc: bool = bool(physical_qc)
         self.grid_fields: list[str] = list(grid_fields) if grid_fields else []
         unknown = set(self.grid_fields) - GRID_FIELD_CHOICES
         if unknown:
@@ -234,6 +263,7 @@ class SynopDwhSource(Source):
             increment_minutes=self.increment_minutes,
             seq_type=self.seq_type,
             stage=self.stage,
+            use_limitation=self.use_limitation,
             timeout_s=self.timeout,
         )
 
@@ -288,9 +318,23 @@ class SynopDwhSource(Source):
             out = self._add_forcings(out)
         return out.reset_index(drop=True)
 
+    def _apply_phys_qc(self, param: str, values: np.ndarray) -> np.ndarray:
+        """Mask physically implausible NATIVE-unit values to NaN when
+        `physical_qc` is set. See `_PHYS_RANGE` for the rationale (sentinels,
+        bad reductions). No-op for parameters without a configured range."""
+        if not self.physical_qc or param not in _PHYS_RANGE:
+            return values
+        lo, hi = _PHYS_RANGE[param]
+        # NaN compares False, so existing NaNs are preserved; only in-range
+        # finite values survive.
+        return np.where((values < lo) | (values > hi), np.nan, values).astype("float32")
+
     def _to_si(self, param: str, values: np.ndarray) -> np.ndarray:
-        """Convert a parameter to SI units when `si_units` is set (degC->K,
-        hPa->Pa); pass other parameters through unchanged."""
+        """Apply physical-range QC (native units), then convert to SI units when
+        `si_units` is set (degC->K, hPa->Pa). Parameters without a conversion are
+        passed through (still QC'd). This is the single chokepoint for both the
+        tabular and gridded paths, so QC happens exactly once per value."""
+        values = self._apply_phys_qc(param, values)
         if self.si_units and param in _SI_CONVERT:
             return _SI_CONVERT[param](values).astype("float32")
         return values

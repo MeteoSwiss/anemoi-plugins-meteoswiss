@@ -36,6 +36,14 @@ HARDCODED_BINARY_PATH = "/oprusers/osm/opr.inn/bin/jretrievedwh.py"
 CONF_NAME = ".jretrievedwh-conf.prod.py"
 DEFAULT_META_FIELDS: tuple[str, ...] = ("lat", "lon", "elev", "name", "nat_abbr")
 DEFAULT_USE_LIMITATION = 40
+# Terms-of-use (Nutzungsbedingungen) ceiling values jretrievedwh accepts for
+# `--use-limitation` (only data with use_limitation <= limit is returned):
+#   10 use without limitation; 20 ditto, reference required;
+#   30 limited use, transfer to Swiss task forces AND research allowed;
+#   40 internal use, transfer to Swiss task forces only (NOT research);
+#   50 internal only, no transfer to anybody.
+# Research-shareable products must use <= 30.
+ALLOWED_USE_LIMITATIONS = frozenset({10, 20, 30, 40, 50})
 # Split long retrievals into windows of at most this many days. jretrievedwh
 # responses for very large queries (a full month of 10-min data over ~150
 # stations, ~0.6 M rows) can exceed the subprocess timeout and have been seen to

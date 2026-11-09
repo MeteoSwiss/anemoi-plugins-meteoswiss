@@ -214,6 +214,58 @@ def test_fetch_data_passes_use_limitation(monkeypatch):
     assert argv[argv.index("--use-limitation") + 1] == str(jr.DEFAULT_USE_LIMITATION)
 
 
+def test_fetch_data_forwards_custom_use_limitation(monkeypatch):
+    captured = {}
+
+    def fake_run_with_retry(argv, env, timeout_s):
+        captured["argv"] = argv
+        return "station;termin;tre200s0\n1;20260501000000;10.0\n"
+
+    monkeypatch.setattr(jr, "_resolve_binary", lambda: "/opt/bin/jretrievedwh.py")
+    monkeypatch.setattr(jr, "_build_env", lambda stage: {})
+    monkeypatch.setattr(jr, "_run_with_retry", fake_run_with_retry)
+
+    from datetime import datetime
+
+    jr.fetch_data(
+        stations={"group": "smn"},
+        params=["tre200s0"],
+        start=datetime(2026, 5, 1),
+        end=datetime(2026, 5, 1, 1),
+        increment_minutes=10,
+        use_limitation=30,
+    )
+    argv = captured["argv"]
+    assert argv[argv.index("--use-limitation") + 1] == "30"
+
+
+# --- Source use_limitation wiring ------------------------------------------
+
+def _make_source(**kwargs):
+    base = dict(
+        context=object(),
+        param=["tre200s0"],
+        stations={"locations": ["BAS"]},
+    )
+    base.update(kwargs)
+    return SynopDwhSource(**base)
+
+
+def test_source_use_limitation_defaults_to_jretrieve_default():
+    src = _make_source()
+    assert src.use_limitation == jr.DEFAULT_USE_LIMITATION
+
+
+def test_source_use_limitation_configurable():
+    src = _make_source(use_limitation=30)
+    assert src.use_limitation == 30
+
+
+def test_source_rejects_invalid_use_limitation():
+    with pytest.raises(ValueError, match="use_limitation"):
+        _make_source(use_limitation=35)
+
+
 # --- StationCatalog.from_meta ----------------------------------------------
 
 def _sample_meta():

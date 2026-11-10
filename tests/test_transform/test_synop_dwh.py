@@ -118,13 +118,61 @@ def test_df_to_xarray_empty_response_yields_all_nan():
     assert np.isnan(ds["tre200s0"].values).all()
 
 
+def test_physical_qc_masks_out_of_range_native_values():
+    """Physically implausible native-unit values (sentinels, bad reductions) are
+    masked to NaN before conversion; station pressure keeps its legitimately low
+    high-altitude range while MSL pressure does not."""
+    catalog = StationCatalog(
+        nat_abbr=np.array(["AAA"], dtype=object),
+        station_id=np.array([1], dtype=np.int64),
+        latitude=np.array([46.0]),
+        longitude=np.array([8.0]),
+        elevation=np.array([2000.0]),
+        name=np.array(["Alpine"], dtype=object),
+    )
+    # Row 0: a good observation. Row 1: the 100000 degC temperature sentinel,
+    # a 620 hPa value (plausible as station pressure, impossible as MSL pressure),
+    # and a wind-speed sentinel.
+    data = pd.DataFrame({
+        "station":  [1, 1],
+        "termin":   ["20240101000000", "20240101001000"],
+        "tre200s0": [5.0, 100000.0],
+        "prestas0": [620.0, 620.0],
+        "pp0qffs0": [1013.0, 620.0],
+        "fkl010z0": [3.0, 100000.0],
+        "dkl010z0": [180.0, 180.0],
+    })
+    dates = [datetime(2024, 1, 1, 0, 0), datetime(2024, 1, 1, 0, 10)]
+    params = ["tre200s0", "prestas0", "pp0qffs0", "fkl010z0", "dkl010z0"]
+
+    src = SynopDwhSource(context=None, param=params, stations={"locations": ["AAA"]})
+    ds = src._df_to_xarray(data, dates, catalog)
+    # Good row survives untouched.
+    np.testing.assert_allclose(ds["tre200s0"].values[0], [5.0])
+    np.testing.assert_allclose(ds["prestas0"].values[0], [620.0])   # legit high-altitude
+    np.testing.assert_allclose(ds["pp0qffs0"].values[0], [1013.0])
+    # Bad row: temperature sentinel, MSL 620 hPa and wind sentinel masked to NaN;
+    # station pressure 620 hPa is in range and kept.
+    assert np.isnan(ds["tre200s0"].values[1]).all()
+    assert np.isnan(ds["pp0qffs0"].values[1]).all()
+    assert np.isnan(ds["fkl010z0"].values[1]).all()
+    np.testing.assert_allclose(ds["prestas0"].values[1], [620.0])
+
+    # With QC disabled the sentinel passes straight through.
+    src_off = SynopDwhSource(
+        context=None, param=params, stations={"locations": ["AAA"]}, physical_qc=False
+    )
+    ds_off = src_off._df_to_xarray(data, dates, catalog)
+    np.testing.assert_allclose(ds_off["tre200s0"].values[1], [100000.0])
+
+
 def test_jretrieve_argv_translation_for_each_station_selection_mode():
     """The three station selection modes produce the expected jretrieve flags."""
     from anemoi_plugins_meteoswiss.transform.sources.synop_dwh.jretrieve import (
         _stations_to_argv,
     )
 
-    assert _stations_to_argv({"group": "smn"}) == ["-a", "stn_group,smn"]
+    assert _stations_to_argv({"group": "smn"}) == ["-a", "stn_group_id,smn"]
     assert _stations_to_argv({"locations": ["BAS", "BER"]}) == ["-i", "nat_abbr,BAS,BER"]
     assert _stations_to_argv({"bbox": [45.8, 47.9, 5.9, 10.5]}) == [
         "-l", "45.8,47.9,5.9,10.5"

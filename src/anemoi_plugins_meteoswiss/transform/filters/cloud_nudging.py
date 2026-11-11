@@ -12,6 +12,7 @@ Pipeline (mirrors cloud_extrapolation.py / INCA cloud module):
   3. reproject SAF fields  → ICON/VARDA unstructured grid
   4. apply_topo_lakes_filter — zero cloud below topography / over lakes (ICON/VARDA grid)
   5. apply_icon_combination — fill from ICON/VARDA where SAF is saturated or absent
+  6. fill_saf_gaps          — fill residual NaN (ct_nan) with ICON/VARDA or 0
 
 forward() returns a dict with keys: fields, timestamp, sat, domain,
 lat_icon, lon_icon, lim_low, lim_medium.  NetCDF output is left to the
@@ -157,6 +158,8 @@ def _preprocess_saf(cloud_mask, cloud_eff, cloud_top, cloud_type, partial_high_t
     - CT 10   (fractional):         gaussian-fill cloud_top → override 2000 m;
                                     gaussian-fill cloud_eff; cap cloud_eff at 0.5
     - CT 11   (thin high cirrus):   cloud_top=10000 m, cloud_eff=0.4; floor at partial_high_thr
+    - CT 12   (mod. thick cirrus):  cloud_top=10000 m, cloud_eff gaussian-filled; floor at partial_high_thr
+    - CT 13   (thick cirrus):       cloud_top=10000 m, cloud_eff gaussian-filled; floor at partial_high_thr
     - CT 14   (cirrus above):       cloud_top=10000 m, cloud_eff gaussian-filled; floor at partial_high_thr
     - clear pixels:                 cloud_eff=0
 
@@ -177,6 +180,8 @@ def _preprocess_saf(cloud_mask, cloud_eff, cloud_top, cloud_type, partial_high_t
     # cloud type masks: pixels where eff/top are NaN but type is known
     fractional_mask     = (np.isnan(cloud_eff) | np.isnan(cloud_top)) & (cloud_type == 10)
     thinhighcirrus_mask = (np.isnan(cloud_eff) | np.isnan(cloud_top)) & (cloud_type == 11)
+    cirrus_mod_mask     = (np.isnan(cloud_eff) | np.isnan(cloud_top)) & (cloud_type == 12)
+    cirrus_thick_mask   = (np.isnan(cloud_eff) | np.isnan(cloud_top)) & (cloud_type == 13)
     cirrus_above_mask   = (np.isnan(cloud_eff) | np.isnan(cloud_top)) & (cloud_type == 14)
     noclouds_mask       = cloud_mask == 0.0
 
@@ -186,8 +191,10 @@ def _preprocess_saf(cloud_mask, cloud_eff, cloud_top, cloud_type, partial_high_t
     )[fractional_mask]
     cloud_top[fractional_mask] = 2_000.0
 
-    # thin cirrus / cirrus above: set fixed cloud-top height
+    # semitransparent cirrus types: set fixed height; gaussian-fill missing cloud_eff
     cloud_top[thinhighcirrus_mask] = 10_000.0
+    cloud_top[cirrus_mod_mask]     = 10_000.0
+    cloud_top[cirrus_thick_mask]   = 10_000.0
     cloud_top[cirrus_above_mask]   = 10_000.0
 
     cloud_eff[noclouds_mask]       = 0.0
@@ -198,14 +205,20 @@ def _preprocess_saf(cloud_mask, cloud_eff, cloud_top, cloud_type, partial_high_t
     # cap fractional cloud coverage at 0.5 (applies to all CT=10, filled or not)
     cloud_eff[cloud_type == 10] = np.minimum(cloud_eff[cloud_type == 10], 0.5)
 
+    cloud_eff[cirrus_mod_mask]   = _gaussian_filter_nans(
+        cloud_eff, sigma=10, mode="nearest"
+    )[cirrus_mod_mask]
+    cloud_eff[cirrus_thick_mask] = _gaussian_filter_nans(
+        cloud_eff, sigma=10, mode="nearest"
+    )[cirrus_thick_mask]
     cloud_eff[cirrus_above_mask] = _gaussian_filter_nans(
         cloud_eff, sigma=10, mode="nearest"
     )[cirrus_above_mask]
 
-    # enforce minimum cloud_eff for thin cirrus (CT=11) and cirrus-above (CT=14):
+    # enforce minimum cloud_eff for semitransparent cirrus types (CT=11–14):
     # gaussian fill targets only NaN pixels; non-NaN pixels can still have cloud_eff ≈ 0
-    cloud_eff[cloud_type == 11] = np.fmax(cloud_eff[cloud_type == 11], partial_high_thr)
-    cloud_eff[cloud_type == 14] = np.fmax(cloud_eff[cloud_type == 14], partial_high_thr)
+    for _ct in [11, 12, 13, 14]:
+        cloud_eff[cloud_type == _ct] = np.fmax(cloud_eff[cloud_type == _ct], partial_high_thr)
 
 
 # ── Topo / lakes filter on ICON/VARDA grid ─────────────────────────────────────────
@@ -372,6 +385,36 @@ def _apply_icon_combination(
             src = icon_geo.get(icon_name)
             if src is not None:
                 saf_icon[saf_key][no_saf] = src[no_saf]
+
+
+# ── SAF gap fill (ct_nan residual) ────────────────────────────────────────────
+
+def _fill_saf_gaps(saf_icon: dict, icon_geo: dict) -> None:
+    """Fill remaining NaN pixels with ICON/VARDA values or 0.
+
+    After apply_icon_combination some cells may still be NaN (ct_nan pixels
+    where both SAF and ICON/VARDA have no data).  Mirrors fill_saf_gaps() in
+    read_safnwc_ct.py: use the collocated ICON/VARDA field where finite,
+    otherwise fall back to 0.
+
+    saf_icon is modified in-place.
+    """
+    _icon_map = {"CT": "CLCT", "CL": "CLCL", "CM": "CLCM", "CH": "CLCH"}
+    for name, arr in saf_icon.items():
+        nan_mask = np.isnan(arr)
+        if not nan_mask.any():
+            continue
+        icon_field = icon_geo.get(_icon_map[name])
+        if icon_field is not None:
+            arr[nan_mask] = np.where(
+                np.isfinite(icon_field[nan_mask]), icon_field[nan_mask], 0.0
+            )
+        else:
+            arr[nan_mask] = 0.0
+        LOG.info(
+            "Gap-fill %s: %d NaN pixels filled from %s (or 0)",
+            name, int(nan_mask.sum()), _icon_map[name],
+        )
 
 
 # ── External ICON/VARDA GRIB reading ─────────────────────────────────────────────────
@@ -703,6 +746,10 @@ class CloudNudging(Filter):
             cloud_eff_icon, cloud_top_icon, cloud_mask_icon, cloud_type_icon,
             self._lim_low, self._lim_medium, self._partial_high_thr,
         )
+
+        # ── Fill residual NaN gaps (ct_nan pixels not covered by ICON/VARDA) ─────
+        LOG.info("Filling SAF gaps ...")
+        _fill_saf_gaps(saf_icon, icon_geo)
 
         for name, arr in saf_icon.items():
             LOG.info(

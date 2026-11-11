@@ -3,8 +3,8 @@ CloudNudging — SAFNWC CMA/CT/CTTH + ICON/VARDA cloud cover analysis plugin.
 
 Reads SAFNWC CMA/CT/CTTH satellite data, extracts ICON/VARDA cloud cover fields
 (CLCT, CLCH, CLCM, CLCL) from the input FieldList or from an external GRIB
-file, runs the cloud analysis pipeline, and writes CT/CL/CM/CH on the
-ICON/VARDA unstructured grid to a NetCDF output file.
+file, runs the cloud analysis pipeline, and returns the CT/CL/CM/CH fields
+on the ICON/VARDA unstructured grid as a result dict.
 
 Pipeline (mirrors cloud_extrapolation.py / INCA cloud module):
   1. preprocess_saf        — handle fractional/cirrus pixels (SAF domain)
@@ -12,7 +12,10 @@ Pipeline (mirrors cloud_extrapolation.py / INCA cloud module):
   3. reproject SAF fields  → ICON/VARDA unstructured grid
   4. apply_topo_lakes_filter — zero cloud below topography / over lakes (ICON/VARDA grid)
   5. apply_icon_combination — fill from ICON/VARDA where SAF is saturated or absent
-  6. write NetCDF on the ICON/VARDA unstructured grid
+
+forward() returns a dict with keys: fields, timestamp, sat, domain,
+lat_icon, lon_icon, lim_low, lim_medium.  NetCDF output is left to the
+caller (see run_cloud_analysis.py).
 
 The SAF alps domains do NOT cover the full ICON/VARDA domain:
   SAF alps-NR covers roughly 43–50°N, 2–16°E
@@ -160,6 +163,7 @@ def _preprocess_saf(cloud_mask, cloud_eff, cloud_top, cloud_type, partial_high_t
     Topography and lake filters are applied later on the ICON/VARDA grid
     by _apply_topo_lakes_filter().
     """
+    # suppress cloud coverage for non-cloud surface types (CT 1-4)
     non_cloud_surface = np.isin(cloud_type, [1, 2, 3, 4])
     n_suppressed = int((non_cloud_surface & (cloud_mask > 0)).sum())
     cloud_mask[non_cloud_surface] = 0.0
@@ -170,30 +174,36 @@ def _preprocess_saf(cloud_mask, cloud_eff, cloud_top, cloud_type, partial_high_t
         n_suppressed, 100.0 * n_suppressed / cloud_type.size,
     )
 
-    fractional_mask = (np.isnan(cloud_eff) | np.isnan(cloud_top)) & (cloud_type == 10)
+    # cloud type masks: pixels where eff/top are NaN but type is known
+    fractional_mask     = (np.isnan(cloud_eff) | np.isnan(cloud_top)) & (cloud_type == 10)
     thinhighcirrus_mask = (np.isnan(cloud_eff) | np.isnan(cloud_top)) & (cloud_type == 11)
-    cirrus_above_mask = (np.isnan(cloud_eff) | np.isnan(cloud_top)) & (cloud_type == 14)
-    noclouds_mask = cloud_mask == 0.0
+    cirrus_above_mask   = (np.isnan(cloud_eff) | np.isnan(cloud_top)) & (cloud_type == 14)
+    noclouds_mask       = cloud_mask == 0.0
 
+    # fractional clouds (CT=10): gaussian-fill heights then override with 2000 m
     cloud_top[fractional_mask] = _gaussian_filter_nans(
         cloud_top, sigma=10, mode="nearest"
     )[fractional_mask]
     cloud_top[fractional_mask] = 2_000.0
-    cloud_top[thinhighcirrus_mask] = 10_000.0
-    cloud_top[cirrus_above_mask] = 10_000.0
 
-    cloud_eff[noclouds_mask] = 0.0
+    # thin cirrus / cirrus above: set fixed cloud-top height
+    cloud_top[thinhighcirrus_mask] = 10_000.0
+    cloud_top[cirrus_above_mask]   = 10_000.0
+
+    cloud_eff[noclouds_mask]       = 0.0
     cloud_eff[thinhighcirrus_mask] = 0.4
-    cloud_eff[fractional_mask] = _gaussian_filter_nans(
+    cloud_eff[fractional_mask]     = _gaussian_filter_nans(
         cloud_eff, sigma=10, mode="nearest"
     )[fractional_mask]
+    # cap fractional cloud coverage at 0.5 (applies to all CT=10, filled or not)
     cloud_eff[cloud_type == 10] = np.minimum(cloud_eff[cloud_type == 10], 0.5)
+
     cloud_eff[cirrus_above_mask] = _gaussian_filter_nans(
         cloud_eff, sigma=10, mode="nearest"
     )[cirrus_above_mask]
 
     # enforce minimum cloud_eff for thin cirrus (CT=11) and cirrus-above (CT=14):
-    # gaussian fill targets only NaN pixels; non-NaN pixels can still be near 0
+    # gaussian fill targets only NaN pixels; non-NaN pixels can still have cloud_eff ≈ 0
     cloud_eff[cloud_type == 11] = np.fmax(cloud_eff[cloud_type == 11], partial_high_thr)
     cloud_eff[cloud_type == 14] = np.fmax(cloud_eff[cloud_type == 14], partial_high_thr)
 
@@ -425,56 +435,6 @@ def _read_icon_grib(grib_path: Path):
     return fields
 
 
-# ── NetCDF output on ICON/VARDA unstructured grid ───────────────────────────────────
-
-def _write_netcdf(
-    fields: dict,
-    timestamp: datetime,
-    sat: str,
-    domain: str,
-    lat_icon: np.ndarray,
-    lon_icon: np.ndarray,
-    out_path: Path,
-    lim_low: float,
-    lim_medium: float,
-):
-    """Write CT/CL/CM/CH as 1-D arrays on the ICON/VARDA unstructured grid."""
-    ncells = len(lat_icon.ravel())
-    with netCDF4.Dataset(out_path, "w") as ds:
-        ds.title = f"SAFNWC CT analysis on ICON/VARDA grid — {timestamp:%Y-%m-%dT%H:%M:%SZ}"
-        ds.satellite = sat
-        ds.domain = domain
-        ds.timestamp = f"{timestamp:%Y-%m-%dT%H:%M:%SZ}"
-        ds.grid = "ICON/VARDA unstructured (cell centres)"
-
-        ds.createDimension("ncells", ncells)
-
-        vlat = ds.createVariable("lat", "f4", ("ncells",))
-        vlat.units = "degrees_north"
-        vlat.long_name = "ICON/VARDA cell centre latitude"
-        vlat[:] = lat_icon.ravel()
-
-        vlon = ds.createVariable("lon", "f4", ("ncells",))
-        vlon.units = "degrees_east"
-        vlon.long_name = "ICON/VARDA cell centre longitude"
-        vlon[:] = lon_icon.ravel()
-
-        long_names = {
-            "CT": "Total cloud cover fraction",
-            "CL": f"Low cloud fraction (ctth_alti <= {lim_low:.0f} m)",
-            "CM": f"Medium cloud fraction ({lim_low:.0f} < ctth_alti <= {lim_medium:.0f} m)",
-            "CH": f"High cloud fraction (ctth_alti > {lim_medium:.0f} m)",
-        }
-        for name, arr in fields.items():
-            v = ds.createVariable(name, "f4", ("ncells",), fill_value=np.nan)
-            v.long_name = long_names[name]
-            v.units = "1"
-            v.valid_range = np.array([0.0, 1.0], dtype="f4")
-            v[:] = arr.ravel()
-
-    LOG.info("Wrote %s", out_path)
-
-
 # ── Plugin class ───────────────────────────────────────────────────────────────
 
 class CloudNudging(Filter):
@@ -482,8 +442,16 @@ class CloudNudging(Filter):
 
     Reads SAFNWC CMA/CT/CTTH satellite files, reads ICON/VARDA cloud cover fields
     (CLCT, CLCH, CLCM, CLCL) either from the input FieldList or from an
-    external GRIB file, runs the cloud analysis pipeline, and writes the
-    resulting CT/CL/CM/CH fields on the ICON/VARDA unstructured grid to a NetCDF file.
+    external GRIB file, and runs the cloud analysis pipeline.
+
+    forward() returns a dict with keys:
+      fields    — {"CT": arr, "CL": arr, "CM": arr, "CH": arr} on the ICON/VARDA grid
+      timestamp — datetime of the analysis
+      sat, domain — satellite / SAF domain used
+      lat_icon, lon_icon — ICON/VARDA cell centre coordinates [degrees]
+      lim_low, lim_medium — cloud-layer height thresholds [m]
+
+    NetCDF output is handled by the caller (run_cloud_analysis.py).
 
     Topography (topography_c) and lake fraction (FR_LAKE) are read from the
     ICON/VARDA extpar file (same file used by the nudging plugin's
@@ -492,14 +460,10 @@ class CloudNudging(Filter):
     ICON/VARDA cells outside the SAF alps domain boundary (~1–2° on all sides)
     are filled directly from ICON/VARDA model fields.
 
-    The forecast FieldList is returned unchanged.
-
     Parameters
     ----------
     saf_dir : str
         Directory containing SAFNWC NetCDF files.
-    output_dir : str
-        Directory where CT_analysis_{timestamp}.nc files are written.
     icon_extpar_file : str, optional
         ICON/VARDA extpar NetCDF (clat/clon in radians, topography_c in metres,
         FR_LAKE as fraction 0-1).  Alias: icon_orog_file (same as nudging plugin).
@@ -545,7 +509,6 @@ class CloudNudging(Filter):
     def __init__(
         self,
         saf_dir: str,
-        output_dir: str,
         icon_extpar_file: str = None,
         satellites: list = None,
         icon_orog_file: str = None,
@@ -564,7 +527,6 @@ class CloudNudging(Filter):
     ):
         super().__init__()
         self._saf_dir = Path(saf_dir)
-        self._output_dir = Path(output_dir)
         extpar = icon_extpar_file or icon_orog_file
         if extpar is None:
             raise ValueError("icon_extpar_file (or icon_orog_file) is required")
@@ -601,7 +563,6 @@ class CloudNudging(Filter):
             self._icon_extpar_file,
         )
 
-        self._output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── ICON/VARDA field extraction from FieldList ───────────────────────────────────
 
@@ -633,8 +594,13 @@ class CloudNudging(Filter):
 
     # ── Filter entry point ─────────────────────────────────────────────────────
 
-    def forward(self, data: ekd.FieldList) -> ekd.FieldList:
-        """Run cloud analysis for the current timestep; return the FieldList unchanged."""
+    def forward(self, data: ekd.FieldList) -> dict:
+        """Run cloud analysis for the current timestep.
+
+        Returns a dict with keys: fields, timestamp, sat, domain,
+        lat_icon, lon_icon, lim_low, lim_medium.
+        NetCDF output is handled by the caller (run_cloud_analysis.py).
+        """
         ref_time = data[0].datetime()["valid_time"]
         LOG.info("CloudAnalysis: processing %s", ref_time.strftime("%Y-%m-%dT%H:%M UTC"))
 
@@ -744,13 +710,13 @@ class CloudNudging(Filter):
                 name, np.nanmean(arr), np.isfinite(arr).mean() * 100,
             )
 
-        # ── Write NetCDF on ICON/VARDA grid ──────────────────────────────────────────
-        tag = ref_time.strftime("%Y%m%d%H%M")
-        out_path = self._output_dir / f"CT_analysis_{tag}.nc"
-        _write_netcdf(
-            saf_icon, ref_time, sat, domain,
-            self._lat_icon, self._lon_icon,
-            out_path, self._lim_low, self._lim_medium,
-        )
-
-        return data
+        return {
+            "fields": saf_icon,
+            "timestamp": ref_time,
+            "sat": sat,
+            "domain": domain,
+            "lat_icon": self._lat_icon,
+            "lon_icon": self._lon_icon,
+            "lim_low": self._lim_low,
+            "lim_medium": self._lim_medium,
+        }

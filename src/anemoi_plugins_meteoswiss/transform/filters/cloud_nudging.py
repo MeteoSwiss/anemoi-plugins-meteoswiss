@@ -1,5 +1,5 @@
 """
-CloudNudging — SAFNWC CT + ICON/VARDA cloud cover analysis plugin.
+CloudNudging — SAFNWC CMA/CT/CTTH + ICON/VARDA cloud cover analysis plugin.
 
 Reads SAFNWC CMA/CT/CTTH satellite data, extracts ICON/VARDA cloud cover fields
 (CLCT, CLCH, CLCM, CLCL) from the input FieldList or from an external GRIB
@@ -146,15 +146,15 @@ def _gaussian_filter_nans(U: np.ndarray, sigma=5, truncate=4, mode="nearest") ->
 
 # ── SAF preprocessing (SAF domain, no topo/lakes) ────────────────────────────
 
-def _preprocess_saf(cloud_mask, cloud_eff, cloud_top, cloud_type):
+def _preprocess_saf(cloud_mask, cloud_eff, cloud_top, cloud_type, partial_high_thr: float):
     """In-place preprocessing of raw SAF fields (all arrays on the SAF domain).
 
     Mirrors cloud_funcs.preprocess_saf():
     - CT 1-4  (non-cloud surface):  cloud_mask=0, cloud_eff=0, cloud_top=NaN
     - CT 10   (fractional):         gaussian-fill cloud_top → override 2000 m;
                                     gaussian-fill cloud_eff; cap cloud_eff at 0.5
-    - CT 11   (thin high cirrus):   cloud_top=10000 m, cloud_eff=0.4; floor at 0.05
-    - CT 14   (cirrus above):       cloud_top=10000 m, cloud_eff gaussian-filled; floor at 0.05
+    - CT 11   (thin high cirrus):   cloud_top=10000 m, cloud_eff=0.4; floor at partial_high_thr
+    - CT 14   (cirrus above):       cloud_top=10000 m, cloud_eff gaussian-filled; floor at partial_high_thr
     - clear pixels:                 cloud_eff=0
 
     Topography and lake filters are applied later on the ICON/VARDA grid
@@ -194,8 +194,8 @@ def _preprocess_saf(cloud_mask, cloud_eff, cloud_top, cloud_type):
 
     # enforce minimum cloud_eff for thin cirrus (CT=11) and cirrus-above (CT=14):
     # gaussian fill targets only NaN pixels; non-NaN pixels can still be near 0
-    cloud_eff[cloud_type == 11] = np.fmax(cloud_eff[cloud_type == 11], 0.05)
-    cloud_eff[cloud_type == 14] = np.fmax(cloud_eff[cloud_type == 14], 0.05)
+    cloud_eff[cloud_type == 11] = np.fmax(cloud_eff[cloud_type == 11], partial_high_thr)
+    cloud_eff[cloud_type == 14] = np.fmax(cloud_eff[cloud_type == 14], partial_high_thr)
 
 
 # ── Topo / lakes filter on ICON/VARDA grid ─────────────────────────────────────────
@@ -522,7 +522,9 @@ class CloudNudging(Filter):
         When True: clear cloud_mask and cloud_eff for below-topo pixels.
         When False: only zero cloud_top.  Default True.
     partial_high_thr : float
-        Minimum SAF cloud_eff for ICON/VARDA to fill lower layers beneath high cloud.
+        Minimum SAF cloud_eff threshold, used in two places (mirrors read_safnwc_ct.py):
+        (1) floor for CT=11 (thin cirrus) and CT=14 (cirrus above) in preprocess_saf;
+        (2) threshold for ICON/VARDA to fill lower layers beneath high/mid cloud.
         Default 0.2.
     icon_source : str
         "fieldlist" — extract CLCT/CLCL/CLCM/CLCH from the input FieldList.
@@ -677,7 +679,7 @@ class CloudNudging(Filter):
 
         # ── Preprocess SAF fields in-place (CT suppression + fill NaNs) ───────
         LOG.info("Applying preprocess_saf ...")
-        _preprocess_saf(cloud_mask, cloud_eff, cloud_top, cloud_type)
+        _preprocess_saf(cloud_mask, cloud_eff, cloud_top, cloud_type, self._partial_high_thr)
 
         # ── Classify SAF into cloud layers (SAF domain) ────────────────────────
         LOG.info("Classifying SAF cloud layers ...")

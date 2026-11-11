@@ -11,7 +11,7 @@ Pipeline (mirrors cloud_extrapolation.py / INCA cloud module):
   2. compute_cloud_analysis — classify into total/low/mid/high layers (SAF domain)
   3. reproject SAF fields  → ICON/VARDA unstructured grid
   4. apply_topo_lakes_filter — zero cloud below topography / over lakes (ICON/VARDA grid)
-  5. apply_icon_combination — fill from ICON/VARDA where SAF is saturated or absent
+  5. apply_icon_combination — fill from ICON/VARDA where SAF is saturated or absent (lower layers)
   6. fill_saf_gaps          — fill residual NaN (ct_nan) with ICON/VARDA or 0
 
 forward() returns a dict with keys: fields, timestamp, sat, domain,

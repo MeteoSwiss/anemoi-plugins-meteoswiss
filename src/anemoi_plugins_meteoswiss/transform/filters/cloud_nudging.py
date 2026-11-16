@@ -36,31 +36,30 @@ import os
 os.environ.setdefault("PROJ_IGNORE_CELESTIAL_BODY", "YES")
 
 import logging
-import warnings
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import earthkit.data as ekd
 import eccodes
 import netCDF4
 import numpy as np
 import pyproj
-from scipy.ndimage import gaussian_filter
-
-import earthkit.data as ekd
 from anemoi.transform.filter import Filter
+from scipy.ndimage import gaussian_filter
 
 LOG = logging.getLogger(__name__)
 
 # ECMWF shortName for each ICON/VARDA cloud variable (overridable in __init__)
 _DEFAULT_ICON_SHORTNAMES = {
-    "CLCT": "tcc",   # total cloud cover
-    "CLCL": "lcc",   # low cloud cover
-    "CLCM": "mcc",   # medium cloud cover
-    "CLCH": "hcc",   # high cloud cover
+    "CLCT": "tcc",  # total cloud cover
+    "CLCL": "lcc",  # low cloud cover
+    "CLCM": "mcc",  # medium cloud cover
+    "CLCH": "hcc",  # high cloud cover
 }
 
 
 # ── SAF file discovery ─────────────────────────────────────────────────────────
+
 
 def _find_saf_file(saf_dir, timestamp, product, satellites, domains, use_plax):
     """Return (path, satellite, domain) for the first matching SAFNWC file."""
@@ -72,12 +71,11 @@ def _find_saf_file(saf_dir, timestamp, product, satellites, domains, use_plax):
                 fn = saf_dir / f"S_NWC_{product}_{sat}_{dom}_{ts_str}{suffix}"
                 if fn.exists():
                     return fn, sat, dom
-    raise FileNotFoundError(
-        f"No {product} SAF file for {timestamp:%Y%m%dT%H%M%SZ} in {saf_dir}"
-    )
+    raise FileNotFoundError(f"No {product} SAF file for {timestamp:%Y%m%dT%H%M%SZ} in {saf_dir}")
 
 
 # ── NetCDF reading with CF scale/offset decoding ──────────────────────────────
+
 
 def _read_var(ds, varname: str) -> np.ndarray:
     """Read a CF-encoded variable; apply scale/offset; fill → NaN."""
@@ -96,6 +94,7 @@ def _read_var(ds, varname: str) -> np.ndarray:
 
 
 # ── SAF → ICON/VARDA reprojection ───────────────────────────────────────────────────
+
 
 def _reproject_saf_to_icon(
     saf_array: np.ndarray,
@@ -126,9 +125,12 @@ def _reproject_saf_to_icon(
     row_idx = np.round((y_geos - ygeo_ul) / dy_saf).astype(int)
 
     valid = (
-        np.isfinite(x_geos) & np.isfinite(y_geos)
-        & (col_idx >= 0) & (col_idx < nx_saf)
-        & (row_idx >= 0) & (row_idx < ny_saf)
+        np.isfinite(x_geos)
+        & np.isfinite(y_geos)
+        & (col_idx >= 0)
+        & (col_idx < nx_saf)
+        & (row_idx >= 0)
+        & (row_idx < ny_saf)
     )
     out = np.full(len(lat_icon.ravel()), fill)
     out[valid] = saf_array[row_idx[valid], col_idx[valid]]
@@ -136,6 +138,7 @@ def _reproject_saf_to_icon(
 
 
 # ── Gaussian filter that respects NaN (mirrors cloud_utils.gaussian_filter_nans) ─
+
 
 def _gaussian_filter_nans(U: np.ndarray, sigma=5, truncate=4, mode="nearest") -> np.ndarray:
     V = U.copy()
@@ -149,6 +152,7 @@ def _gaussian_filter_nans(U: np.ndarray, sigma=5, truncate=4, mode="nearest") ->
 
 
 # ── SAF preprocessing (SAF domain, no topo/lakes) ────────────────────────────
+
 
 def _preprocess_saf(cloud_mask, cloud_eff, cloud_top, cloud_type, partial_high_thr: float):
     """In-place preprocessing of raw SAF fields (all arrays on the SAF domain).
@@ -174,46 +178,37 @@ def _preprocess_saf(cloud_mask, cloud_eff, cloud_top, cloud_type, partial_high_t
     cloud_top[non_cloud_surface] = np.nan
     LOG.info(
         "CT 1-4 suppression: cleared %d cloudy pixels (%.2f%% of domain)",
-        n_suppressed, 100.0 * n_suppressed / cloud_type.size,
+        n_suppressed,
+        100.0 * n_suppressed / cloud_type.size,
     )
 
     # cloud type masks: pixels where eff/top are NaN but type is known
-    fractional_mask     = (np.isnan(cloud_eff) | np.isnan(cloud_top)) & (cloud_type == 10)
+    fractional_mask = (np.isnan(cloud_eff) | np.isnan(cloud_top)) & (cloud_type == 10)
     thinhighcirrus_mask = (np.isnan(cloud_eff) | np.isnan(cloud_top)) & (cloud_type == 11)
-    cirrus_mod_mask     = (np.isnan(cloud_eff) | np.isnan(cloud_top)) & (cloud_type == 12)
-    cirrus_thick_mask   = (np.isnan(cloud_eff) | np.isnan(cloud_top)) & (cloud_type == 13)
-    cirrus_above_mask   = (np.isnan(cloud_eff) | np.isnan(cloud_top)) & (cloud_type == 14)
-    noclouds_mask       = cloud_mask == 0.0
+    cirrus_mod_mask = (np.isnan(cloud_eff) | np.isnan(cloud_top)) & (cloud_type == 12)
+    cirrus_thick_mask = (np.isnan(cloud_eff) | np.isnan(cloud_top)) & (cloud_type == 13)
+    cirrus_above_mask = (np.isnan(cloud_eff) | np.isnan(cloud_top)) & (cloud_type == 14)
+    noclouds_mask = cloud_mask == 0.0
 
     # fractional clouds (CT=10): gaussian-fill heights then override with 2000 m
-    cloud_top[fractional_mask] = _gaussian_filter_nans(
-        cloud_top, sigma=10, mode="nearest"
-    )[fractional_mask]
+    cloud_top[fractional_mask] = _gaussian_filter_nans(cloud_top, sigma=10, mode="nearest")[fractional_mask]
     cloud_top[fractional_mask] = 2_000.0
 
     # semitransparent cirrus types: set fixed height; gaussian-fill missing cloud_eff
     cloud_top[thinhighcirrus_mask] = 10_000.0
-    cloud_top[cirrus_mod_mask]     = 10_000.0
-    cloud_top[cirrus_thick_mask]   = 10_000.0
-    cloud_top[cirrus_above_mask]   = 10_000.0
+    cloud_top[cirrus_mod_mask] = 10_000.0
+    cloud_top[cirrus_thick_mask] = 10_000.0
+    cloud_top[cirrus_above_mask] = 10_000.0
 
-    cloud_eff[noclouds_mask]       = 0.0
+    cloud_eff[noclouds_mask] = 0.0
     cloud_eff[thinhighcirrus_mask] = 0.4
-    cloud_eff[fractional_mask]     = _gaussian_filter_nans(
-        cloud_eff, sigma=10, mode="nearest"
-    )[fractional_mask]
+    cloud_eff[fractional_mask] = _gaussian_filter_nans(cloud_eff, sigma=10, mode="nearest")[fractional_mask]
     # cap fractional cloud coverage at 0.5 (applies to all CT=10, filled or not)
     cloud_eff[cloud_type == 10] = np.minimum(cloud_eff[cloud_type == 10], 0.5)
 
-    cloud_eff[cirrus_mod_mask]   = _gaussian_filter_nans(
-        cloud_eff, sigma=10, mode="nearest"
-    )[cirrus_mod_mask]
-    cloud_eff[cirrus_thick_mask] = _gaussian_filter_nans(
-        cloud_eff, sigma=10, mode="nearest"
-    )[cirrus_thick_mask]
-    cloud_eff[cirrus_above_mask] = _gaussian_filter_nans(
-        cloud_eff, sigma=10, mode="nearest"
-    )[cirrus_above_mask]
+    cloud_eff[cirrus_mod_mask] = _gaussian_filter_nans(cloud_eff, sigma=10, mode="nearest")[cirrus_mod_mask]
+    cloud_eff[cirrus_thick_mask] = _gaussian_filter_nans(cloud_eff, sigma=10, mode="nearest")[cirrus_thick_mask]
+    cloud_eff[cirrus_above_mask] = _gaussian_filter_nans(cloud_eff, sigma=10, mode="nearest")[cirrus_above_mask]
 
     # enforce minimum cloud_eff for semitransparent cirrus types (CT=11–14):
     # gaussian fill targets only NaN pixels; non-NaN pixels can still have cloud_eff ≈ 0
@@ -222,6 +217,7 @@ def _preprocess_saf(cloud_mask, cloud_eff, cloud_top, cloud_type, partial_high_t
 
 
 # ── Topo / lakes filter on ICON/VARDA grid ─────────────────────────────────────────
+
 
 def _apply_topo_lakes_filter(
     saf_icon: dict,
@@ -252,13 +248,15 @@ def _apply_topo_lakes_filter(
             arr[below_topo] = 0.0
         LOG.info(
             "Below-topo filter: cleared %d ICON/VARDA cells (%.2f%%)",
-            n_below, 100.0 * n_below / len(topo_icon),
+            n_below,
+            100.0 * n_below / len(topo_icon),
         )
     else:
         cloud_top_icon[below_topo] = 0.0
         LOG.info(
             "Below-topo filter: zeroed cloud_top for %d ICON/VARDA cells (%.2f%%)",
-            n_below, 100.0 * n_below / len(topo_icon),
+            n_below,
+            100.0 * n_below / len(topo_icon),
         )
 
     # Lakes: clear fractional clouds (CT type 10) over lake cells
@@ -271,14 +269,21 @@ def _apply_topo_lakes_filter(
         arr[fractional_lakes] = 0.0
     LOG.info(
         "Lakes filter: cleared fractional cloud at %d ICON/VARDA cells (%.2f%%)",
-        n_lakes, 100.0 * n_lakes / len(fr_lake_icon),
+        n_lakes,
+        100.0 * n_lakes / len(fr_lake_icon),
     )
 
 
 # ── Cloud analysis (mirrors cloud_extrapolation height='top') ─────────────────
 
+
 def _compute_cloud_analysis(
-    cloud_mask, cloud_eff, cloud_top, cloud_type, lim_low: float, lim_medium: float,
+    cloud_mask,
+    cloud_eff,
+    cloud_top,
+    cloud_type,
+    lim_low: float,
+    lim_medium: float,
 ) -> dict:
     """Derive CT/CL/CM/CH fractions from preprocessed SAF fields (SAF domain)."""
     okcloud = cloud_mask > 0.1
@@ -302,6 +307,7 @@ def _compute_cloud_analysis(
 
 
 # ── ICON/VARDA combination on ICON/VARDA grid ─────────────────────────────────────────────
+
 
 def _apply_icon_combination(
     saf_icon: dict,
@@ -334,15 +340,16 @@ def _apply_icon_combination(
     if n_no_saf:
         LOG.info(
             "Outside-SAF cells: %d (%.1f%%) — filled from ICON/VARDA",
-            n_no_saf, 100.0 * n_no_saf / len(cloud_type_icon),
+            n_no_saf,
+            100.0 * n_no_saf / len(cloud_type_icon),
         )
 
     # Within the SAF domain: cells where cloud_type is genuinely undefined
     ct_nan_in_saf = np.isnan(cloud_type_icon) & ~no_saf
     okcloud = cloud_mask_icon > 0.1
-    oklow   = okcloud & (cloud_top_icon <= lim_low)
-    okmid   = okcloud & (cloud_top_icon > lim_low) & (cloud_top_icon <= lim_medium)
-    okhigh  = okcloud & (cloud_top_icon > lim_medium)
+    oklow = okcloud & (cloud_top_icon <= lim_low)
+    okmid = okcloud & (cloud_top_icon > lim_low) & (cloud_top_icon <= lim_medium)
+    okhigh = okcloud & (cloud_top_icon > lim_medium)
 
     clct = icon_geo.get("CLCT")
     clcl = icon_geo.get("CLCL")
@@ -371,7 +378,7 @@ def _apply_icon_combination(
     if icon_ch_linear_fill:
         ch = saf_icon["CH"]
         above_thr = ch > partial_high_thr
-        ct14 = (cloud_type_icon == 14)
+        ct14 = cloud_type_icon == 14
         if clcl is not None:
             span_cl = max(partial_high_thr_full_cl - partial_high_thr, 1e-6)
             weight_cl = np.clip(0.5 + 0.5 * (ch - partial_high_thr) / span_cl, 0.0, 1.0)
@@ -402,15 +409,14 @@ def _apply_icon_combination(
 
     # 4. Outside-SAF domain: fill directly from ICON/VARDA (no SAF data available)
     if n_no_saf:
-        for icon_name, saf_key in [
-            ("CLCT", "CT"), ("CLCL", "CL"), ("CLCM", "CM"), ("CLCH", "CH")
-        ]:
+        for icon_name, saf_key in [("CLCT", "CT"), ("CLCL", "CL"), ("CLCM", "CM"), ("CLCH", "CH")]:
             src = icon_geo.get(icon_name)
             if src is not None:
                 saf_icon[saf_key][no_saf] = src[no_saf]
 
 
 # ── SAF gap fill (ct_nan residual) ────────────────────────────────────────────
+
 
 def _fill_saf_gaps(saf_icon: dict, icon_geo: dict) -> None:
     """Fill remaining NaN pixels with ICON/VARDA values or 0.
@@ -429,18 +435,19 @@ def _fill_saf_gaps(saf_icon: dict, icon_geo: dict) -> None:
             continue
         icon_field = icon_geo.get(_icon_map[name])
         if icon_field is not None:
-            arr[nan_mask] = np.where(
-                np.isfinite(icon_field[nan_mask]), icon_field[nan_mask], 0.0
-            )
+            arr[nan_mask] = np.where(np.isfinite(icon_field[nan_mask]), icon_field[nan_mask], 0.0)
         else:
             arr[nan_mask] = 0.0
         LOG.info(
             "Gap-fill %s: %d NaN pixels filled from %s (or 0)",
-            name, int(nan_mask.sum()), _icon_map[name],
+            name,
+            int(nan_mask.sum()),
+            _icon_map[name],
         )
 
 
 # ── External ICON/VARDA GRIB reading ─────────────────────────────────────────────────
+
 
 def _find_icon_run(timestamp, icon_base_dir, icon_offset_h, icon_member):
     """Return (run_time, lead_h, grib_path) for the nearest available ICON-CH1-EPS run."""
@@ -458,9 +465,7 @@ def _find_icon_run(timestamp, icon_base_dir, icon_offset_h, icon_member):
             grib_fn = matches[-1] / "grib" / f"i1eff{lead_h:04d}0000_{icon_member}"
             if grib_fn.exists():
                 return run_time, lead_h, grib_fn
-    raise FileNotFoundError(
-        f"No ICON-CH1-EPS GRIB found for {timestamp:%Y-%m-%dT%H:%M} in {icon_base_dir}"
-    )
+    raise FileNotFoundError(f"No ICON-CH1-EPS GRIB found for {timestamp:%Y-%m-%dT%H:%M} in {icon_base_dir}")
 
 
 def _read_icon_grib(grib_path: Path):
@@ -502,6 +507,7 @@ def _read_icon_grib(grib_path: Path):
 
 
 # ── Plugin class ───────────────────────────────────────────────────────────────
+
 
 class CloudNudging(Filter):
     """Cloud analysis combining SAFNWC CT satellite data with ICON/VARDA cloud fields.
@@ -634,11 +640,11 @@ class CloudNudging(Filter):
         LOG.info(
             "ICON/VARDA extpar loaded: %d cells, topo %.0f-%.0f m, lake fraction %.1f%%  (%s)",
             len(self._lat_icon),
-            float(np.nanmin(self._topo_icon)), float(np.nanmax(self._topo_icon)),
+            float(np.nanmin(self._topo_icon)),
+            float(np.nanmax(self._topo_icon)),
             float(np.nanmean(self._fr_lake_icon > 0.5)) * 100,
             self._icon_extpar_file,
         )
-
 
     # ── ICON/VARDA field extraction from FieldList ───────────────────────────────────
 
@@ -659,7 +665,8 @@ class CloudNudging(Filter):
         if missing:
             LOG.warning(
                 "ICON/VARDA cloud fields not found in FieldList: %s (shortNames: %s)",
-                missing, [self._icon_shortnames[k] for k in missing],
+                missing,
+                [self._icon_shortnames[k] for k in missing],
             )
         if not icon_geo:
             raise ValueError(
@@ -682,16 +689,28 @@ class CloudNudging(Filter):
 
         # ── Locate and read SAF files ──────────────────────────────────────────
         ct_fn, sat, domain = _find_saf_file(
-            self._saf_dir, ref_time, "CT",
-            self._satellites, self._domains, self._use_plax,
+            self._saf_dir,
+            ref_time,
+            "CT",
+            self._satellites,
+            self._domains,
+            self._use_plax,
         )
         cma_fn, *_ = _find_saf_file(
-            self._saf_dir, ref_time, "CMA",
-            self._satellites, self._domains, self._use_plax,
+            self._saf_dir,
+            ref_time,
+            "CMA",
+            self._satellites,
+            self._domains,
+            self._use_plax,
         )
         ctth_fn, *_ = _find_saf_file(
-            self._saf_dir, ref_time, "CTTH",
-            self._satellites, self._domains, self._use_plax,
+            self._saf_dir,
+            ref_time,
+            "CTTH",
+            self._satellites,
+            self._domains,
+            self._use_plax,
         )
         LOG.info("SAF CT   : %s", ct_fn.name)
         LOG.info("SAF CMA  : %s", cma_fn.name)
@@ -715,7 +734,10 @@ class CloudNudging(Filter):
         ny_saf, nx_saf = cloud_type.shape
         LOG.info(
             "SAF domain: %s / %s  shape %dx%d  cloudy=%.1f%%",
-            sat, domain, nx_saf, ny_saf,
+            sat,
+            domain,
+            nx_saf,
+            ny_saf,
             float(np.nanmean(cloud_mask == 1.0)) * 100,
         )
 
@@ -726,8 +748,12 @@ class CloudNudging(Filter):
         # ── Classify SAF into cloud layers (SAF domain) ────────────────────────
         LOG.info("Classifying SAF cloud layers ...")
         saf_fields = _compute_cloud_analysis(
-            cloud_mask, cloud_eff, cloud_top, cloud_type,
-            self._lim_low, self._lim_medium,
+            cloud_mask,
+            cloud_eff,
+            cloud_top,
+            cloud_type,
+            self._lim_low,
+            self._lim_medium,
         )
 
         # ── Load ICON/VARDA cloud fields ─────────────────────────────────────────────
@@ -739,7 +765,9 @@ class CloudNudging(Filter):
             )
             LOG.info(
                 "ICON/VARDA GRIB: run %s +%dh -> %s",
-                run_time.strftime("%Y-%m-%dT%H:%M UTC"), lead_h, grib_path.name,
+                run_time.strftime("%Y-%m-%dT%H:%M UTC"),
+                lead_h,
+                grib_path.name,
             )
             icon_geo = _read_icon_grib(grib_path)
         else:
@@ -751,14 +779,15 @@ class CloudNudging(Filter):
         # ── Reproject SAF fields + auxiliary SAF fields -> ICON/VARDA grid ──────────
         LOG.info("Reprojecting SAF -> ICON/VARDA grid (%d cells) ...", len(self._lat_icon))
         kw = dict(
-            gdal_proj=gdal_proj, xgeo_ul=xgeo_ul, ygeo_ul=ygeo_ul,
-            xgeo_lr=xgeo_lr, ygeo_lr=ygeo_lr,
-            lat_icon=self._lat_icon, lon_icon=self._lon_icon,
+            gdal_proj=gdal_proj,
+            xgeo_ul=xgeo_ul,
+            ygeo_ul=ygeo_ul,
+            xgeo_lr=xgeo_lr,
+            ygeo_lr=ygeo_lr,
+            lat_icon=self._lat_icon,
+            lon_icon=self._lon_icon,
         )
-        saf_icon = {
-            name: _reproject_saf_to_icon(arr, fill=np.nan, **kw)
-            for name, arr in saf_fields.items()
-        }
+        saf_icon = {name: _reproject_saf_to_icon(arr, fill=np.nan, **kw) for name, arr in saf_fields.items()}
         cloud_eff_icon = _reproject_saf_to_icon(cloud_eff, fill=np.nan, **kw)
         cloud_top_icon = _reproject_saf_to_icon(cloud_top, fill=np.nan, **kw)
         cloud_mask_icon = _reproject_saf_to_icon(cloud_mask, fill=np.nan, **kw)
@@ -767,17 +796,29 @@ class CloudNudging(Filter):
         # ── Topography and lakes filter (ICON/VARDA grid, using extpar data) ─────────
         LOG.info("Applying topo/lakes filter ...")
         _apply_topo_lakes_filter(
-            saf_icon, cloud_mask_icon, cloud_eff_icon, cloud_top_icon, cloud_type_icon,
-            self._topo_icon, self._fr_lake_icon,
-            self._height_tolerance_m, self._remove_below_topo,
+            saf_icon,
+            cloud_mask_icon,
+            cloud_eff_icon,
+            cloud_top_icon,
+            cloud_type_icon,
+            self._topo_icon,
+            self._fr_lake_icon,
+            self._height_tolerance_m,
+            self._remove_below_topo,
         )
 
         # ── Apply ICON/VARDA combination (ICON/VARDA grid) ─────────────────────────────────
         LOG.info("Applying ICON/VARDA combination ...")
         _apply_icon_combination(
-            saf_icon, icon_geo,
-            cloud_eff_icon, cloud_top_icon, cloud_mask_icon, cloud_type_icon,
-            self._lim_low, self._lim_medium, self._partial_high_thr,
+            saf_icon,
+            icon_geo,
+            cloud_eff_icon,
+            cloud_top_icon,
+            cloud_mask_icon,
+            cloud_type_icon,
+            self._lim_low,
+            self._lim_medium,
+            self._partial_high_thr,
             icon_heavy_cloud_thr=self._icon_heavy_cloud_thr,
             icon_ch_linear_fill=self._icon_ch_linear_fill,
             icon_update_ct=self._icon_update_ct,
@@ -792,7 +833,9 @@ class CloudNudging(Filter):
         for name, arr in saf_icon.items():
             LOG.info(
                 "ICON/VARDA %-4s  mean=%.3f  valid=%.1f%%",
-                name, np.nanmean(arr), np.isfinite(arr).mean() * 100,
+                name,
+                np.nanmean(arr),
+                np.isfinite(arr).mean() * 100,
             )
 
         return {

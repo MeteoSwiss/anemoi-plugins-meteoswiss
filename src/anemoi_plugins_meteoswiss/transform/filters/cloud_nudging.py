@@ -313,6 +313,11 @@ def _apply_icon_combination(
     lim_low: float,
     lim_medium: float,
     partial_high_thr: float,
+    icon_heavy_cloud_thr: float = 0.8,
+    icon_ch_linear_fill: bool = False,
+    icon_update_ct: bool = True,
+    partial_high_thr_full_cm: float = 0.5,
+    partial_high_thr_full_cl: float = 0.25,
 ):
     """Replace saturated SAF pixels and fill lower layers from ICON/VARDA.
 
@@ -346,36 +351,54 @@ def _apply_icon_combination(
 
     # 1. Replace saturated SAF pixels (cloud_eff == 1) where ICON/VARDA also shows heavy cloud
     if clcl is not None:
-        mask = oklow & (cloud_eff_icon == 1) & (clcl > 0.8)
+        mask = oklow & (cloud_eff_icon == 1) & (clcl > icon_heavy_cloud_thr)
         saf_icon["CL"][mask] = clcl[mask]
         saf_icon["CL"][ct_nan_in_saf] = np.nan
     if clcm is not None:
-        mask = okmid & (cloud_eff_icon == 1) & (clcm > 0.8)
+        mask = okmid & (cloud_eff_icon == 1) & (clcm > icon_heavy_cloud_thr)
         saf_icon["CM"][mask] = clcm[mask]
         saf_icon["CM"][ct_nan_in_saf] = np.nan
     if clch is not None:
-        mask = okhigh & (cloud_eff_icon == 1) & (clch > 0.8)
+        mask = okhigh & (cloud_eff_icon == 1) & (clch > icon_heavy_cloud_thr)
         saf_icon["CH"][mask] = clch[mask]
         saf_icon["CH"][ct_nan_in_saf] = np.nan
     if clct is not None:
-        mask = okcloud & (cloud_eff_icon == 1) & (clct > 0.8)
+        mask = okcloud & (cloud_eff_icon == 1) & (clct > icon_heavy_cloud_thr)
         saf_icon["CT"][mask] = clct[mask]
         saf_icon["CT"][ct_nan_in_saf] = np.nan
 
     # 2. Fill lower layers where SAF detects high/mid cloud above partial_high_thr
-    if clcl is not None:
-        mask = (okhigh | okmid) & (cloud_eff_icon > partial_high_thr)
-        saf_icon["CL"][mask] = np.fmax(saf_icon["CL"][mask], clcl[mask])
-    if clcm is not None:
-        mask = okhigh & (cloud_eff_icon > partial_high_thr)
-        saf_icon["CM"][mask] = np.fmax(saf_icon["CM"][mask], clcm[mask])
+    if icon_ch_linear_fill:
+        ch = saf_icon["CH"]
+        above_thr = ch > partial_high_thr
+        ct14 = (cloud_type_icon == 14)
+        if clcl is not None:
+            span_cl = max(partial_high_thr_full_cl - partial_high_thr, 1e-6)
+            weight_cl = np.clip(0.5 + 0.5 * (ch - partial_high_thr) / span_cl, 0.0, 1.0)
+            weight_cl = np.where(ct14, 1.0, weight_cl)
+            mask = ((okhigh | okmid) | ct14) & above_thr
+            saf_icon["CL"][mask] = np.fmax(saf_icon["CL"][mask], weight_cl[mask] * clcl[mask])
+        if clcm is not None:
+            span_cm = max(partial_high_thr_full_cm - partial_high_thr, 1e-6)
+            weight_cm = np.clip(0.5 + 0.5 * (ch - partial_high_thr) / span_cm, 0.0, 1.0)
+            weight_cm = np.where(ct14, 1.0, weight_cm)
+            mask = (okhigh | ct14) & above_thr
+            saf_icon["CM"][mask] = np.fmax(saf_icon["CM"][mask], weight_cm[mask] * clcm[mask])
+    else:
+        if clcl is not None:
+            mask = (okhigh | okmid) & (cloud_eff_icon > partial_high_thr)
+            saf_icon["CL"][mask] = np.fmax(saf_icon["CL"][mask], clcl[mask])
+        if clcm is not None:
+            mask = okhigh & (cloud_eff_icon > partial_high_thr)
+            saf_icon["CM"][mask] = np.fmax(saf_icon["CM"][mask], clcm[mask])
 
     # 3. Keep CT = max(CT, CL, CM, CH) consistent within SAF domain
-    saf_icon["CT"][:] = np.fmax(
-        saf_icon["CT"],
-        np.fmax(saf_icon["CL"], np.fmax(saf_icon["CM"], saf_icon["CH"])),
-    )
-    saf_icon["CT"][ct_nan_in_saf] = np.nan
+    if icon_update_ct:
+        saf_icon["CT"][:] = np.fmax(
+            saf_icon["CT"],
+            np.fmax(saf_icon["CL"], np.fmax(saf_icon["CM"], saf_icon["CH"])),
+        )
+        saf_icon["CT"][ct_nan_in_saf] = np.nan
 
     # 4. Outside-SAF domain: fill directly from ICON/VARDA (no SAF data available)
     if n_no_saf:
@@ -562,6 +585,11 @@ class CloudNudging(Filter):
         height_tolerance_m: float = 200.0,
         remove_below_topo_clouds: bool = True,
         partial_high_thr: float = 0.2,
+        icon_heavy_cloud_thr: float = 0.8,
+        icon_ch_linear_fill: bool = False,
+        icon_update_ct: bool = True,
+        partial_high_thr_full_cm: float = 0.5,
+        partial_high_thr_full_cl: float = 0.25,
         icon_source: str = "fieldlist",
         icon_base_dir: str = None,
         icon_member: str = "000",
@@ -582,6 +610,11 @@ class CloudNudging(Filter):
         self._height_tolerance_m = float(height_tolerance_m)
         self._remove_below_topo = bool(remove_below_topo_clouds)
         self._partial_high_thr = float(partial_high_thr)
+        self._icon_heavy_cloud_thr = float(icon_heavy_cloud_thr)
+        self._icon_ch_linear_fill = bool(icon_ch_linear_fill)
+        self._icon_update_ct = bool(icon_update_ct)
+        self._partial_high_thr_full_cm = float(partial_high_thr_full_cm)
+        self._partial_high_thr_full_cl = float(partial_high_thr_full_cl)
         self._icon_source = icon_source
         self._icon_base_dir = Path(icon_base_dir) if icon_base_dir else None
         self._icon_member = str(icon_member)
@@ -745,6 +778,11 @@ class CloudNudging(Filter):
             saf_icon, icon_geo,
             cloud_eff_icon, cloud_top_icon, cloud_mask_icon, cloud_type_icon,
             self._lim_low, self._lim_medium, self._partial_high_thr,
+            icon_heavy_cloud_thr=self._icon_heavy_cloud_thr,
+            icon_ch_linear_fill=self._icon_ch_linear_fill,
+            icon_update_ct=self._icon_update_ct,
+            partial_high_thr_full_cm=self._partial_high_thr_full_cm,
+            partial_high_thr_full_cl=self._partial_high_thr_full_cl,
         )
 
         # ── Fill residual NaN gaps (ct_nan pixels not covered by ICON/VARDA) ─────

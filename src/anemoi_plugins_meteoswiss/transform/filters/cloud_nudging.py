@@ -382,8 +382,10 @@ def _apply_icon_combination(
         if clcl is not None:
             span_cl = max(partial_high_thr_full_cl - partial_high_thr, 1e-6)
             weight_cl = np.clip(0.5 + 0.5 * (ch - partial_high_thr) / span_cl, 0.0, 1.0)
-            weight_cl = np.where(ct14, 1.0, weight_cl)
-            mask = ((okhigh | okmid) | ct14) & above_thr
+            # okmid: always full weight; ct14: always full weight from threshold
+            weight_cl = np.where(okmid | ct14, 1.0, weight_cl)
+            # okmid: no threshold (always fill); okhigh/ct14: only above threshold
+            mask = (okhigh & above_thr) | okmid | (ct14 & above_thr)
             saf_icon["CL"][mask] = np.fmax(saf_icon["CL"][mask], weight_cl[mask] * clcl[mask])
         if clcm is not None:
             span_cm = max(partial_high_thr_full_cm - partial_high_thr, 1e-6)
@@ -393,7 +395,8 @@ def _apply_icon_combination(
             saf_icon["CM"][mask] = np.fmax(saf_icon["CM"][mask], weight_cm[mask] * clcm[mask])
     else:
         if clcl is not None:
-            mask = (okhigh | okmid) & (cloud_eff_icon > partial_high_thr)
+            # okmid: always fill CL (no threshold); okhigh: only above threshold
+            mask = (okhigh & (cloud_eff_icon > partial_high_thr)) | okmid
             saf_icon["CL"][mask] = np.fmax(saf_icon["CL"][mask], clcl[mask])
         if clcm is not None:
             mask = okhigh & (cloud_eff_icon > partial_high_thr)

@@ -1,5 +1,5 @@
 """Write the ICON interface heights (HHL) of a GRIB file to the NetCDF file read
-by ``DeriveDiagnostic``'s ``vertical_grid_file`` (``cape_cin_method: icon``).
+by ``DeriveDiagnostic``'s ``vertical_grid_file`` (needed for CAPE/CIN).
 
 HHL is the geometric height (GRIB2 discipline 0, category 3, number 6) on the
 generalized vertical coordinate, e.g. in an ICON analysis (``laf*``) or a
@@ -8,7 +8,7 @@ top-down, in the cell order of the GRIB file.
 
 Usage::
 
-    python scripts/extract_icon_hhl.py laf2022033012 icon-1_HHL.nc
+    python scripts/generate_vertical_grid_file.py laf2022033012 icon-1_HHL.nc
 """
 
 import argparse

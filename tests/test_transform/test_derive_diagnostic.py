@@ -368,88 +368,12 @@ def test_derive_diagnostic_height_levels(orography_file):
     assert np.all(zm - zs >= 75.0)
 
 
-def test_cape_cin_integration():
-    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _integrate_cape_cin
-
-    # Four columns, bottom-up, 1000 m apart; buoyancy is linear between points.
-    height = np.repeat(np.arange(0.0, 5000.0, 1000.0)[:, None], 4, axis=1)
-    pressure = np.repeat(np.array([100000.0, 90000.0, 80000.0, 70000.0, 60000.0])[:, None], 4, axis=1)
-    p_lcl = np.array([90000.0, 80000.0, 80000.0, 90000.0])
-    buoyancy = np.array(
-        [
-            [0.0, 0.0, 0.0, 0.0],
-            [-0.01, 0.01, -0.01, -0.01],
-            [0.01, -0.01, 0.01, -0.02],
-            [0.01, 0.01, 0.01, -0.01],
-            [-0.01, 0.01, 0.01, -0.03],
-        ]
-    )
-    cape, cin = _integrate_cape_cin(buoyancy, height, pressure, p_lcl, pressure[0])
-
-    # 0: LFC and EL mid-segment: CAPE = 2.5 + 10 + 2.5, CIN = 5 + 2.5.
-    # 1: positive buoyancy below the LCL (superadiabatic) is ignored; LFC above
-    #    the LCL, no EL: CAPE = 2.5 + 10, CIN = 2.5 + 2.5.
-    # 2: buoyant at the LCL itself: LFC at the LCL, CAPE = 10 + 10, CIN = 5 + 2.5.
-    # 3: never buoyant: no LFC, CAPE 0 and CIN missing.
-    np.testing.assert_allclose(cape, [15.0, 12.5, 20.0, 0.0])
-    np.testing.assert_allclose(cin, [7.5, 5.0, 7.5, np.nan])
-
-
-def test_cape_cin_ignores_layers_below_parcel_start():
-    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _integrate_cape_cin
-
-    height = np.arange(0.0, 5000.0, 1000.0)[:, None]
-    pressure = np.array([100000.0, 90000.0, 80000.0, 70000.0, 60000.0])[:, None]
-    buoyancy = np.array([[0.0], [-0.02], [0.0], [0.01], [0.01]])
-    # Parcel starting at 900 hPa with its LCL there: the negative layer below
-    # 900 hPa doesn't count as CIN.
-    cape, cin = _integrate_cape_cin(buoyancy, height, pressure, np.array([90000.0]), np.array([90000.0]))
-    np.testing.assert_allclose(cin, [10.0])
-    np.testing.assert_allclose(cape, [15.0])
-
-
-def test_mixed_layer_parcel():
-    from earthkit.meteo.thermo import potential_temperature
-    from earthkit.meteo.thermo import temperature_from_potential_temperature
-
-    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _mixed_layer_parcel
-
-    # Surface at 1000 hPa, levels at 975 and 900 hPa: the 50 hPa layer spans
-    # the surface, 975 hPa and the 950 hPa point interpolated in log p.
-    p = np.array([[100000.0], [97500.0], [90000.0]])
-    t = np.array([[300.0], [298.0], [294.0]])
-    q = np.array([[0.012], [0.010], [0.006]])
-    p0, t0, q0 = _mixed_layer_parcel(p, np.zeros_like(p), t, q)
-
-    w = np.log(97500.0 / 95000.0) / np.log(97500.0 / 90000.0)
-    theta = potential_temperature(t[:, 0], p[:, 0])
-    theta_top, q_top = theta[1] + w * (theta[2] - theta[1]), q[1, 0] + w * (q[2, 0] - q[1, 0])
-    theta_ml = (0.5 * (theta[0] + theta[1]) * 2500.0 + 0.5 * (theta[1] + theta_top) * 2500.0) / 5000.0
-    q_ml = (0.5 * (q[0, 0] + q[1, 0]) * 2500.0 + 0.5 * (q[1, 0] + q_top) * 2500.0) / 5000.0
-    assert p0[0] == 100000.0
-    np.testing.assert_allclose(t0, [temperature_from_potential_temperature(theta_ml, 100000.0)])
-    np.testing.assert_allclose(q0, [q_ml])
-
-
-def test_most_unstable_parcel():
-    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _most_unstable_parcel
-
-    # Column 0: moist surface. Column 1: cold, dry surface under warm, moist
-    # air at 850 hPa. Column 2: the most energetic air (500 hPa) is above
-    # the 300 hPa search depth, so the surface wins.
-    p = np.repeat(np.array([[97000.0], [92500.0], [85000.0], [50000.0]]), 3, axis=1)
-    t = np.array([[300.0, 270.0, 290.0], [296.0, 275.0, 286.0], [290.0, 285.0, 282.0], [260.0, 255.0, 330.0]])
-    q = np.array([[0.015, 0.002, 0.010], [0.012, 0.004, 0.008], [0.008, 0.012, 0.006], [0.001, 0.001, 0.010]])
-    p0, t0, q0 = _most_unstable_parcel(p, np.zeros_like(p), t, q)
-    np.testing.assert_array_equal(p0, [97000.0, 85000.0, 97000.0])
-    np.testing.assert_array_equal(t0, [300.0, 285.0, 290.0])
-    np.testing.assert_array_equal(q0, [0.015, 0.012, 0.010])
-
-
 @pytest.mark.parametrize("kind", ["ML", "MU"])
-def test_derive_diagnostic_cape_cin(orography_file, kind):
+def test_derive_diagnostic_cape_cin(orography_file, vertical_grid_file, kind):
     fieldlist = _vertical_fieldlist()
-    result = _vertical_diagnostics(orography_file, [f"CAPE_{kind}", f"CIN_{kind}"]).forward(fieldlist)
+    result = _vertical_diagnostics(
+        orography_file, [f"CAPE_{kind}", f"CIN_{kind}"], vertical_grid_file=str(vertical_grid_file)
+    ).forward(fieldlist)
 
     # Inputs, including the pressure levels, are kept.
     assert len(result) == len(fieldlist) + 2
@@ -457,13 +381,14 @@ def test_derive_diagnostic_cape_cin(orography_file, kind):
     cin = next(f for f in result if f.metadata("param") == f"CIN_{kind}").to_numpy(flatten=True)[:4]
     assert np.all(cape >= 0.0)
     assert np.all(np.isnan(cin) | (cin >= 0.0))
-    # Without an LFC there is no CAPE and CIN is missing; e.g. the column below 0 degC.
-    assert cape[2] == 0.0 and np.isnan(cin[2])
-    np.testing.assert_array_equal(np.isnan(cin), cape == 0.0)
+    # No CAPE (ICON: < 1e-8 J/kg) and CIN missing, e.g. in the column below 0 degC.
+    assert cape[2] < 1e-8 and np.isnan(cin[2])
+    np.testing.assert_array_equal(np.isnan(cin), cape < 1e-8)
 
 
-def test_derive_diagnostic_cape_cin_ml_and_mu(orography_file):
-    result = _vertical_diagnostics(orography_file, ["CAPE_ML", "CIN_ML", "CAPE_MU", "CIN_MU"]).forward(
+def test_derive_diagnostic_cape_cin_ml_and_mu(orography_file, vertical_grid_file):
+    grid = {"vertical_grid_file": str(vertical_grid_file)}
+    result = _vertical_diagnostics(orography_file, ["CAPE_ML", "CIN_ML", "CAPE_MU", "CIN_MU"], **grid).forward(
         _vertical_fieldlist()
     )
     by_name = {f.metadata("param"): f.to_numpy(flatten=True)[:4] for f in result}
@@ -472,7 +397,7 @@ def test_derive_diagnostic_cape_cin_ml_and_mu(orography_file):
     assert by_name["CAPE_ML"][0] > 0.0 and by_name["CAPE_MU"][0] > 0.0
     assert by_name["CAPE_ML"][0] != by_name["CAPE_MU"][0]
     # Each pair matches what is computed when it is requested alone.
-    alone = _vertical_diagnostics(orography_file, ["CAPE_MU", "CIN_MU"]).forward(_vertical_fieldlist())
+    alone = _vertical_diagnostics(orography_file, ["CAPE_MU", "CIN_MU"], **grid).forward(_vertical_fieldlist())
     cape_mu = next(f for f in alone if f.metadata("param") == "CAPE_MU").to_numpy(flatten=True)[:4]
     np.testing.assert_array_equal(by_name["CAPE_MU"], cape_mu)
 
@@ -494,21 +419,21 @@ def vertical_grid_file(tmp_path):
     return path
 
 
-def _icon_cape_cin_outputs(orography_file, vertical_grid_file, variables, **kwargs):
+def _cape_cin_outputs(orography_file, vertical_grid_file, variables, **kwargs):
     result = _vertical_diagnostics(
-        orography_file, variables, cape_cin_method="icon", vertical_grid_file=str(vertical_grid_file), **kwargs
+        orography_file, variables, vertical_grid_file=str(vertical_grid_file), **kwargs
     ).forward(_vertical_fieldlist())
     return {f.metadata("param"): f.to_numpy(flatten=True) for f in result if f.metadata("param") in variables}
 
 
-def test_derive_diagnostic_cape_cin_icon(orography_file, vertical_grid_file):
-    from anemoi_plugins_meteoswiss.transform.filters import _icon_cape_cin
+def test_derive_diagnostic_cape_cin_values(orography_file, vertical_grid_file):
+    from anemoi_plugins_meteoswiss.transform.filters import _cape_cin
     from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _environment_column
-    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _icon_integration_tops
+    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _integration_tops
     from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _on_model_levels
 
     variables = ["CAPE_ML", "CIN_ML", "CAPE_MU", "CIN_MU"]
-    by_name = {name: x[:4] for name, x in _icon_cape_cin_outputs(orography_file, vertical_grid_file, variables).items()}
+    by_name = {name: x[:4] for name, x in _cape_cin_outputs(orography_file, vertical_grid_file, variables).items()}
 
     # The ICON port on the test columns put on the model levels, from ICON's model surface.
     hhl = _hhl(_OROGRAPHY)
@@ -525,62 +450,39 @@ def test_derive_diagnostic_cape_cin_icon(orography_file, vertical_grid_file):
         above_ground=pressure[:, None] < _SP[None, :],
     )
     te, qve, prs = _on_model_levels(*column, hhl)
-    tops = _icon_integration_tops(hhl)
+    tops = _integration_tops(hhl)
     for kind in ("ML", "MU"):
-        cape, cin = _icon_cape_cin.cape_cin(te, qve, prs, hhl.T.copy(), kmoist=tops[kind], parcel=kind.lower())
+        cape, cin = _cape_cin.cape_cin(te, qve, prs, hhl.T.copy(), kmoist=tops[kind], parcel=kind.lower())
         np.testing.assert_array_equal(by_name[f"CAPE_{kind}"], cape)
-        np.testing.assert_array_equal(by_name[f"CIN_{kind}"], np.where(cin == _icon_cape_cin.MISSING, np.nan, cin))
+        np.testing.assert_array_equal(by_name[f"CIN_{kind}"], np.where(cin == _cape_cin.MISSING, np.nan, cin))
         # ICON's CIN is missing without CAPE; the moist lowland column has some.
         np.testing.assert_array_equal(np.isnan(by_name[f"CIN_{kind}"]), by_name[f"CAPE_{kind}"] < 1e-8)
         assert by_name[f"CAPE_{kind}"][0] > 0.0
-    # Not the integration on the pressure levels.
-    default = _vertical_diagnostics(orography_file, ["CAPE_ML"]).forward(_vertical_fieldlist())
-    cape_default = next(f for f in default if f.metadata("param") == "CAPE_ML").to_numpy(flatten=True)[:4]
-    assert by_name["CAPE_ML"][0] != cape_default[0]
 
 
-def test_derive_diagnostic_cape_cin_icon_chunks_and_threads(orography_file, vertical_grid_file, monkeypatch):
+def test_derive_diagnostic_cape_cin_chunks_and_threads(orography_file, vertical_grid_file, monkeypatch):
     """Chunks of points and threads give exactly the single-chunk, single-thread result."""
     from anemoi_plugins_meteoswiss.transform.filters import derive_diagnostic
 
     variables = ["CAPE_ML", "CIN_ML", "CAPE_MU", "CIN_MU"]
-    reference = _icon_cape_cin_outputs(orography_file, vertical_grid_file, variables, n_threads=1)
-    monkeypatch.setattr(derive_diagnostic, "ICON_CHUNK_SIZE", 100003)
-    chunked = _icon_cape_cin_outputs(orography_file, vertical_grid_file, variables, n_threads=3)
+    reference = _cape_cin_outputs(orography_file, vertical_grid_file, variables, n_threads=1)
+    monkeypatch.setattr(derive_diagnostic, "CAPE_CIN_CHUNK_SIZE", 100003)
+    chunked = _cape_cin_outputs(orography_file, vertical_grid_file, variables, n_threads=3)
     for name in variables:
         np.testing.assert_array_equal(chunked[name], reference[name])
 
 
-def test_derive_diagnostic_cape_cin_pressure_levels_ignores_vertical_grid(orography_file, vertical_grid_file):
-    """The default method is pressure_levels, and the vertical grid doesn't change it."""
-    variables = ["CAPE_ML", "CIN_ML", "CAPE_MU", "CIN_MU"]
-
-    def run(**kwargs):
-        result = _vertical_diagnostics(orography_file, variables, **kwargs).forward(_vertical_fieldlist())
-        return {f.metadata("param"): f.to_numpy(flatten=True) for f in result if f.metadata("param") in variables}
-
-    default = run()
-    explicit = run(cape_cin_method="pressure_levels", vertical_grid_file=str(vertical_grid_file))
-    for name in variables:
-        np.testing.assert_array_equal(explicit[name], default[name])
-
-
-def test_derive_diagnostic_cape_cin_icon_requires_vertical_grid(orography_file):
+def test_derive_diagnostic_cape_cin_requires_vertical_grid(orography_file):
     with pytest.raises(ValueError, match="vertical_grid_file"):
-        _vertical_diagnostics(orography_file, ["CAPE_ML"], cape_cin_method="icon")
+        _vertical_diagnostics(orography_file, ["CAPE_ML"])
     # Without CAPE/CIN the vertical grid isn't needed.
-    _vertical_diagnostics(orography_file, ["HZEROCL"], cape_cin_method="icon")
-
-
-def test_derive_diagnostic_rejects_unknown_cape_cin_method(orography_file):
-    with pytest.raises(ValueError, match="cape_cin_method"):
-        _vertical_diagnostics(orography_file, ["CAPE_ML"], cape_cin_method="cosmo")
+    _vertical_diagnostics(orography_file, ["HZEROCL"])
 
 
 def test_derive_diagnostic_rejects_vertical_grid_size_mismatch(orography_file, tmp_path):
     path = tmp_path / "hhl.nc"
     xr.Dataset({"HHL": (("interface", "cell"), _hhl(np.zeros(7)))}).to_netcdf(path)
-    diagnostics = _vertical_diagnostics(orography_file, ["CAPE_ML"], cape_cin_method="icon", vertical_grid_file=path)
+    diagnostics = _vertical_diagnostics(orography_file, ["CAPE_ML"], vertical_grid_file=path)
     with pytest.raises(ValueError, match="native grid"):
         diagnostics.forward(_vertical_fieldlist())
 
@@ -605,14 +507,14 @@ def test_on_model_levels():
     np.testing.assert_allclose([te[0, 0], qve[0, 0]], [t[-1, 0], q[-1, 0]])
 
 
-def test_icon_integration_tops():
-    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _icon_integration_tops
+def test_integration_tops():
+    from anemoi_plugins_meteoswiss.transform.filters.derive_diagnostic import _integration_tops
 
     # Full levels at 23000, 21000, 19300 and 9300 m: the first below 22.5 km is
     # level 1; the first above 60 hPa in the standard atmosphere (19300 m:
     # 61 hPa, 21000 m: 47 hPa) is level 2.
     hhl = np.repeat(np.array([[24000.0], [22000.0], [20000.0], [18600.0], [0.0]]), 3, axis=1)
-    assert _icon_integration_tops(hhl) == {"ML": 2, "MU": 1}
+    assert _integration_tops(hhl) == {"ML": 2, "MU": 1}
 
 
 def test_precipitation_type():
@@ -741,13 +643,17 @@ def test_derive_diagnostic_default_inputs_are_grib_names():
     assert (diagnostics.temperature_2m, diagnostics.dewpoint_2m) == ("T_2M", "TD_2M")
 
 
-def test_derive_diagnostic_threads_match_single_thread(orography_file):
+def test_derive_diagnostic_threads_match_single_thread(orography_file, vertical_grid_file):
     """Splitting the points over threads gives exactly the single-thread result."""
     variables = ["TW_2M", "HZEROCL", "SNOWLMT", "CAPE_ML", "CIN_ML", "CAPE_MU", "CIN_MU", "PTYPE", "TOT_SNOW"]
 
     def run(n_threads):
         diagnostics = _vertical_diagnostics(
-            orography_file, variables, accumulated_precipitation="tp", n_threads=n_threads
+            orography_file,
+            variables,
+            accumulated_precipitation="tp",
+            n_threads=n_threads,
+            vertical_grid_file=str(vertical_grid_file),
         )
         return [
             {

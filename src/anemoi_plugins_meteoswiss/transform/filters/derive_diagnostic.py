@@ -4,7 +4,7 @@
 - RELHUM_2M: 2 m relative humidity (%).
 - TW_2M: 2 m wet-bulb temperature.
 - HZEROCL, SNOWLMT: freezing level and snowfall limit, as in INCA.
-- CAPE_ML, CIN_ML, CAPE_MU, CIN_MU: mixed-layer and most-unstable CAPE/CIN (J/kg).
+- CAPE_ML, CIN_ML, CAPE_MU, CIN_MU: mixed-layer and most-unstable CAPE/CIN (J/kg), as ICON.
 - PTYPE: precipitation type, WMO code table 4.201 (as ICON).
 - TOT_SNOW: snowfall accumulated from the start of the forecast (kg m-2).
 
@@ -24,9 +24,8 @@ Usage::
                 orography_file: /path/to/external_parameter_icon_grid.nc
                 variables: [SP_10M, DD_10M, RELHUM_2M, TW_2M, HZEROCL, SNOWLMT,
                             CAPE_ML, CIN_ML, CAPE_MU, CIN_MU, PTYPE, TOT_SNOW]
-                # optional: CAPE/CIN as ICON (default: pressure_levels)
-                cape_cin_method: icon
-                vertical_grid_file: /path/to/icon_hhl.nc  # see scripts/extract_icon_hhl.py
+                # required for CAPE/CIN, see scripts/generate_vertical_grid_file.py
+                vertical_grid_file: /path/to/icon_hhl.nc
 
 The inputs are read from the state by their GRIB name. Only
 the inputs needed by the requested ``variables`` are used.
@@ -47,10 +46,9 @@ Notes
 - ``n_threads`` (default: all CPUs available to the process, e.g. the Slurm
   allocation) splits the grid points of the expensive diagnostics (TW_2M,
   wet-bulb profile, CAPE/CIN) into chunks computed in parallel threads.
-- ``cape_cin_method: icon`` computes CAPE/CIN as ICON does (``cal_cape_cin``
-  and ``cal_cape_cin_mu``), on the ICON model levels of ``vertical_grid_file``
-  (interface heights, HHL) onto which the pressure levels are interpolated.
-  The default, ``pressure_levels``, integrates on the pressure levels themselves.
+- CAPE/CIN are computed as ICON does (``cal_cape_cin`` and ``cal_cape_cin_mu``),
+  on the ICON model levels of ``vertical_grid_file`` (interface heights, HHL)
+  onto which the pressure levels are interpolated.
 - The filter runs a full garbage collection at each step. anemoi-inference's
   wrapped state fields form a reference cycle once their metadata is read, so
   every output state outlives its step until Python's rare full collections;
@@ -78,23 +76,13 @@ import xarray as xr
 from anemoi.transform.filters.fields.matching import MatchingFieldsFilter
 from anemoi.transform.filters.fields.matching import MatchingSpec
 from earthkit.meteo import constants
-from earthkit.meteo.thermo import dewpoint_from_specific_humidity
-from earthkit.meteo.thermo import ept_from_dewpoint
-from earthkit.meteo.thermo import ept_from_specific_humidity
-from earthkit.meteo.thermo import lcl
-from earthkit.meteo.thermo import potential_temperature
 from earthkit.meteo.thermo import relative_humidity_from_dewpoint
-from earthkit.meteo.thermo import saturation_specific_humidity
 from earthkit.meteo.thermo import specific_humidity_from_dewpoint
-from earthkit.meteo.thermo import temperature_from_potential_temperature
-from earthkit.meteo.thermo import temperature_on_dry_adiabat
-from earthkit.meteo.thermo import temperature_on_moist_adiabat
-from earthkit.meteo.thermo import virtual_temperature
 from earthkit.meteo.thermo import wet_bulb_temperature_from_dewpoint
 from earthkit.meteo.thermo import wet_bulb_temperature_from_specific_humidity
 from earthkit.meteo.vertical import geometric_height_from_geopotential
 
-from . import _icon_cape_cin as icon_cape_cin
+from . import _cape_cin
 from .copy_prognostic_from_forecaster import _leadtime
 
 LOG = logging.getLogger(__name__)
@@ -113,20 +101,14 @@ MIN_HEIGHT = -100.0  # m, lower bound of HZEROCL, SNOWLMT and MELTLAYER_TOP, whi
 MELTING_LAYER_TOP_OFFSET = 150.0  # m above ground, MELTLAYER_TOP when only SNOWLMT has a crossing
 MIN_MELTING_LAYER_DEPTH = 75.0  # m, minimum MELTLAYER_TOP - SNOWLMT
 
-# CAPE/CIN. Bolton (1980) eq. 39 is the equivalent potential temperature of
-# the pseudo-adiabat.
-EPT_METHOD = "bolton39"
-ML_DEPTH = 5000.0  # Pa, depth of the mixed layer averaged for CAPE_ML/CIN_ML
-MU_DEPTH = 30000.0  # Pa, depth searched for the most unstable parcel (CAPE_MU/CIN_MU)
-
-# CAPE/CIN with cape_cin_method="icon". ICON integrates up to kstart_moist, the
+# CAPE/CIN, as ICON. ICON integrates up to kstart_moist, the
 # first full level below htop_moist_proc, and for ML not above k060, its 60 hPa
 # level, taken here from the standard atmosphere. Parcels are never buoyant
 # that high, so the exact level doesn't change CAPE/CIN.
-ICON_HTOP_MOIST_PROC = 22500.0  # m, ICON's default
-ICON_ML_TOP_PRESSURE = 6000.0  # Pa
-ICON_MU_HEIGHT_LIMIT = 3000.0  # m above ground, highest MU parcel start (ICON's caller)
-ICON_CHUNK_SIZE = 131072  # max points put on the model levels at once (~5 KB each with 80 levels)
+HTOP_MOIST_PROC = 22500.0  # m, ICON's default
+ML_TOP_PRESSURE = 6000.0  # Pa
+MU_HEIGHT_LIMIT = 3000.0  # m above ground, highest MU parcel start (ICON's caller)
+CAPE_CIN_CHUNK_SIZE = 131072  # max points put on the model levels at once (~5 KB each with 80 levels)
 
 # INCA precipitation type and snow fraction.
 PREC_RATE_MIN = 0.1  # mm/h, minimum rate to assign a precipitation type
@@ -249,7 +231,6 @@ class DeriveDiagnostic(MatchingFieldsFilter):
         accumulated_precipitation: str | None = _DEFAULT_INPUTS["accumulated_precipitation"],
         snow_fraction_profile: Literal["linear", "logistic"] = "linear",
         n_threads: int | None = None,
-        cape_cin_method: Literal["pressure_levels", "icon"] = "pressure_levels",
         vertical_grid_file: str | None = None,
         vertical_grid_variable: str = "HHL",
     ) -> None:
@@ -263,8 +244,7 @@ class DeriveDiagnostic(MatchingFieldsFilter):
         across the melting layer used for ``TOT_SNOW``. ``n_threads`` is the
         number of threads the grid points are split over (default: all CPUs
         available to the process; 1 computes them all in the calling thread).
-        ``cape_cin_method`` is ``pressure_levels`` (on the pressure levels) or
-        ``icon`` (as ICON, on its model levels); ``icon`` requires
+        CAPE/CIN are computed as ICON, on its model levels, and require
         ``vertical_grid_file`` (NetCDF, variable ``vertical_grid_variable``:
         the ICON interface heights in m, shape (interfaces, cells), on the
         grid of the state).
@@ -279,8 +259,6 @@ class DeriveDiagnostic(MatchingFieldsFilter):
             raise ValueError(f"Unsupported variable(s) {sorted(unknown)}; supported: {sorted(_SUPPORTED_VARIABLES)}.")
         if snow_fraction_profile not in ("linear", "logistic"):
             raise ValueError(f"`snow_fraction_profile` must be 'linear' or 'logistic', got {snow_fraction_profile!r}.")
-        if cape_cin_method not in ("pressure_levels", "icon"):
-            raise ValueError(f"`cape_cin_method` must be 'pressure_levels' or 'icon', got {cape_cin_method!r}.")
         if n_threads is None:
             n_threads = _available_cpus()
         if not isinstance(n_threads, int) or n_threads < 1:
@@ -297,7 +275,6 @@ class DeriveDiagnostic(MatchingFieldsFilter):
         self.accumulated_precipitation = accumulated_precipitation
         self.snow_fraction_profile = snow_fraction_profile
         self.n_threads = n_threads
-        self.cape_cin_method = cape_cin_method
         self.variables = variables
 
         requested = set(variables)
@@ -323,14 +300,14 @@ class DeriveDiagnostic(MatchingFieldsFilter):
                 raise ValueError(f"{sorted(_VERTICAL_VARIABLES & requested)} require `orography_file`.")
             self._orography = _load_orography(Path(orography_file), orography_variable)
 
-        # ICON interface heights and integration tops, for CAPE/CIN as ICON.
+        # ICON interface heights and integration tops, for CAPE/CIN.
         self._hhl = None
-        self._icon_kmoist: dict[str, int] = {}
-        if self._parcels and cape_cin_method == "icon":
+        self._kmoist: dict[str, int] = {}
+        if self._parcels:
             if vertical_grid_file is None:
-                raise ValueError("`cape_cin_method: icon` requires `vertical_grid_file`.")
+                raise ValueError("CAPE/CIN require `vertical_grid_file`.")
             self._hhl = _load_vertical_grid(Path(vertical_grid_file), vertical_grid_variable)
-            self._icon_kmoist = _icon_integration_tops(self._hhl)
+            self._kmoist = _integration_tops(self._hhl)
 
         # Match only the inputs the requested variables need. Grouped by level,
         # a pressure-level input arrives as a FieldList, which the base class
@@ -552,14 +529,13 @@ class DeriveDiagnostic(MatchingFieldsFilter):
                 )
 
         if self._parcels:
-            icon = self.cape_cin_method == "icon"
             with _timer(timings, "CAPE/CIN column"):
                 p, height, t, q = _environment_column(
                     t_2m=t_2m,
                     td_2m=td_2m,
                     sp=sp,
                     # ICON's model surface, to which PS and the 2 m fields refer
-                    orography=self._hhl[-1] if icon else orography,
+                    orography=self._hhl[-1],
                     pressure=pressure,
                     t_levels=profiles["t"],
                     q_levels=profiles["q"],
@@ -568,20 +544,12 @@ class DeriveDiagnostic(MatchingFieldsFilter):
                 )
             for kind in self._parcels:
                 with _timer(timings, f"CAPE_{kind}/CIN_{kind}"):
-                    if icon:
-                        cape_cin = _map_over_points(
-                            _cape_cin_icon,
-                            self.n_threads,
-                            per_point={"p": p, "height": height, "t": t, "q": q, "hhl": self._hhl},
-                            shared={"kind": kind, "kmoist": self._icon_kmoist[kind]},
-                        )
-                    else:
-                        cape_cin = _map_over_points(
-                            _cape_cin,
-                            self.n_threads,
-                            per_point={"p": p, "height": height, "t": t, "q": q},
-                            shared={"kind": kind},
-                        )
+                    cape_cin = _map_over_points(
+                        _compute_cape_cin,
+                        self.n_threads,
+                        per_point={"p": p, "height": height, "t": t, "q": q, "hhl": self._hhl},
+                        shared={"kind": kind, "kmoist": self._kmoist[kind]},
+                    )
                     diagnostics[f"CAPE_{kind}"], diagnostics[f"CIN_{kind}"] = cape_cin
 
         return diagnostics
@@ -742,13 +710,13 @@ def _standard_atmosphere_pressure(height: np.ndarray) -> np.ndarray:
     return np.where(height <= z_tropopause, troposphere, stratosphere)
 
 
-def _icon_integration_tops(hhl: np.ndarray) -> dict[str, int]:
+def _integration_tops(hhl: np.ndarray) -> dict[str, int]:
     """Zero-based uppermost level of the ICON CAPE/CIN integration per parcel:
     ``kstart_moist`` for MU, ``max(kstart_moist, k060)`` for ML."""
     # The upper levels are flat; take the highest of each over the domain.
     full_levels = (0.5 * (hhl[:-1] + hhl[1:])).max(axis=1)
-    kstart_moist = int(np.argmax(full_levels < ICON_HTOP_MOIST_PROC))
-    k060 = int(np.argmax(_standard_atmosphere_pressure(full_levels) > ICON_ML_TOP_PRESSURE))
+    kstart_moist = int(np.argmax(full_levels < HTOP_MOIST_PROC))
+    k060 = int(np.argmax(_standard_atmosphere_pressure(full_levels) > ML_TOP_PRESSURE))
     tops = {"ML": max(kstart_moist, k060), "MU": kstart_moist}
     LOG.info(
         "derive-diagnostic: ICON CAPE/CIN integrated up to level %s (full-level heights %s m)",
@@ -948,156 +916,6 @@ def _environment_column(
     return p, height, t, q
 
 
-def _mixed_layer_parcel(
-    p: np.ndarray, height: np.ndarray, t: np.ndarray, q: np.ndarray
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Pressure, temperature and specific humidity of the mixed-layer parcel:
-    the pressure-weighted mean potential temperature and specific humidity of
-    the lowest ``ML_DEPTH``, at the surface pressure."""
-    sp = p[0]
-    p_top = sp - ML_DEPTH
-    p_layer, theta, q_layer = _insert_pressure_level(p_top, p, potential_temperature(t, p), q)
-    dp = -np.diff(p_layer, axis=0)
-    in_layer = p_layer[1:] >= p_top
-
-    def layer_mean(x: np.ndarray) -> np.ndarray:
-        return np.where(in_layer, 0.5 * (x[:-1] + x[1:]) * dp, 0.0).sum(axis=0) / ML_DEPTH
-
-    return sp, temperature_from_potential_temperature(layer_mean(theta), sp), layer_mean(q_layer)
-
-
-def _most_unstable_parcel(
-    p: np.ndarray, height: np.ndarray, t: np.ndarray, q: np.ndarray
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Pressure, temperature and specific humidity of the column point within
-    ``MU_DEPTH`` of the surface with the highest equivalent potential
-    temperature."""
-    ept = np.where(p >= p[0] - MU_DEPTH, ept_from_specific_humidity(t, q, p, method=EPT_METHOD), -np.inf)
-    index = np.argmax(ept, axis=0)
-    return tuple(_values_at_level(x, index) for x in (p, t, q))
-
-
-def _cape_cin(
-    p: np.ndarray, height: np.ndarray, t: np.ndarray, q: np.ndarray, *, kind: Literal["ML", "MU"]
-) -> tuple[np.ndarray, np.ndarray]:
-    """CAPE and CIN (J/kg) of the mixed-layer (``ML``) or most-unstable
-    (``MU``) parcel of the environment column."""
-    start = _mixed_layer_parcel(p, height, t, q) if kind == "ML" else _most_unstable_parcel(p, height, t, q)
-    return _cape_cin_of_parcel(p, height, t, q, *start)
-
-
-def _cape_cin_of_parcel(
-    p: np.ndarray,
-    height: np.ndarray,
-    t_env: np.ndarray,
-    q_env: np.ndarray,
-    p_start: np.ndarray,
-    t_start: np.ndarray,
-    q_start: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """CAPE and CIN (J/kg) of a parcel starting at (``p_start``, ``t_start``,
-    ``q_start``), a point of the environment column (``p``, ``height``,
-    ``t_env``, ``q_env``).
-
-    The parcel rises along the dry adiabat up to its LCL, then along the
-    pseudo-adiabat of its equivalent potential temperature. The LCL is
-    inserted into the column so the kink of the parcel curve is resolved.
-    Buoyancy uses virtual temperature for parcel and environment.
-    """
-    td_start = np.minimum(dewpoint_from_specific_humidity(q_start, p_start), t_start)
-    _, p_lcl = lcl(t_start, td_start, p_start)
-    p_lcl = np.minimum(p_lcl, p_start)
-    p, height, t_env, q_env = _insert_pressure_level(p_lcl, p, height, t_env, q_env)
-
-    saturated = p < p_lcl
-    t_parcel = temperature_on_dry_adiabat(p, t_start, p_start)
-    # earthkit's pseudo-adiabat solver takes 1-D arrays; only saturated points need it.
-    ept = np.broadcast_to(ept_from_dewpoint(t_start, td_start, p_start, method=EPT_METHOD), p.shape)
-    t_parcel[saturated] = temperature_on_moist_adiabat(ept[saturated], p[saturated], ept_method=EPT_METHOD)
-    q_parcel = np.where(saturated, saturation_specific_humidity(t_parcel, p), q_start)
-
-    tv_env = virtual_temperature(t_env, q_env)
-    buoyancy = constants.g * (virtual_temperature(t_parcel, q_parcel) - tv_env) / tv_env
-    return _integrate_cape_cin(buoyancy, height, p, p_lcl, p_start)
-
-
-def _insert_pressure_level(p_new: np.ndarray, p: np.ndarray, *profiles: np.ndarray) -> list[np.ndarray]:
-    """Insert a point at pressure ``p_new`` into each bottom-up column.
-
-    ``p`` and ``profiles`` have shape (levels, points), with ``p`` not
-    increasing upwards. The profiles are interpolated linearly in log
-    pressure. Returns ``p`` and the profiles with one more level.
-    """
-    log_p, log_p_new = np.log(p), np.log(p_new)
-    above_index = np.clip((p >= p_new).sum(axis=0), 1, p.shape[0] - 1)  # first point above p_new
-    below_index = above_index - 1
-    log_p_below, log_p_above = _values_at_level(log_p, below_index), _values_at_level(log_p, above_index)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        weight = np.clip(np.nan_to_num((log_p_below - log_p_new) / (log_p_below - log_p_above)), 0.0, 1.0)
-
-    new_rows = [p_new]
-    for x in profiles:
-        x_below, x_above = _values_at_level(x, below_index), _values_at_level(x, above_index)
-        new_rows.append(x_below + weight * (x_above - x_below))
-    order = np.argsort(-np.vstack([p, p_new]), axis=0, kind="stable")
-    return [np.take_along_axis(np.vstack([x, row]), order, axis=0) for x, row in zip((p, *profiles), new_rows)]
-
-
-def _positive_area(b_bottom: np.ndarray, b_top: np.ndarray, dz: np.ndarray, zero_fraction: np.ndarray) -> np.ndarray:
-    """Positive part of the area of each segment with buoyancy linear from
-    ``b_bottom`` to ``b_top``, its zero crossing at ``zero_fraction`` of ``dz``."""
-    return np.select(
-        [(b_bottom >= 0) & (b_top >= 0), (b_bottom <= 0) & (b_top <= 0), b_bottom > 0],
-        [0.5 * (b_bottom + b_top) * dz, 0.0, 0.5 * b_bottom * zero_fraction * dz],
-        0.5 * b_top * (1.0 - zero_fraction) * dz,
-    )
-
-
-def _integrate_cape_cin(
-    buoyancy: np.ndarray, height: np.ndarray, pressure: np.ndarray, p_lcl: np.ndarray, p_start: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    """CAPE and CIN (J/kg) from parcel buoyancy (m/s2) on a bottom-up column.
-
-    Buoyancy is linear between the column points, so each segment's area is
-    split exactly at its zero crossing. The LFC is the lowest point at or
-    above the LCL (which must be a column point) where the parcel becomes
-    buoyant, the EL the highest crossing back to non-positive buoyancy above
-    it (the column top if the parcel is still buoyant there).
-
-    CAPE is the area from the LFC to the EL, including any negative layers in
-    between; CIN is the magnitude of the negative area below the LFC (>= 0).
-    Positive buoyancy below the LCL counts for neither, and segments below
-    the parcel's starting pressure ``p_start`` (a column point) are ignored.
-    Without an LFC, CAPE is 0 and CIN missing.
-    """
-    b_bottom, b_top = buoyancy[:-1], buoyancy[1:]
-    p_bottom = pressure[:-1]
-    dz = np.where(p_bottom <= p_start, np.diff(height, axis=0), 0.0)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        zero_fraction = np.clip(b_bottom / (b_bottom - b_top), 0.0, 1.0)
-    area = 0.5 * (b_bottom + b_top) * dz
-    positive = _positive_area(b_bottom, b_top, dz, zero_fraction)
-    negative = area - positive
-
-    n_segments = b_bottom.shape[0]
-    segment = np.arange(n_segments)[:, None]
-    # A segment starting at the LCL with positive buoyancy has its LFC at the LCL.
-    lfc_segment = (p_bottom <= p_lcl) & (b_top > 0) & ((b_bottom <= 0) | (p_bottom == p_lcl))
-    has_lfc = lfc_segment.any(axis=0)
-    lfc_index = np.argmax(lfc_segment, axis=0)
-    el_segment = (b_bottom > 0) & (b_top <= 0) & (segment > lfc_index)
-    el_index = np.where(el_segment.any(axis=0), _last_true_index(el_segment), n_segments)
-
-    cape_area = np.where(
-        (segment == lfc_index) | (segment == el_index),
-        positive,
-        np.where((segment > lfc_index) & (segment < el_index), area, 0.0),
-    )
-    cape = np.where(has_lfc, np.maximum(cape_area.sum(axis=0), 0.0), 0.0)
-    cin = np.where(has_lfc, -np.where(segment <= lfc_index, negative, 0.0).sum(axis=0), np.nan)
-    return cape, cin
-
-
 def _on_model_levels(
     p: np.ndarray, height: np.ndarray, t: np.ndarray, q: np.ndarray, hhl: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -1125,7 +943,7 @@ def _on_model_levels(
     return interpolate(t, within), interpolate(q, within), np.exp(interpolate(np.log(p), weight))
 
 
-def _cape_cin_icon(
+def _compute_cape_cin(
     p: np.ndarray,
     height: np.ndarray,
     t: np.ndarray,
@@ -1143,20 +961,20 @@ def _cape_cin_icon(
     n_points = p.shape[-1]
     cape, cin = np.empty(n_points), np.empty(n_points)
     # Equal chunks: the port's cost per chunk is largely per level, not per point.
-    bounds = np.linspace(0, n_points, -(-n_points // ICON_CHUNK_SIZE) + 1).astype(int)
+    bounds = np.linspace(0, n_points, -(-n_points // CAPE_CIN_CHUNK_SIZE) + 1).astype(int)
     for start, stop in zip(bounds[:-1], bounds[1:]):
         points = slice(start, stop)
         te, qve, prs = _on_model_levels(p[:, points], height[:, points], t[:, points], q[:, points], hhl[:, points])
-        cape[points], cin[points] = icon_cape_cin.cape_cin(
+        cape[points], cin[points] = _cape_cin.cape_cin(
             te,
             qve,
             prs,
             hhl[:, points].T,
             kmoist=kmoist,
             parcel=kind.lower(),
-            z_limit=ICON_MU_HEIGHT_LIMIT,
+            z_limit=MU_HEIGHT_LIMIT,
         )
-    return cape, np.where(cin == icon_cape_cin.MISSING, np.nan, cin)
+    return cape, np.where(cin == _cape_cin.MISSING, np.nan, cin)
 
 
 def _melting_layer_depth(snowlmt: np.ndarray, melting_layer_top: np.ndarray) -> np.ndarray:

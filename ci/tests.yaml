@@ -22,7 +22,7 @@ stages:
     SLURM_NTASKS: 1
     # uv sync builds the venv from scratch (eccodes, earthkit, meteodata-lab,
     # ...); give it more room than a bare hello-world needs.
-    SLURM_TIMELIMIT: '00:20:00'
+    SLURM_TIMELIMIT: '05:00:00'
 
 # ── reusable script fragments (hidden jobs) ──────────────────────────────────
 

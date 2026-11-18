@@ -45,7 +45,7 @@ gaussian-smoother = "anemoi_plugins_meteoswiss.transform.filters:GaussianSmoothe
 icon-remap-to-reg-lat-lon = "anemoi_plugins_meteoswiss.transform.filters:IconRemapToRegLatLon"
 retrieve-observation = "anemoi_plugins_meteoswiss.transform.filters:RetrieveObservation"
 clean-observation = "anemoi_plugins_meteoswiss.transform.filters:CleanObservation"
-surface-diagnostics = "anemoi_plugins_meteoswiss.transform.filters:SurfaceDiagnostics"
+derive-diagnostic = "anemoi_plugins_meteoswiss.transform.filters:DeriveDiagnostic"
 
 [project.entry-points."anemoi.inference.outputs"]
 grib-with-step-zero = "anemoi_plugins_meteoswiss.outputs:GribWithStepZero"

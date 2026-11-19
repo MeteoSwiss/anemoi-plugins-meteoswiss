@@ -6,10 +6,15 @@ readme = "README.md"
 authors = [{ name = "MeteoSwiss" }]
 requires-python = ">=3.11"
 dependencies = [
-    "anemoi-datasets",
+    "anemoi-datasets>=0.5.38",
     "anemoi-plugins",
     "anemoi-transform",
     "earthkit-meteo",
+    "netcdf4",
+    "pandas>=2",
+    "pyproj",
+    "scipy",
+    "xarray",
 ]
 
 

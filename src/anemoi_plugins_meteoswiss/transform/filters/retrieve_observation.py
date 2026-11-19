@@ -19,6 +19,7 @@ _ICON_TO_ECMWF_NAME = {
     "PS": "sp",
     "TOT_PREC": "tp",
     "VMAX_10M": "vmax",
+    "T_G": "skt",
 }
 
 # ECMWF shortName -> DWH (jretrieve) parameter names
@@ -31,6 +32,7 @@ _ECMWF_NAME_TO_DWH_PARAMS = {
     "sp": ["prestas0"],
     "tp": ["rre150h0"],
     "vmax": ["fkl010z1"],
+    "skt": ["tre005s0"],
 }
 
 
@@ -46,19 +48,18 @@ class RetrieveObservation(Filter):
     obs_path : str
         Path where the output Parquet file will be written.
     jretrieve_src_path : str
-        Directory containing the ``data_input`` package (``data_input/jretrieve.py``).
-    station_group : str, optional
-        DWH station group IDs (comma-separated) passed to jretrieve.
-        Mutually exclusive with ``retrieval_bbox``.
-    retrieval_bbox : list, optional
+        Directory containing ``jretrieve.py``.
+    bbox : list, optional
         Bounding box ``[minlat, maxlat, minlon, maxlon]`` for station
-        selection. Mutually exclusive with ``station_group``.
+        selection.  Defaults to ``[40.5, 53.0, 0.0, 17.5]``.
     variables : list of str, optional
-        GRIB shortNames to fetch (must be keys of ``_ICON_TO_ECMWF_NAME``).
+        GRIB shortNames to fetch (must be keys of ``_PARAM_TO_COL``).
         Defaults to all available variables.
-    use_limitation : int, optional
-        Passed to jretrieve ``--use-limitation``. Indirectly specifies the
-        groups of stations to retrieve. See jretrieve documentation for details.
+    use_limitation : {10, 20, 30, 40, 50}, optional
+        Passed to jretrieve ``--use-limitation``; only stations whose data
+        usage level is ≤ this value are returned.
+        10 = unrestricted, 50 = internal use only (most permissive filter,
+        returns all stations).
     run_mode : str
         ``'depl'`` (default): ref_time = minimum valid_time across all
         fields. ``'devt'``: ref_time = valid_time of the first field.
@@ -68,6 +69,7 @@ class RetrieveObservation(Filter):
         self,
         obs_path: str,
         jretrieve_src_path: str,
+        bbox: list = None,
         station_group: str = None,
         retrieval_bbox: list = None,
         variables: list = None,
@@ -120,6 +122,7 @@ class RetrieveObservation(Filter):
             else min(f.datetime()["valid_time"] for f in data)
         )
         if ref_time == self._retrieved_ref_time:
+            LOG.debug("Observations already retrieved for %s, skipping", ref_time)
             return data
         LOG.info("Retrieving observations for %s", ref_time)
         self._retrieve(ref_time)
@@ -151,13 +154,14 @@ class RetrieveObservation(Filter):
             end=ref_time,
             increment_minutes=60,
             use_limitation=self.use_limitation,
-            stage="prod",
+            quality_info=4,  # request PlausibilityNu: adds {param}_pi columns (0–1)
         )
 
         df["nat_abbr"] = df["station"].map(dict(zip(catalog.station_id, catalog.nat_abbr)))
         df["latitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.latitude)))
         df["longitude"] = df["station"].map(dict(zip(catalog.station_id, catalog.longitude)))
         df["elevation"] = df["station"].map(dict(zip(catalog.station_id, catalog.elevation)))
+
         df = df.dropna(subset=["nat_abbr"]).set_index("nat_abbr")
         df.index.name = "station"
 
@@ -177,18 +181,38 @@ class RetrieveObservation(Filter):
             df["tp"] = df["rre150h0"]
         if "fkl010z1" in df.columns:
             df["vmax"] = df["fkl010z1"]
+        if "tre005s0" in df.columns:
+            df["skt"] = df["tre005s0"] + 273.15
 
-        result_cols = [name for name in self.ecmwf_names if name in df.columns] + [
-            "latitude",
-            "longitude",
-            "elevation",
-        ]
+        # jretrieve returns one `pi` column per param (pandas auto-renames duplicates
+        # to pi.1, pi.2, …). Map them back to {param}_pi before the output rename.
+        raw_pi_cols = ["pi"] + [f"pi.{i}" for i in range(1, len(jr_params))]
+        df = df.rename(columns={raw: f"{param}_pi" for raw, param in zip(raw_pi_cols, jr_params) if raw in df.columns})
+
+        # Rename DWH plausibility columns ({param}_pi, range 0–1) to output names
+        _PI_RENAME = {
+            "tre200s0_pi": "2t_pi",
+            "tde200s0_pi": "2d_pi",
+            "fkl010z0_pi": "ff_pi",
+            "fkl010z1_pi": "vmax_pi",
+            "pp0qffs0_pi": "msl_pi",
+            "prestas0_pi": "sp_pi",
+            "rre150h0_pi": "tp_pi",
+            "tre005s0_pi": "skt_pi",
+        }
+        df = df.rename(columns={k: v for k, v in _PI_RENAME.items() if k in df.columns})
+        pi_cols = [c for c in df.columns if c.endswith("_pi")]
+
+        result_cols = (
+            [c for c in self.ecmwf_names if c in df.columns]
+            + [
+                "latitude",
+                "longitude",
+                "elevation",
+            ]
+            + pi_cols
+        )
         df = df[result_cols].copy()
-
-        for name in _ICON_TO_ECMWF_NAME.values():
-            if name in df.columns:
-                n_valid = int(df[name].notna().sum())
-                LOG.info("Stations with valid %s: %d / %d stations", name, n_valid, len(df))
 
         Path(self.obs_path).parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(self.obs_path)

@@ -45,7 +45,7 @@ import netCDF4
 import numpy as np
 import pyproj
 from anemoi.transform.filter import Filter
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import binary_opening, gaussian_filter
 
 LOG = logging.getLogger(__name__)
 
@@ -151,10 +151,53 @@ def _gaussian_filter_nans(U: np.ndarray, sigma=5, truncate=4, mode="nearest") ->
         return VV / WW
 
 
-# ── SAF preprocessing (SAF domain, no topo/lakes) ────────────────────────────
+# ── SAF-domain lake mask from ICON extpar ─────────────────────────────────────
 
 
-def _preprocess_saf(cloud_mask, cloud_eff, cloud_top, cloud_type, partial_high_thr: float):
+def _make_saf_lake_mask(
+    ny_saf: int,
+    nx_saf: int,
+    gdal_proj: str,
+    xgeo_ul: float,
+    ygeo_ul: float,
+    xgeo_lr: float,
+    ygeo_lr: float,
+    lat_icon: np.ndarray,
+    lon_icon: np.ndarray,
+    fr_lake_icon: np.ndarray,
+) -> np.ndarray:
+    """Return a 2-D boolean SAF-domain lake mask from the ICON extpar lake fraction.
+
+    Projects each ICON cell centre to its nearest SAF pixel and marks that pixel
+    as lake (True) if fr_lake_icon > 0.5.  Uses OR semantics when multiple ICON
+    cells map to the same SAF pixel.
+    """
+    geos_crs = pyproj.CRS.from_proj4(gdal_proj)
+    transformer = pyproj.Transformer.from_crs(pyproj.CRS.from_epsg(4326), geos_crs, always_xy=True)
+    dx = (xgeo_lr - xgeo_ul) / nx_saf
+    dy = (ygeo_lr - ygeo_ul) / ny_saf
+    x_geos, y_geos = transformer.transform(lon_icon.ravel(), lat_icon.ravel())
+    col = np.round((x_geos - xgeo_ul) / dx).astype(int)
+    row = np.round((y_geos - ygeo_ul) / dy).astype(int)
+    valid = (
+        np.isfinite(x_geos)
+        & np.isfinite(y_geos)
+        & (col >= 0)
+        & (col < nx_saf)
+        & (row >= 0)
+        & (row < ny_saf)
+    )
+    lake_mask = np.zeros((ny_saf, nx_saf), dtype=bool)
+    np.logical_or.at(lake_mask, (row[valid], col[valid]), fr_lake_icon[valid] > 0.5)
+    return lake_mask
+
+
+# ── SAF preprocessing (SAF domain) ────────────────────────────────────────────
+
+
+def _preprocess_saf(
+    cloud_mask, cloud_eff, cloud_top, cloud_type, partial_high_thr: float, lakes_saf=None
+):
     """In-place preprocessing of raw SAF fields (all arrays on the SAF domain).
 
     Mirrors cloud_funcs.preprocess_saf():
@@ -215,6 +258,16 @@ def _preprocess_saf(cloud_mask, cloud_eff, cloud_top, cloud_type, partial_high_t
     for _ct in [11, 12, 13, 14]:
         cloud_eff[cloud_type == _ct] = np.fmax(cloud_eff[cloud_type == _ct], partial_high_thr)
 
+    # remove misclassified fractional clouds over lakes (morphological opening)
+    if lakes_saf is not None:
+        fractional_lakes = (cloud_type == 10.0) & lakes_saf
+        n_lake_cloud = int((cloud_mask[fractional_lakes] > 0).sum())
+        if n_lake_cloud:
+            opened = binary_opening(cloud_mask > 0, structure=np.ones((5, 5), dtype=bool)).astype(float)
+            cloud_mask[fractional_lakes] = opened[fractional_lakes]
+            n_cleared = n_lake_cloud - int((cloud_mask[fractional_lakes] > 0).sum())
+            LOG.info("Lakes filter: cleared %d / %d fractional-cloud lake pixels", n_cleared, n_lake_cloud)
+
 
 # ── Topo / lakes filter on ICON/VARDA grid ─────────────────────────────────────────
 
@@ -224,16 +277,14 @@ def _apply_topo_lakes_filter(
     cloud_mask_icon: np.ndarray,
     cloud_eff_icon: np.ndarray,
     cloud_top_icon: np.ndarray,
-    cloud_type_icon: np.ndarray,
     topo_icon: np.ndarray,
-    fr_lake_icon: np.ndarray,
     height_tolerance_m: float,
     remove_below_topo: bool,
 ):
-    """Apply topography and lake filters to cloud fields on the ICON/VARDA grid.
+    """Apply topography filter to cloud fields on the ICON/VARDA grid.
 
-    Mirrors the SAF-domain topo/lakes logic from preprocess_saf, applied
-    directly on the 1-D ICON/VARDA arrays after reprojection.
+    Lakes filtering is handled upstream in _preprocess_saf on the 2-D SAF domain
+    via binary_opening, matching the reference implementation.
 
     saf_icon and the auxiliary arrays are modified in-place.
     """
@@ -252,26 +303,14 @@ def _apply_topo_lakes_filter(
             100.0 * n_below / len(topo_icon),
         )
     else:
-        cloud_top_icon[below_topo] = 0.0
         LOG.info(
             "Below-topo filter: zeroed cloud_top for %d ICON/VARDA cells (%.2f%%)",
             n_below,
             100.0 * n_below / len(topo_icon),
         )
+    # always zero cloud_top for below-topo pixels (mirrors reference unconditional line)
+    cloud_top_icon[below_topo] = 0.0
 
-    # Lakes: clear fractional clouds (CT type 10) over lake cells
-    lake_cells = fr_lake_icon > 0.5
-    fractional_lakes = lake_cells & (cloud_type_icon == 10.0)
-    n_lakes = int(fractional_lakes.sum())
-    cloud_mask_icon[fractional_lakes] = 0.0
-    cloud_eff_icon[fractional_lakes] = 0.0
-    for arr in saf_icon.values():
-        arr[fractional_lakes] = 0.0
-    LOG.info(
-        "Lakes filter: cleared fractional cloud at %d ICON/VARDA cells (%.2f%%)",
-        n_lakes,
-        100.0 * n_lakes / len(fr_lake_icon),
-    )
 
 
 # ── Cloud analysis (mirrors cloud_extrapolation height='top') ─────────────────
@@ -597,8 +636,8 @@ class CloudNudging(Filter):
         icon_heavy_cloud_thr: float = 0.8,
         icon_ch_linear_fill: bool = False,
         icon_update_ct: bool = True,
-        partial_high_thr_full_cm: float = 0.5,
-        partial_high_thr_full_cl: float = 0.25,
+        partial_high_thr_full_cm: float = 0.25,
+        partial_high_thr_full_cl: float = 0.15,
         icon_source: str = "fieldlist",
         icon_base_dir: str = None,
         icon_member: str = "000",
@@ -744,9 +783,19 @@ class CloudNudging(Filter):
             float(np.nanmean(cloud_mask == 1.0)) * 100,
         )
 
-        # ── Preprocess SAF fields in-place (CT suppression + fill NaNs) ───────
+        # ── Build SAF-domain lake mask from ICON extpar (used in preprocess_saf) ─
+        lakes_saf = _make_saf_lake_mask(
+            ny_saf, nx_saf,
+            gdal_proj, xgeo_ul, ygeo_ul, xgeo_lr, ygeo_lr,
+            self._lat_icon, self._lon_icon, self._fr_lake_icon,
+        )
+
+        # ── Preprocess SAF fields in-place (CT suppression + fill NaNs + lakes) ─
         LOG.info("Applying preprocess_saf ...")
-        _preprocess_saf(cloud_mask, cloud_eff, cloud_top, cloud_type, self._partial_high_thr)
+        _preprocess_saf(
+            cloud_mask, cloud_eff, cloud_top, cloud_type,
+            self._partial_high_thr, lakes_saf=lakes_saf,
+        )
 
         # ── Classify SAF into cloud layers (SAF domain) ────────────────────────
         LOG.info("Classifying SAF cloud layers ...")
@@ -796,16 +845,14 @@ class CloudNudging(Filter):
         cloud_mask_icon = _reproject_saf_to_icon(cloud_mask, fill=np.nan, **kw)
         cloud_type_icon = _reproject_saf_to_icon(cloud_type, fill=np.nan, **kw)
 
-        # ── Topography and lakes filter (ICON/VARDA grid, using extpar data) ─────────
-        LOG.info("Applying topo/lakes filter ...")
+        # ── Topography filter (ICON/VARDA grid) ──────────────────────────────────
+        LOG.info("Applying topo filter ...")
         _apply_topo_lakes_filter(
             saf_icon,
             cloud_mask_icon,
             cloud_eff_icon,
             cloud_top_icon,
-            cloud_type_icon,
             self._topo_icon,
-            self._fr_lake_icon,
             self._height_tolerance_m,
             self._remove_below_topo,
         )

@@ -28,6 +28,9 @@ oper-inference = [
     "filelock",
     "requests",
 ]
+qc = [
+    "titanlib==0.3.4.dev4",
+]
 
 [project.scripts]
 anemoi-plugins-meteoswiss = "anemoi_plugins_meteoswiss:main"
@@ -81,7 +84,4 @@ markers = [
 dev = [
     "pre-commit>=4.5.1",
     "pytest>=9.0.2",
-]
-qc = [
-    "titanlib==0.3.4.dev4",
 ]

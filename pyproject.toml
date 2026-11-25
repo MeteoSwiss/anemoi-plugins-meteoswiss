@@ -15,6 +15,7 @@ dependencies = [
     "earthkit-data==0.19.2",
     "earthkit-utils ==1.0.2",
     "pyyaml",
+    "torch",
     "eccodes>=2.44,<2.48",
     "eccodes-cosmo-resources-python>=2.44,<2.48",
     "eccodeslib>=2.44,<2.48",

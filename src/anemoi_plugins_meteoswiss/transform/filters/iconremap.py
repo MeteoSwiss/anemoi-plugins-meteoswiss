@@ -31,9 +31,14 @@ def _rot_to_geo(
 
     dlon_rad = np.arctan2(
         np.cos(rlat) * np.sin(rlon),
-        np.sin(pollat) * np.cos(rlat) * np.cos(rlon) - np.cos(pollat) * np.sin(rlat),
+        np.cos(pollat) * np.sin(rlat) - np.sin(pollat) * np.cos(rlat) * np.cos(rlon),
+        # TODO: Look into whether this fix below is needed. Code above may produce
+        # mirrored longitude when it comes to actual coordinates.
+        #np.sin(pollat) * np.cos(rlat) * np.cos(rlon) - np.cos(pollat) * np.sin(rlat),
     )
-    lon = np.degrees(dlon_rad) + pollon_deg - 180.0
+    lon = np.degrees(dlon_rad) + pollon_deg
+    # TODO See above.
+    #lon = np.degrees(dlon_rad) + pollon_deg - 180.0
     return lat, ((lon + 180) % 360) - 180
 
 

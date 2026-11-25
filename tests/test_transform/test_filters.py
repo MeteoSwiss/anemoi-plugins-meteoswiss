@@ -18,6 +18,10 @@ ICONREMAP_WEIGHTS = "/store_new/mch/msopr/icon_workflow_2/iconremap-weights/icon
 requires_iconremap_weights = pytest.mark.skipif(
     not Path(ICONREMAP_WEIGHTS).exists(), reason=f"{ICONREMAP_WEIGHTS} not available on this machine."
 )
+ICON_CH1_GRID = "/scratch/mch/jenkins/icon/pool/data/ICON/mch/grids/icon-1/icon_grid_0001_R19B08_mch.nc"
+requires_icon_ch1_grid = pytest.mark.skipif(
+    not Path(ICON_CH1_GRID).exists(), reason=f"{ICON_CH1_GRID} not available on this machine."
+)
 
 
 def test_filter_imports():
@@ -56,6 +60,31 @@ def test_icon_remap_to_reg_lat_lon(data_dir):
         # Conservative interpolation: output stays within the source's range.
         assert values.min() >= src_values.min() - 1e-6
         assert values.max() <= src_values.max() + 1e-6
+
+
+@requires_iconremap_weights
+@requires_icon_ch1_grid
+def test_icon_remap_output_coordinates_match_icon_cells():
+    """Output lat/lon labels must match where the regridded values actually come from.
+
+    Interpolating the ICON cell-centre coordinates through the weights gives the true position
+    of each output point, independently of the rotated-pole conversion. This catches errors such
+    as the longitudes being mirrored around the pole meridian (10E for ICON-CH).
+    """
+    import xarray as xr
+
+    regridder = IconRemapToRegLatLon(ICONREMAP_WEIGHTS, device="cpu")
+    with xr.open_dataset(ICON_CH1_GRID) as grid:
+        clon = np.degrees(grid["clon"].values.astype(np.float64))
+        clat = np.degrees(grid["clat"].values.astype(np.float64))
+
+    valid = regridder.valid_mask
+    idx, wgt = regridder.indices[valid], regridder.weights[valid]
+    true_lon = np.sum(clon[idx] * wgt, axis=-1)
+    true_lat = np.sum(clat[idx] * wgt, axis=-1)
+
+    np.testing.assert_allclose(regridder._longitudes[valid], true_lon, atol=1e-3)
+    np.testing.assert_allclose(regridder._latitudes[valid], true_lat, atol=1e-3)
 
 
 @requires_iconremap_weights
